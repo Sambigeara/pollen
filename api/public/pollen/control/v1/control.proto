@@ -103,6 +103,9 @@ message GetBootstrapInfoRequest {}
 message BootstrapPeerInfo {
   NodeRef peer = 1;
   repeated string addrs = 2;
+  // host:port of this peer's TLS+mTLS control listener. Empty if the
+  // peer has no wire listener configured.
+  string wire_endpoint = 3;
 }
 
 message GetBootstrapInfoResponse {

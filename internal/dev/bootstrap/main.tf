@@ -37,6 +37,14 @@ resource "hcloud_firewall" "pollen" {
     port        = "60611"
     source_ips  = ["0.0.0.0/0", "::/0"]
   }
+
+  rule {
+    description = "Pollen wire (control-tls)"
+    direction   = "in"
+    protocol    = "tcp"
+    port        = "7443"
+    source_ips  = ["0.0.0.0/0", "::/0"]
+  }
 }
 
 resource "hcloud_server" "pollen" {

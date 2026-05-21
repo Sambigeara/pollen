@@ -150,8 +150,8 @@ func runStatus(cmd *cobra.Command, args []string, env *cliEnv) error {
 		if connect.CodeOf(err) != connect.CodeUnavailable {
 			return err
 		}
-		if env.wireMode {
-			return unreachableErr(wireCertDiagnosis(env.dir, env.host, err))
+		if env.transport.IsWire() {
+			return unreachableErr(wireCertDiagnosis(env.dir, env.transport.WireAddr(), err))
 		}
 		if socketPermissionDenied(env.dir) {
 			return permissionErr("cannot reach daemon — are you in the pln group?\n  fix: sudo usermod -aG pln $(whoami) && newgrp pln")
@@ -165,7 +165,7 @@ func runStatus(cmd *cobra.Command, args []string, env *cliEnv) error {
 	if metricsErr == nil {
 		health = metricsResp.Msg
 	}
-	renderStatusHeader(cmd.OutOrStdout(), health, st.GetCertificates(), statusContextLabel(env.dir))
+	renderStatusHeader(cmd.OutOrStdout(), health, st.GetCertificates(), statusContextLabel(env.ctxName, env.dir, env.transport))
 
 	var sections []statusSection
 	switch mode {
@@ -225,8 +225,8 @@ func runStatus(cmd *cobra.Command, args []string, env *cliEnv) error {
 }
 
 func runServe(cmd *cobra.Command, args []string, env *cliEnv) error {
-	if env.wireMode {
-		return errors.New("pln serve is not supported against a remote target; run on a local daemon")
+	if env.transport.IsWire() {
+		return errors.New("pln serve requires the local daemon; run `pln up` on this ctx first")
 	}
 	portStr := args[0]
 	name := ""
@@ -280,8 +280,8 @@ func runServe(cmd *cobra.Command, args []string, env *cliEnv) error {
 }
 
 func runUnserve(cmd *cobra.Command, args []string, env *cliEnv) error {
-	if env.wireMode {
-		return errors.New("pln unserve is not supported against a remote target; run on a local daemon")
+	if env.transport.IsWire() {
+		return errors.New("pln unserve requires the local daemon; run `pln up` on this ctx first")
 	}
 	arg := args[0]
 	var port uint32
@@ -866,18 +866,15 @@ func tierRank(t string) int {
 	return -1
 }
 
-func statusContextLabel(defaultDir string) string {
-	name := resolveContextName()
+func statusContextLabel(name, dir string, t transportSelection) string {
 	if name == "" {
 		return ""
 	}
-	dir, host, err := resolveContextBindings(name, defaultDir)
-	if err != nil {
-		return name
-	}
 	switch {
-	case host != "":
-		return name + " (" + host + ")"
+	case t.IsWire():
+		return name + " (" + plnTargetScheme + t.WireAddr() + ")"
+	case t.IsSSHBridge():
+		return name + " (" + t.SSHHost() + ")"
 	case name != defaultContextName:
 		return name + " (" + dir + ")"
 	default:

@@ -25,6 +25,26 @@ func TestNodeNameLabels_NoNames(t *testing.T) {
 	require.Empty(t, labels)
 }
 
+func TestStatusContextLabel(t *testing.T) {
+	cases := []struct {
+		name, dir string
+		t         transportSelection
+		want      string
+	}{
+		{"", "/x", transportSelection{kind: transportLocal}, ""},
+		{"default", "/x", transportSelection{kind: transportLocal}, "default"},
+		{"default", "/x", transportSelection{kind: transportWire, wireAddr: "edge:7443"}, "default (pln://edge:7443)"},
+		{"cloud", "/x", transportSelection{kind: transportWire, wireAddr: "edge:7443"}, "cloud (pln://edge:7443)"},
+		{"cloud", "/x", transportSelection{kind: transportLocal}, "cloud (/x)"},
+		{"prod", "/x", transportSelection{kind: transportSSHBridge, sshHost: "root@prod"}, "prod (root@prod)"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.want, func(t *testing.T) {
+			require.Equal(t, tc.want, statusContextLabel(tc.name, tc.dir, tc.t))
+		})
+	}
+}
+
 func TestNodeNameLabels_UniqueNames(t *testing.T) {
 	self := &controlv1.NodeSummary{Node: nodeRef("a"), Name: "laptop"}
 	peers := []*controlv1.NodeSummary{{Node: nodeRef("b"), Name: "server"}}

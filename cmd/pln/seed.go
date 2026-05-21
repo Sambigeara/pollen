@@ -217,7 +217,7 @@ func seedWorkload(cmd *cobra.Command, env *cliEnv, source, name string, policy *
 		Policy:      policy,
 	}
 
-	if env.wireMode {
+	if env.transport.IsWire() {
 		hashBytes, err := hashReader(f)
 		if err != nil {
 			return fmt.Errorf("hash %s: %w", source, err)
@@ -373,7 +373,7 @@ func seedStatic(cmd *cobra.Command, env *cliEnv, dir, name string, policy *admis
 		ManifestDigest: manifestDigest,
 		Policy:         policy,
 	}
-	if env.wireMode {
+	if env.transport.IsWire() {
 		presigned, err := signFact(env.dir, func(s *fact.Signer) (*factv1.Fact, error) {
 			return presignedStatic(s, name, manifestDigest, false)
 		})
@@ -418,16 +418,15 @@ func seedBlob(cmd *cobra.Command, env *cliEnv, source, name string, policy *admi
 		header.Anchor = true
 	}
 
-	// Wire-mode anchor blobs (anonymous, hash-only) would be
-	// publishable but unremoveable: `pln unseed` mints a tombstone
-	// against a named spec, and the anchor has no name. Refuse here
-	// so the operator learns at seed time, not weeks later when they
-	// try to unseed.
-	if env.wireMode && name == "" {
-		return errors.New("wire-mode anchor uploads are not supported; pass a name")
-	}
-
-	if env.wireMode && name != "" {
+	if env.transport.IsWire() {
+		// Anchor blobs (anonymous, hash-only) over the wire would be
+		// publishable but unremoveable: `pln unseed` mints a tombstone
+		// against a named spec, and the anchor has no name. Refuse here
+		// so the operator learns at seed time, not weeks later when they
+		// try to unseed.
+		if name == "" {
+			return errors.New("anchor uploads over the wire are not supported; pass a name")
+		}
 		digest, body, err := hashBlobSource(r, f, source)
 		if err != nil {
 			return err
@@ -557,7 +556,7 @@ func runUnseed(cmd *cobra.Command, args []string, env *cliEnv) error {
 
 func unseedWorkload(cmd *cobra.Command, env *cliEnv, wl *controlv1.WorkloadSummary) error {
 	req := &controlv1.UnseedWorkloadRequest{Hash: wl.GetHash()}
-	if env.wireMode {
+	if env.transport.IsWire() {
 		hashBytes, err := hex.DecodeString(wl.GetHash())
 		if err != nil {
 			return fmt.Errorf("decode hash: %w", err)
@@ -584,7 +583,7 @@ func unseedWorkload(cmd *cobra.Command, env *cliEnv, wl *controlv1.WorkloadSumma
 
 func unseedStatic(cmd *cobra.Command, env *cliEnv, site *controlv1.StaticSummary) error {
 	req := &controlv1.UnseedStaticRequest{Name: site.GetName()}
-	if env.wireMode {
+	if env.transport.IsWire() {
 		presigned, err := signFact(env.dir, func(s *fact.Signer) (*factv1.Fact, error) {
 			return presignedStatic(s, site.GetName(), site.GetManifestDigest(), true)
 		})
@@ -599,7 +598,7 @@ func unseedStatic(cmd *cobra.Command, env *cliEnv, site *controlv1.StaticSummary
 
 func removeBlob(cmd *cobra.Command, env *cliEnv, hash string, blobs []*controlv1.BlobSummary) error {
 	req := &controlv1.RemoveBlobRequest{Hash: hash}
-	if env.wireMode {
+	if env.transport.IsWire() {
 		name := ""
 		for _, b := range blobs {
 			if b.GetHash() == hash {
@@ -608,7 +607,7 @@ func removeBlob(cmd *cobra.Command, env *cliEnv, hash string, blobs []*controlv1
 			}
 		}
 		if name == "" {
-			return fmt.Errorf("wire-mode blob remove requires a named blob; %s is anonymous", hash[:shortHexLen])
+			return fmt.Errorf("blob remove over the wire requires a named blob; %s is anonymous", hash[:shortHexLen])
 		}
 		digestBytes, err := hex.DecodeString(hash)
 		if err != nil {

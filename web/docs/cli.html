@@ -36,11 +36,19 @@
     <p><strong>Aliases.</strong> <code>pln ctx</code> is short for <code>pln context</code>, and <code>use</code> is short for <code>switch</code>. Examples below use the short forms; either works.</p>
 
     <h3 id="context-add"><code>pln ctx add &lt;name&gt; &lt;target&gt;</code></h3>
-    <p>Targets containing <code>@</code> bind to a remote daemon over SSH; absolute paths bind to a local pln dir. Local named contexts get a free UDP port assigned automatically so they coexist with the default-context daemon without colliding on <code>:60611</code>.</p>
+    <p>The target shape is inferred:</p>
+    <ul>
+      <li><code>pln://host:port</code> sets a <strong>wire fallback</strong>: a remote endpoint the CLI dials over mTLS when no local daemon is up. The same context can later run its own daemon with <a href="#up"><code>pln up</code></a>, and the CLI will use the sock instead.</li>
+      <li><code>user@host</code> binds to a remote daemon over SSH.</li>
+      <li>An absolute path binds to a local pln dir; a free UDP port is assigned so it coexists with the default-context daemon without colliding on <code>:60611</code>.</li>
+    </ul>
+    <p>Adding a context never decides the transport, only the identity directory and any wire fallback. The transport is picked at command time: local sock if reachable, otherwise the wire fallback. See <a href="#globals">Per-command overrides</a> for forcing one or the other.</p>
     <dl class="flags">
-      <dt>--from &lt;dir|default&gt;</dt><dd>For remote contexts: import an existing admin keypair so this shell can act as admin. Pass a directory, or <code>default</code> to take the keys from <code>$PLN_DIR/keys</code>.</dd>
+      <dt>--from &lt;dir|default&gt;</dt><dd>Import an existing admin keypair so this shell can act as admin. Pass a directory, or <code>default</code> to take the keys from <code>$PLN_DIR/keys</code>.</dd>
     </dl>
     <div class="terminal">
+      <span class="cmd">pln ctx add cloud pln://edge.pln.sh:7443</span>
+      <span class="out">added context "cloud"</span>
       <span class="cmd">pln ctx add prod root@prod.example.com --from default</span>
       <span class="out">added context "prod"</span>
       <span class="cmd">pln ctx add dev /tmp/pln-dev</span>
@@ -82,7 +90,7 @@
     </div>
 
     <h3 id="context-show"><code>pln ctx show [name]</code> (alias <code>pln ctx whoami</code>)</h3>
-    <p>Print a context's target, identity, capabilities, and grant status (the active context if no name is given). Use it to check why a wire-mode command was refused.</p>
+    <p>Print a context's target, identity, capabilities, and grant status (the active context if no name is given). Use it to check why a command was refused, including when the CLI fell back to the wire transport because no local daemon was up.</p>
     <div class="terminal">
       <span class="cmd">pln ctx show staging</span>
       <span class="out">context: staging</span>
@@ -97,11 +105,11 @@
     </div>
     <p><code>rejoin by</code> is the grant deadline: the point past which the grant is dead and the node cannot rejoin on its own. Delegated grants default to a 30-day deadline; admin grants print <code>rejoin by:  never (admin grant)</code> and carry no deadline. Before the deadline the grant renews itself automatically against any reachable delegating peer, so a node keeps working with the root offline. When no identity is enrolled the block collapses to <code>identity: none (run `pln join &lt;token&gt;`)</code>.</p>
     <div class="callout">
-      <p>There is no <code>pln renew</code>. Renewal is automatic: the daemon renews on a background loop, and wire-mode contexts renew on the next dial. If a grant passes its <code>rejoin by</code> deadline, recover with a fresh <a href="#invite"><code>pln invite</code></a> followed by <a href="#join"><code>pln join &lt;token&gt;</code></a>. See <a href="troubleshoot.html#cert-expired">access expired or node degraded</a> and <a href="concepts.html#grants">Grants</a> in Concepts.</p>
+      <p>There is no <code>pln renew</code>. Renewal is automatic: a running daemon renews on a background loop, and a context with no daemon up renews on the next dial. If a grant passes its <code>rejoin by</code> deadline, recover with a fresh <a href="#invite"><code>pln invite</code></a> followed by <a href="#join"><code>pln join &lt;token&gt;</code></a>. See <a href="troubleshoot.html#cert-expired">access expired or node degraded</a> and <a href="concepts.html#grants">Grants</a> in Concepts.</p>
     </div>
 
     <h3 id="globals">Per-command override</h3>
-    <p>Three ways to point a single command somewhere other than the active context, without switching it:</p>
+    <p>Per-invocation overrides. The first three pick which context the command runs against; the last two pin the transport.</p>
     <dl class="flags">
       <dt>$PLN_CONTEXT &lt;name&gt;</dt>
       <dd>Use the named context for this invocation only. Equivalent to <code>pln ctx use</code> scoped to one command.</dd>
@@ -109,7 +117,12 @@
       <dd>State directory. Defaults to <code>~/.pln</code>, or <code>/var/lib/pln</code> on Linux once <code>pln daemon install</code> has provisioned it. Env <code>PLN_DIR</code>.</dd>
       <dt>-H, --host &lt;user@host&gt;</dt>
       <dd>Tunnel through SSH and run against the remote daemon. Env <code>PLN_HOST</code>.</dd>
+      <dt>--local</dt>
+      <dd>Require the local sock. Fails if no daemon is up for this context. Use this when a command must never go over the wire.</dd>
+      <dt>--wire</dt>
+      <dd>Force the wire fallback. Fails if the context has no <code>pln://</code> endpoint configured. Fact-issuing commands (<code>pln seed</code>, <code>pln unseed</code>) additionally refuse when a local daemon is running for the same context, since both signers would advance the same sequence without coordination; stop the daemon first with <code>pln down</code>.</dd>
     </dl>
+    <p><code>--local</code> and <code>--wire</code> are mutually exclusive. Without either, the CLI uses the sock if one is reachable and falls back to the wire endpoint otherwise. SSH-bridge contexts (<code>-H</code> or a <code>user@host</code> target) ignore both.</p>
 
     <h2 id="lifecycle">Lifecycle</h2>
 
@@ -119,6 +132,7 @@
     <p>Start the local node. Foreground by default; <code>-d</code> hands off to launchd (macOS) or systemd (Linux). If no credentials exist, auto-initialises a single-node root cluster.</p>
     <dl class="flags">
       <dt>-d, --detach</dt><dd>Run as background service.</dd>
+      <dt>--ctx &lt;name&gt;</dt><dd>Bring up the daemon for the named context. Defaults to the active context. After this, the same context's commands hit the local sock instead of the wire fallback.</dd>
       <dt>--port &lt;n&gt;</dt><dd>Listening UDP port (default 60611).</dd>
       <dt>--ips &lt;ip,...&gt;</dt><dd>Advertise these IPs to peers.</dd>
       <dt>--public</dt><dd>Hint that this node is publicly reachable, making it a relay candidate. Actual reachability is verified by the mesh via NAT probing.</dd>
@@ -126,7 +140,8 @@
       <dt>--metrics</dt><dd>Log metrics and trace output at debug level.</dd>
     </dl>
     <pre><code>pln up
-pln up -d --name relay --public</code></pre>
+pln up -d --name relay --public
+pln up -d --ctx cloud           <span class="c"># bring up a daemon for a cloud context with a wire fallback</span></code></pre>
     <p>If the node's grant is no longer valid, the daemon still starts but prints <code>node grant no longer valid — starting in degraded mode; rejoin with `pln join &lt;token&gt;`</code> and runs degraded until an admin peer is reachable or you rejoin. Degraded is the state of a node still serving on a grant whose renewal is failing; it is not a post-deadline grace period. See <a href="concepts.html#grants">Grants</a> in Concepts.</p>
 
     <h3 id="down"><code>pln down</code> (alias <code>pln daemon down</code>)</h3>
@@ -261,16 +276,18 @@ pln fetch ab12cd34 -</code></pre>
     </div>
 
     <h3 id="join"><code>pln join &lt;token&gt;</code></h3>
-    <p>Enrol this node into the cluster the token was minted for. Writes credentials and exits; pass <code>--up</code> to also start the daemon. This is also the recovery path: if a node's grant has passed its deadline, mint a fresh token with <a href="#invite"><code>pln invite</code></a> and run <code>pln join</code> again.</p>
+    <p>Enrol this node into the cluster the token was minted for. Writes credentials and exits; pass <code>--up</code> to also start the daemon. If the token carries a wire endpoint (the cluster runs a control-tls listener), <code>pln join</code> also writes that endpoint into the active context as its <code>wire</code> fallback, so the CLI keeps working when the local daemon is down. An existing <code>wire</code> setting is preserved; <code>pln join</code> only fills an empty one. This is also the recovery path: if a node's grant has passed its deadline, mint a fresh token with <a href="#invite"><code>pln invite</code></a> and run <code>pln join</code> again.</p>
     <dl class="flags">
       <dt>-u, --up</dt><dd>Start the daemon after enrolment.</dd>
       <dt>--public</dt><dd>Hint that this node is publicly reachable, making it a relay candidate. Actual reachability is verified by the mesh via NAT probing.</dd>
     </dl>
     <div class="terminal">
       <span class="cmd">pln join eyJhbG...AAAA</span>
-      <span class="out">credentials enrolled; run `pln up -d` to start the node</span>
+      <span class="out">wire fallback configured: pln://edge.pln.sh:7443
+credentials enrolled; run `pln up -d` to start the node</span>
       <span class="cmd">pln join eyJhbG...AAAA --up</span>
-      <span class="out">credentials enrolled; starting daemon</span>
+      <span class="out">wire fallback configured: pln://edge.pln.sh:7443
+credentials enrolled; starting daemon</span>
     </div>
     <div class="callout">
       <p>Once enrolled, the grant renews itself automatically before its deadline against any reachable delegating peer, so there is no <code>pln renew</code> command and a node keeps working with the root offline. <code>pln join</code> is only needed for first enrolment or to recover a grant that has already passed its deadline. See <a href="concepts.html#grants">Grants</a> in Concepts.</p>
@@ -314,7 +331,7 @@ pln invite --admin --subject $(ssh relay pln id)</code></pre>
       <span class="cmd">pln grant relay1 --admin</span>
       <span class="out">upgraded ab12cd34 → admin</span>
     </div>
-    <p>When the named peer is a wire-mode tenant with no live daemon, <code>pln grant</code> falls back to printing a subject-pinned invite token; the tenant redeems it with <a href="#join"><code>pln join &lt;token&gt;</code></a> to swap their credentials in place. This is the same path as a first join, just bound to the existing identity. See <a href="concepts.html#grants">Grants</a> in Concepts.</p>
+    <p>When the named peer has no live daemon for the admin to push to, <code>pln grant</code> falls back to printing a subject-pinned invite token; the peer redeems it with <a href="#join"><code>pln join &lt;token&gt;</code></a> to swap their credentials in place. This is the same path as a first join, bound to the existing identity. See <a href="concepts.html#grants">Grants</a> in Concepts.</p>
 
     <h3 id="deny"><code>pln deny &lt;peer-id&gt;</code></h3>
     <p>Revoke a peer's membership and tear down its connections. Identify by peer-id prefix. Cascades to peers admitted by the denied node.</p>
@@ -344,11 +361,16 @@ pln invite --admin --subject $(ssh relay pln id)</code></pre>
       <dt>--relay-port &lt;n&gt;</dt><dd>Relay UDP port to advertise (default 60611).</dd>
       <dt>--expire-after &lt;dur&gt;</dt><dd>Override the deadline on every issued grant. Delegated grants default to a 30-day deadline.</dd>
       <dt>--no-up</dt><dd>Skip starting the local daemon after bootstrapping.</dd>
+      <dt>--wire &lt;addr&gt;</dt><dd>Enable the joining node's TLS+mTLS control listener at <code>addr</code> (e.g. <code>:7443</code>). The first publicly-reachable target whose bootstrap succeeds also becomes this context's <code>wire</code> fallback when none is configured yet, so the local CLI keeps working when the local daemon is down. Inbound TCP on the chosen port must be open at the cloud or host firewall; the pln binary cannot configure that.</dd>
     </dl>
     <div class="terminal">
       <span class="cmd">pln bootstrap ssh user@host</span>
       <span class="out">bootstrapping user@host...
   user@host                                ok</span>
+      <span class="cmd">pln bootstrap ssh edge=root@198.51.100.7 --admin --wire :7443</span>
+      <span class="out">bootstrapping edge=root@198.51.100.7...
+  edge=root@198.51.100.7                   ok
+wire fallback configured: pln://198.51.100.7:7443</span>
       <span class="cmd">pln bootstrap ssh relay-eu=root@10.0.0.5 relay-us=root@10.0.0.6 --admin</span>
       <span class="cmd">pln bootstrap ssh worker=root@10.0.0.7 --publisher</span>
       <span class="cmd">echo "media=alice@10.0.0.5" | pln bootstrap ssh -</span>

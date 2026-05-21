@@ -148,3 +148,50 @@ func TestPickBootstrapPeers_CollapsesIPv4AndULAOnSamePeer(t *testing.T) {
 	require.Len(t, peers, 1, "v4 LAN and v6 ULA must share one bucket")
 	require.Len(t, peers[0].Addrs, 1, "merged LAN bucket emits one address per peer")
 }
+
+func TestPickBootstrapPeers_WireEndpoint(t *testing.T) {
+	now := time.Now()
+	local := peerKeyN(1)
+	remote := peerKeyN(2)
+	bare := peerKeyN(3)
+
+	snap := state.Snapshot{
+		LocalID: local,
+		Nodes: map[types.PeerKey]state.NodeView{
+			local: {
+				IPs:         []string{"192.168.0.10"},
+				LocalPort:   60611,
+				LastEventAt: now,
+			},
+			remote: {
+				IPs:         []string{"192.168.0.11", "91.99.170.199"},
+				LocalPort:   60611,
+				LastEventAt: now,
+				ControlAddr: "0.0.0.0:7443",
+			},
+			bare: {
+				IPs:         []string{"203.0.113.5"},
+				LocalPort:   60611,
+				LastEventAt: now,
+			},
+		},
+	}
+
+	got := map[string]string{}
+	for _, p := range pickBootstrapPeers(snap) {
+		got[string(p.Peer.PeerPub)] = p.WireEndpoint
+	}
+	require.Empty(t, got[string(local.Bytes())], "no ControlAddr means no wire endpoint")
+	require.Equal(t, "91.99.170.199:7443", got[string(remote.Bytes())], "public IP outranks LAN as the wire host")
+	require.Empty(t, got[string(bare.Bytes())], "ControlAddr empty stays empty")
+}
+
+func TestWireEndpointFor_PortOnlyControlAddr(t *testing.T) {
+	nv := state.NodeView{ControlAddr: ":7443"}
+	require.Equal(t, "192.168.0.5:7443", wireEndpointFor(nv, []string{"192.168.0.5:60611"}))
+}
+
+func TestWireEndpointFor_MalformedControlAddr(t *testing.T) {
+	nv := state.NodeView{ControlAddr: "garbage"}
+	require.Empty(t, wireEndpointFor(nv, []string{"192.168.0.5:60611"}))
+}

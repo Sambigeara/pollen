@@ -13,15 +13,15 @@ import (
 	"os/exec"
 	"runtime"
 	"slices"
+	"strings"
 	"sync"
 
 	"github.com/spf13/cobra"
 )
 
-var errRemoteUnsupported = errors.New("this command must run on the local node (--host or PLN_HOST is set, or the current context has a host)")
+var errRemoteUnsupported = errors.New("this command must run on the local node; the active ctx targets an SSH host")
 
-func ensureSystemServiceContext() error {
-	name := resolveContextName()
+func ensureSystemServiceContext(name string) error {
 	if name == defaultContextName {
 		return nil
 	}
@@ -33,35 +33,41 @@ func ensureSystemServiceContext() error {
 	if !ok {
 		return notFoundErr("context %q not found", name)
 	}
-	if entry.Host != "" {
-		return fmt.Errorf("context %q targets a remote daemon; manage its service on the remote host", name)
+	if entry.isSSHBridge() {
+		return fmt.Errorf("ctx %q is an SSH bridge; run `pln up` on %s directly", name, entry.Host)
 	}
 	if runtime.GOOS != osDarwin {
-		return fmt.Errorf("per-context system services are only supported on macOS; switch to the default context")
+		return fmt.Errorf("per-ctx background services are only supported on macOS; run `pln up --ctx %s` in the foreground", name)
 	}
 	return nil
 }
 
-func resolveTarget(cmd *cobra.Command, defaultDir string) (dir, host string, err error) {
-	name := resolveContextName()
-	dir, host, err = resolveContextBindings(name, defaultDir)
+func resolveTarget(cmd *cobra.Command, name, defaultDir string) (contextEntry, error) {
+	entry, err := resolveContextBindings(name, defaultDir)
 	if err != nil {
-		return "", "", err
+		return contextEntry{}, err
 	}
 	if cmd.Flags().Changed("dir") {
-		dir, _ = cmd.Flags().GetString("dir")
+		entry.Dir, _ = cmd.Flags().GetString("dir")
 	}
+	override := ""
 	if f := cmd.Flag("host"); f != nil {
-		if v := f.Value.String(); v != "" {
-			host = v
-		}
+		override = f.Value.String()
 	}
 	if !cmd.Flags().Changed("host") {
 		if v := os.Getenv("PLN_HOST"); v != "" {
-			host = v
+			override = v
 		}
 	}
-	return dir, host, nil
+	if override != "" {
+		entry.Host, entry.Wire = "", ""
+		if strings.HasPrefix(override, plnTargetScheme) {
+			entry.Wire = override
+		} else {
+			entry.Host = override
+		}
+	}
+	return entry, nil
 }
 
 // net.Pipe so SetReadDeadline works; raw exec.Cmd pipes don't support deadlines.

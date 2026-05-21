@@ -74,6 +74,7 @@ cluster — equivalent to running ` + "`pln init`" + ` first.`,
 	cmd.Flags().BoolP("detach", "d", false, "Run as a background service")
 	cmd.Flags().Bool("metrics", false, "Log metrics and trace output at debug level")
 	cmd.Flags().String("name", "", "Human-readable node name")
+	cmd.Flags().String("ctx", "", "Bring this named ctx up (sugar for PLN_CONTEXT=<name>)")
 	return cmd
 }
 
@@ -134,7 +135,7 @@ also bounce the background service and pick up the new binary.`,
 func runUp(cmd *cobra.Command, _ []string, env *cliEnv) error {
 	detach, _ := cmd.Flags().GetBool("detach")
 	if detach {
-		if err := ensureSystemServiceContext(); err != nil {
+		if err := ensureSystemServiceContext(env.ctxName); err != nil {
 			return err
 		}
 		if cmd.Flags().Changed("port") {
@@ -330,7 +331,7 @@ func runLogs(cmd *cobra.Command, _ []string, env *cliEnv) error {
 	var bin string
 
 	switch {
-	case runtime.GOOS == osDarwin && resolveContextName() != defaultContextName:
+	case runtime.GOOS == osDarwin && env.ctxName != defaultContextName:
 		bin = "tail"
 		args = []string{"-n", strconv.Itoa(lines)}
 		if follow {
@@ -459,7 +460,7 @@ func linuxUpgradeInstallMethodForExecutable(executable string) (string, error) {
 
 func servicectl(action string, cmd *cobra.Command, env *cliEnv) error {
 	ctx := cmd.Context()
-	name := resolveContextName()
+	name := env.ctxName
 
 	if runtime.GOOS == osDarwin && name != defaultContextName {
 		cf, err := loadContexts()

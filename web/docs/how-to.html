@@ -42,11 +42,13 @@
       <li>
         <h3>Bootstrap it from your admin node</h3>
         <div class="terminal">
-          <span class="cmd">pln bootstrap ssh relay-eu=root@198.51.100.10 --admin</span>
+          <span class="cmd">pln bootstrap ssh relay-eu=root@198.51.100.10 --admin --wire :7443</span>
           <span class="out">bootstrapping relay-eu=root@198.51.100.10...
-  relay-eu=root@198.51.100.10              ok</span>
+  relay-eu=root@198.51.100.10              ok
+wire fallback configured: pln://198.51.100.10:7443</span>
         </div>
         <p><code>--admin</code> delegates admin authority too, so the relay can keep admitting peers if your root machine is offline. Use <code>--publisher</code> instead if the relay should be able to publish its own services or workloads but not admit peers, or drop both flags for a relay that only forwards traffic.</p>
+        <p><code>--wire :7443</code> enables the relay's TLS+mTLS control listener and writes it as this context's <code>wire</code> fallback, so the local CLI keeps working through the relay even with the laptop daemon stopped. Open inbound TCP on the chosen port at the cloud or host firewall; the pln binary does not configure that.</p>
       </li>
       <li>
         <h3>Verify reachability</h3>
@@ -230,7 +232,7 @@ my-site  3a8c7d2e  3/3       *      7c9a4f8d</span>
     <p><strong>Related:</strong> <a href="concepts.html#workloads">Workloads</a>, <a href="cli.html#seed"><code>pln seed</code></a>.</p>
 
     <h2 id="recover-context">Recover a context that can't connect</h2>
-    <p>A delegated grant has a single hard deadline (default 30 days). The daemon renews it automatically against any reachable delegating peer, and a wire-mode context renews opportunistically on the next <code>pln</code> call. If the machine was offline past the deadline, renewal is no longer possible and the context must rejoin with a fresh invite.</p>
+    <p>A delegated grant has a single hard deadline (default 30 days). A running daemon renews it automatically against any reachable delegating peer, and a context with no daemon up renews opportunistically on the next <code>pln</code> call against its wire fallback. If the machine was offline past the deadline, renewal is no longer possible and the context must rejoin with a fresh invite.</p>
 
     <ol class="steps">
       <li>
@@ -503,18 +505,33 @@ caps:     delegate=false admit=false publish=true max_depth=0</span>
           <li><code>blob.pln.sh</code> &rarr; edge IP, proxied, origin <code>edge:8088</code></li>
           <li><code>fn.pln.sh</code> &rarr; edge IP, proxied, origin <code>edge:8088</code></li>
           <li><code>*.pln.sh</code> (wildcard) &rarr; edge IP, proxied, origin <code>edge:8080</code>; serves <code>pln seed</code>'d sites at <code>&lt;name&gt;-&lt;slug&gt;.pln.sh</code> where the slug is the 12-char base32 of SHA-256 of the publisher's pubkey</li>
-          <li><code>edge.pln.sh:7443</code> &rarr; edge IP, <em>direct</em> (grey cloud / non-Cloudflare); wire-mode CLI mTLS endpoint</li>
+          <li><code>edge.pln.sh:7443</code> &rarr; edge IP, <em>direct</em> (grey cloud / non-Cloudflare); CLI mTLS endpoint over the wire</li>
         </ul>
         <p>Top-level subdomains <code>blob</code>, <code>fn</code>, and any future system names are reserved. The static handler only matches Hosts that parse as <code>&lt;name&gt;-&lt;slug&gt;.&lt;domain&gt;</code>, so a tenant who publishes a site called <code>blob</code> lands at <code>blob-k7r4z9xa8n2p.pln.sh</code> and can't shadow <code>blob.pln.sh</code>.</p>
       </li>
       <li>
-        <h3>Tenants join the cluster over the wire</h3>
+        <h3>Tenants join the cluster</h3>
+        <p>From a workstation, redeem an invite token minted on an admin node. The token carries the cluster's wire endpoint, so <code>pln join</code> writes the <code>wire</code> fallback into the active context as part of enrolment. Whether the local daemon is up decides which transport each command takes thereafter.</p>
+
+        <p><strong>CLI only, no daemon.</strong> Every command dials the edge over mTLS against the context's wire fallback.</p>
+        <div class="terminal">
+          <span class="cmd">pln join &lt;token&gt;        <span class="cmt"># token from `pln invite` on an admin node</span></span>
+          <span class="out">wire fallback configured: pln://edge.pln.sh:7443</span>
+        </div>
+        <p>Identity is minted at <code>pln join</code> time against the token's cluster claim. The wire fallback line appears only when the cluster has a publicly advertised control-tls endpoint. The context renews opportunistically on the next <code>pln</code> call while the grant is in its renewal window.</p>
+
+        <p><strong>With a local daemon.</strong> Same enrolment, plus <a href="cli.html#up"><code>pln up</code></a> so the workstation can join the mesh.</p>
+        <div class="terminal">
+          <span class="cmd">pln join --up &lt;token&gt;     <span class="cmt"># enrol and start the daemon in one step</span></span>
+        </div>
+        <p>After <code>pln up</code> the CLI uses the local sock instead of the wire endpoint, and a background renewal loop replaces the on-call renewal path. Stop the daemon with <a href="cli.html#down"><code>pln down</code></a> and the wire fallback resumes.</p>
+
+        <p><strong>Keeping it separate from a home cluster.</strong> If the workstation already runs a local cluster on the default context, give the cloud its own named context first so they don't collide. <code>pln context add</code> records the wire endpoint up front; the subsequent <code>pln join</code> just enrols.</p>
         <div class="terminal">
           <span class="cmd">pln context add cloud pln://edge.pln.sh:7443</span>
           <span class="cmd">pln context use cloud</span>
-          <span class="cmd">pln join &lt;token&gt;        <span class="cmt"># token from `pln invite` on an admin node</span></span>
+          <span class="cmd">pln join &lt;token&gt;</span>
         </div>
-        <p>Wire-mode contexts skip admin-key generation; identity is minted at <code>pln join</code> time against the token's cluster claim. No local daemon required. Every subsequent <code>pln</code> command dials the edge over mTLS-QUIC.</p>
       </li>
       <li>
         <h3>Verify the loop end-to-end</h3>

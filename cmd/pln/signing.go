@@ -6,6 +6,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"path/filepath"
 
 	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
 	factv1 "github.com/sambigeara/pollen/api/genpb/pollen/fact/v1"
@@ -16,13 +17,16 @@ import (
 
 // signFact loads the caller's signing key from dir and invokes fn with
 // a durable per-context fact signer to produce a presigned Fact. Used
-// by every wire-mode publish/tombstone path; the load-creds error
-// message is shared across all callers. A wire context is the single
-// producer for its authority key, so its sequence high-water is
-// persisted next to the identity and stays monotonic across CLI
-// invocations exactly as the daemon's signer does.
+// by every publish/tombstone path that runs over the wire; the
+// load-creds error message is shared across all callers. Refuses to
+// run when a local daemon is up for this ctx: both signers would
+// advance the same FactSeqPath without coordination and could mint
+// duplicate seqs under one authority key.
 func signFact(dir string, fn func(*fact.Signer) (*factv1.Fact, error)) (*factv1.Fact, error) {
 	identityDir := identity.IdentityPath(dir)
+	if nodeSocketActive(filepath.Join(dir, socketName)) {
+		return nil, errors.New("cannot sign facts while a local daemon is running for this ctx; stop it with `pln down` or omit `--wire` so the operation flows through the daemon")
+	}
 	creds, err := identity.LoadCredentials(identityDir)
 	if err != nil {
 		return nil, fmt.Errorf("load credentials: %w", err)

@@ -4,6 +4,7 @@
 package control
 
 import (
+	"net"
 	"net/netip"
 	"slices"
 
@@ -50,11 +51,16 @@ func pickBootstrapPeers(snap state.Snapshot) []*controlv1.BootstrapPeerInfo {
 		add(peerID, nv)
 	}
 
+	// Process buckets in network-preference order: public IPs win over LAN
+	// so the resulting BootstrapPeerInfo list is ordered most-routable-first
+	// and consumers picking "the first wire-bearing peer" land on a routable
+	// edge by construction.
 	bucketKeys := make([]string, 0, len(buckets))
-	for k := range buckets {
-		bucketKeys = append(bucketKeys, k)
+	for _, k := range networkBucketOrder {
+		if _, ok := buckets[k]; ok {
+			bucketKeys = append(bucketKeys, k)
+		}
 	}
-	slices.Sort(bucketKeys)
 
 	chosenAddrs := make(map[types.PeerKey][]string)
 	chosenOrder := make([]types.PeerKey, 0, len(bucketKeys))
@@ -101,11 +107,42 @@ func pickBootstrapPeers(snap state.Snapshot) []*controlv1.BootstrapPeerInfo {
 		slices.Sort(addrs)
 		addrs = slices.Compact(addrs)
 		out = append(out, &controlv1.BootstrapPeerInfo{
-			Peer:  &controlv1.NodeRef{PeerPub: peerID.Bytes()},
-			Addrs: addrs,
+			Peer:         &controlv1.NodeRef{PeerPub: peerID.Bytes()},
+			Addrs:        addrs,
+			WireEndpoint: wireEndpointFor(snap.Nodes[peerID], addrs),
 		})
 	}
 	return out
+}
+
+// networkBucketOrder ranks reachability classes for bootstrap ordering
+// and wire-host selection: public IPs win over LAN.
+var networkBucketOrder = []string{"public-v4", "public-v6", "lan"}
+
+// wireEndpointFor pairs the peer's control-tls port (from ControlAddr)
+// with its most-routable bootstrap host. Returns "" when either part
+// is missing.
+func wireEndpointFor(nv state.NodeView, addrs []string) string {
+	if nv.ControlAddr == "" {
+		return ""
+	}
+	_, port, err := net.SplitHostPort(nv.ControlAddr)
+	if err != nil || port == "" {
+		return ""
+	}
+	for _, prefer := range networkBucketOrder {
+		for _, a := range addrs {
+			if classifyNetwork(a) != prefer {
+				continue
+			}
+			ap, err := netip.ParseAddrPort(a)
+			if err != nil {
+				continue
+			}
+			return net.JoinHostPort(ap.Addr().String(), port)
+		}
+	}
+	return ""
 }
 
 type candidateAddr struct {
@@ -179,8 +216,7 @@ func classifyNetwork(hostport string) string {
 	if addr.Is4In6() {
 		addr = addr.Unmap()
 	}
-	if !addr.IsValid() || addr.IsUnspecified() || addr.IsMulticast() ||
-		addr.IsLoopback() || addr.IsLinkLocalUnicast() {
+	if !types.IsRoutableIP(addr) {
 		return ""
 	}
 	if addr.IsPrivate() {

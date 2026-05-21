@@ -6,6 +6,7 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -47,11 +48,11 @@ var (
 )
 
 type cliEnv struct {
-	client   controlv1connect.ControlServiceClient
-	cfg      *config.Config
-	dir      string
-	host     string
-	wireMode bool
+	client    controlv1connect.ControlServiceClient
+	cfg       *config.Config
+	dir       string
+	ctxName   string
+	transport transportSelection
 }
 
 type envConfig struct {
@@ -72,28 +73,45 @@ func withEnv(fn func(*cobra.Command, []string, *cliEnv) error, opts ...envOption
 		opt(&cfg)
 	}
 	return func(cmd *cobra.Command, args []string) error {
+		ctxName := resolveContextName()
+		if f := cmd.Flag("ctx"); f != nil && cmd.Flags().Changed("ctx") {
+			ctxName = f.Value.String()
+		}
 		defaultDir, _ := cmd.Flags().GetString("dir")
-		dir, host, err := resolveTarget(cmd, defaultDir)
+		entry, err := resolveTarget(cmd, ctxName, defaultDir)
 		if err != nil {
 			return err
 		}
+		override := transportOverrideFromFlags(cmd)
 
-		// Wire-mode hosts are not "remote" in the localOnly sense — the
-		// command still runs locally, writing to the local context dir.
-		// SSH-bridge hosts run the command on the remote node, which is
-		// what localOnly is guarding against.
-		if cfg.localOnly && host != "" {
-			if _, isWire := parsePlnTarget(host); !isWire {
+		var transport transportSelection
+		if cfg.localOnly {
+			if override == overrideWire {
+				return errors.New("--wire is not applicable to commands that run locally")
+			}
+			// SSH-bridge would ship the command to a remote node.
+			if entry.isSSHBridge() {
 				return errRemoteUnsupported
+			}
+			// Force local even when a wire fallback is configured:
+			// http2's DialTLS path has no timeout, so an unreachable
+			// wire endpoint would hang the command for the OS-level TCP
+			// timeout before `pln up` could launch the daemon.
+			transport = transportSelection{kind: transportLocal}
+		} else {
+			transport, err = resolveTransport(entry, override)
+			if err != nil {
+				return err
 			}
 		}
 		if cfg.systemService {
-			if err := ensureSystemServiceContext(); err != nil {
+			if err := ensureSystemServiceContext(ctxName); err != nil {
 				return err
 			}
 		}
 
-		if host == "" {
+		dir := entry.Dir
+		if transport.IsLocal() {
 			plnfs.SetSystemMode(dir == plnfs.SystemDir || strings.HasPrefix(dir, plnfs.SystemDir+"/"))
 			if cfg.wantsRoot {
 				escalateToRoot()
@@ -109,24 +127,22 @@ func withEnv(fn func(*cobra.Command, []string, *cliEnv) error, opts ...envOption
 		}
 
 		baseURL := "http://unix"
-		wireMode := false
-		if addr, ok := parsePlnTarget(host); ok {
-			baseURL = "https://" + addr
-			wireMode = true
-			// A wire-mode tenant has no daemon running the proactive
-			// renewal loop, so renew opportunistically here when the grant
-			// is within its lead window. Best-effort: the command proceeds
-			// on the current still-valid grant and retries next time.
-			if err := wire.MaybeRenewGrant(cmd.Context(), dir, addr); err != nil {
+		if transport.IsWire() {
+			baseURL = "https://" + transport.WireAddr()
+			// Wire callers have no local renewal loop, so renew
+			// opportunistically when the grant is within its lead window.
+			// Best-effort: the command proceeds on the current still-valid
+			// grant and retries next time.
+			if err := wire.MaybeRenewGrant(cmd.Context(), dir, transport.WireAddr()); err != nil {
 				fmt.Fprintf(cmd.ErrOrStderr(), "pln: grant renewal failed: %v\n", err)
 			}
 		}
 
 		env := &cliEnv{
-			dir:      dir,
-			host:     host,
-			cfg:      cliCfg,
-			wireMode: wireMode,
+			dir:       dir,
+			ctxName:   ctxName,
+			cfg:       cliCfg,
+			transport: transport,
 			// No http.Client.Timeout: per-command deadlines own the budget via
 			// context.WithTimeout on cmd.Context(). A global wall-clock would
 			// otherwise mask real errors and truncate long-lived calls before
@@ -135,7 +151,7 @@ func withEnv(fn func(*cobra.Command, []string, *cliEnv) error, opts ...envOption
 				&http.Client{
 					Transport: &http2.Transport{
 						AllowHTTP: true,
-						DialTLS:   dialTLSFunc(dir, host),
+						DialTLS:   dialTLSFunc(transport, dir),
 					},
 				},
 				baseURL,
@@ -170,18 +186,21 @@ func negotiateProtocol(ctx context.Context, c controlv1connect.ControlServiceCli
 	return wire.CheckRange(resp.Msg.GetServerMin(), resp.Msg.GetServerMax())
 }
 
-func dialTLSFunc(dir, target string) func(string, string, *tls.Config) (net.Conn, error) {
-	if addr, ok := parsePlnTarget(target); ok {
-		return plnNativeDialer(dir, addr)
-	}
-	if target != "" {
+func dialTLSFunc(t transportSelection, dir string) func(string, string, *tls.Config) (net.Conn, error) {
+	switch t.kind {
+	case transportWire:
+		return plnNativeDialer(dir, t.WireAddr())
+	case transportSSHBridge:
+		host := t.SSHHost()
 		return func(_, _ string, _ *tls.Config) (net.Conn, error) {
-			return sshBridgeDial(target)
+			return sshBridgeDial(host)
+		}
+	case transportLocal:
+		return func(_, _ string, _ *tls.Config) (net.Conn, error) {
+			return (&net.Dialer{}).DialContext(context.Background(), "unix", filepath.Join(dir, socketName))
 		}
 	}
-	return func(_, _ string, _ *tls.Config) (net.Conn, error) {
-		return (&net.Dialer{}).DialContext(context.Background(), "unix", filepath.Join(dir, socketName))
-	}
+	panic("dialTLSFunc: unreachable")
 }
 
 func main() {
@@ -203,6 +222,9 @@ Two commands to a cluster:
 
 	rootCmd.PersistentFlags().String("dir", defaultRootDir(), "Directory where Pollen state is persisted (env: PLN_DIR)")
 	rootCmd.PersistentFlags().StringP("host", "H", "", "Target daemon over SSH, e.g. user@host (env: PLN_HOST)")
+	rootCmd.PersistentFlags().Bool("local", false, "Force the local daemon transport; error if its socket is not reachable")
+	rootCmd.PersistentFlags().Bool("wire", false, "Force the wire fallback transport; error if no wire endpoint is configured")
+	rootCmd.MarkFlagsMutuallyExclusive("local", "wire")
 
 	rootCmd.AddCommand(newVersionCmd(), newIDCmd(), newBridgeCmd(), newContextCmds(), newCallCmd(), newInspectCmd(), newShareCmd())
 	rootCmd.AddCommand(newDaemonCmds()...)

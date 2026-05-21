@@ -17,6 +17,7 @@ import (
 	"maps"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -63,7 +64,11 @@ func newIDCmd() *cobra.Command {
 on first call. Pipe-friendly (no trailing newline). Other admins use
 this value as the --subject of an invite token.`,
 		Example: "  pln id\n  pln invite --subject \"$(ssh user@host pln id)\"",
-		RunE:    withEnv(runID),
+		// localOnly: pln id only touches the local keypair, never a
+		// daemon. Without this, withEnv's resolver errors on a fresh
+		// node where neither a sock nor a wire endpoint exists yet,
+		// breaking pln bootstrap ssh's discoverRemote step.
+		RunE: withEnv(runID, localOnly()),
 	}
 }
 
@@ -101,6 +106,7 @@ Pass --no-up to skip starting the local daemon after bootstrapping.`,
 	sshCmd.Flags().Bool("publisher", false, "Issue with publisher capability")
 	sshCmd.Flags().Bool("no-up", false, "Skip starting the local daemon after bootstrapping")
 	sshCmd.Flags().StringArray("prop", nil, "Cert properties: key=value, JSON, or - for stdin (applied to every target)")
+	sshCmd.Flags().String("wire", "", "Bind addr for the remote's TLS+mTLS control listener (e.g. :7443). The first publicly-reachable target with --wire set also becomes this context's wire fallback when none is configured yet.")
 
 	cmd.AddCommand(sshCmd)
 	return cmd
@@ -415,6 +421,10 @@ func joinCluster(cmd *cobra.Command, env *cliEnv, token string, startDaemon, pub
 		return fmt.Errorf("persist bootstrap peers: %w", err)
 	}
 
+	if wire := firstBootstrapWireEndpoint(tkn.GetClaims().GetBootstrap()); wire != "" {
+		reportCtxWireWrite(cmd.OutOrStdout(), cmd.ErrOrStderr(), env.ctxName, wire, "enrolled")
+	}
+
 	if public {
 		env.cfg.Public = true
 		if err := config.Save(env.dir, env.cfg); err != nil {
@@ -427,6 +437,9 @@ func joinCluster(cmd *cobra.Command, env *cliEnv, token string, startDaemon, pub
 		return nil
 	}
 
+	if err := ensureSystemServiceContext(env.ctxName); err != nil {
+		return err
+	}
 	if nodeSocketActive(filepath.Join(env.dir, socketName)) {
 		if err := servicectl("restart", cmd, env); err != nil {
 			return fmt.Errorf("joined cluster but failed to restart daemon: %w", err)
@@ -464,8 +477,8 @@ func runInvite(cmd *cobra.Command, args []string, env *cliEnv) error {
 
 	encoded, err := mintInviteTicket(cmd, env, subjectPub, caps, budgetFromFlags(cmd))
 	if errors.Is(err, errCannotSignTokens) {
-		if sshHost := envSSHHost(env); sshHost != "" {
-			return fmt.Errorf("this context's local keys can't sign invite tokens; admin keys live on the remote, mint the token there:\n  ssh %s pln invite", sshHost)
+		if env.transport.IsSSHBridge() {
+			return fmt.Errorf("this context's local keys can't sign invite tokens; admin keys live on the remote, mint the token there:\n  ssh %s pln invite", env.transport.SSHHost())
 		}
 		return errors.New("this node cannot issue invites; only delegated admins can sign invite tokens")
 	}
@@ -476,21 +489,6 @@ func runInvite(cmd *cobra.Command, args []string, env *cliEnv) error {
 	return nil
 }
 
-// envSSHHost returns a non-empty SSH bridge host when env routes
-// through one. Used to redirect the operator to a remote admin when
-// the local context cannot sign tokens. An empty result means either
-// the local daemon is the right place to mint, or the context is a
-// wire-mode target whose admin keys are also off-host.
-func envSSHHost(env *cliEnv) string {
-	if env.host == "" {
-		return ""
-	}
-	if _, isWire := parsePlnTarget(env.host); isWire {
-		return ""
-	}
-	return env.host
-}
-
 // errCannotSignTokens is the mintInviteTicket sentinel for "this
 // context has no delegating credentials of its own". Callers translate
 // it to a command-specific error (pln invite vs pln grant fallback).
@@ -498,10 +496,10 @@ var errCannotSignTokens = errors.New("local context cannot sign tokens")
 
 // mintInviteTicket assembles a base64 invite ticket signed by the
 // local context's credentials. It is the shared backend for `pln
-// invite` (subject parsed from a flag) and `pln grant`'s wire-mode
-// fallback (subject pre-resolved to the target peer's pubkey). The
-// caller supplies caps and budget; this helper resolves bootstrap,
-// derives horizon and TTL from the flag set, and signs the ticket.
+// invite` (subject parsed from a flag) and `pln grant`'s wire fallback
+// (subject pre-resolved to the target peer's pubkey). The caller
+// supplies caps and budget; this helper resolves bootstrap, derives
+// horizon and TTL from the flag set, and signs the ticket.
 // Returns errCannotSignTokens when this context holds no delegating
 // grant; callers wrap it with command-specific guidance.
 func mintInviteTicket(cmd *cobra.Command, env *cliEnv, subjectPub []byte, caps *identityv1.Capabilities, budget *identityv1.Budget) (string, error) {
@@ -565,6 +563,26 @@ type bootstrapResult struct {
 	target  string
 	peerPub ed25519.PublicKey
 	addrs   []string
+	public  bool
+}
+
+// pickFounderWireEndpoint synthesises a host:port for the founder's
+// wire fallback by combining a publicly-reachable bootstrapped peer's
+// host with the wire listen port. Callers must only pass successful
+// results (err == nil), so addrs holds exactly one valid host:port.
+func pickFounderWireEndpoint(peers []bootstrapResult, wireAddr string) string {
+	_, port, err := splitListenAddr(wireAddr)
+	if err != nil || port == "" {
+		return ""
+	}
+	for _, p := range peers {
+		if !p.public {
+			continue
+		}
+		host, _, _ := net.SplitHostPort(p.addrs[0])
+		return net.JoinHostPort(host, port)
+	}
+	return ""
 }
 
 func runBootstrapSSH(cmd *cobra.Command, args []string, env *cliEnv) error {
@@ -578,6 +596,7 @@ func runBootstrapSSH(cmd *cobra.Command, args []string, env *cliEnv) error {
 		return fmt.Errorf("invalid relay port %d", relayPort)
 	}
 	expireAfter, _ := cmd.Flags().GetDuration("expire-after")
+	wireAddr, _ := cmd.Flags().GetString("wire")
 	attrs, err := parseProperties(cmd)
 	if err != nil {
 		return err
@@ -661,7 +680,7 @@ func runBootstrapSSH(cmd *cobra.Command, args []string, env *cliEnv) error {
 		prepared := d.prepared
 		enrollWG.Go(func() {
 			seeded := seedPeersFor(peerPool, prepared.peerPub)
-			if err := enrollRemote(cmd.Context(), creds, prepared, seeded, expireAfter, caps); err != nil {
+			if err := enrollRemote(cmd.Context(), creds, prepared, seeded, expireAfter, caps, wireAddr); err != nil {
 				results <- bootstrapResult{target: prepared.spec.target, err: err}
 				return
 			}
@@ -669,6 +688,7 @@ func runBootstrapSSH(cmd *cobra.Command, args []string, env *cliEnv) error {
 				target:  prepared.spec.target,
 				peerPub: prepared.peerPub,
 				addrs:   prepared.addrs,
+				public:  prepared.public,
 			}
 		})
 	}
@@ -699,6 +719,12 @@ func runBootstrapSSH(cmd *cobra.Command, args []string, env *cliEnv) error {
 
 	if err := localCache.Flush(); err != nil {
 		return fmt.Errorf("persist bootstrap peers: %w", err)
+	}
+
+	if wireAddr != "" {
+		if endpoint := pickFounderWireEndpoint(bootstrappedPeers, wireAddr); endpoint != "" {
+			reportCtxWireWrite(out, cmd.ErrOrStderr(), env.ctxName, endpoint, "bootstrapped")
+		}
 	}
 
 	if nodeSocketActive(filepath.Join(env.dir, socketName)) {
@@ -745,8 +771,8 @@ func discoverRemote(ctx context.Context, spec sshTargetSpec, relayPort int) (pre
 		return fail(err)
 	}
 	host, _, _ := net.SplitHostPort(inferredAddr)
-	ip := net.ParseIP(host)
-	public := ip != nil && !ip.IsPrivate() && !ip.IsLoopback()
+	addr, _ := netip.ParseAddr(host)
+	public := types.IsPublicIP(addr)
 
 	if err := requireRemoteLinux(ctx, spec.target); err != nil {
 		return fail(err)
@@ -779,12 +805,12 @@ func discoverRemote(ctx context.Context, spec sshTargetSpec, relayPort int) (pre
 	}, nil
 }
 
-func enrollRemote(ctx context.Context, creds *identity.Credentials, remote preparedRemote, bootstrapPeers []*admissionv1.BootstrapPeer, expireAfter time.Duration, caps *identityv1.Capabilities) error {
+func enrollRemote(ctx context.Context, creds *identity.Credentials, remote preparedRemote, bootstrapPeers []*admissionv1.BootstrapPeer, expireAfter time.Duration, caps *identityv1.Capabilities, wireAddr string) error {
 	seedToken, err := createJoinTokenWithCreds(creds, remote.peerPub, 1*time.Minute, expireAfter, bootstrapPeers, caps)
 	if err != nil {
 		return fmt.Errorf("create seed token: %w", err)
 	}
-	return bootstrapRelayOverSSH(ctx, remote.spec.target, seedToken, remote.spec.nodeName, remote.public)
+	return bootstrapRelayOverSSH(ctx, remote.spec.target, seedToken, remote.spec.nodeName, remote.public, wireAddr)
 }
 
 func seedPeersFor(pool map[string]*admissionv1.BootstrapPeer, self ed25519.PublicKey) []*admissionv1.BootstrapPeer {
@@ -802,7 +828,7 @@ func seedPeersFor(pool map[string]*admissionv1.BootstrapPeer, self ed25519.Publi
 	return out
 }
 
-func bootstrapRelayOverSSH(ctx context.Context, sshTarget, seedToken, nodeName string, public bool) error {
+func bootstrapRelayOverSSH(ctx context.Context, sshTarget, seedToken, nodeName string, public bool, wireAddr string) error {
 	joinArgs := []string{"join"}
 	if public {
 		joinArgs = append(joinArgs, "--public")
@@ -810,6 +836,13 @@ func bootstrapRelayOverSSH(ctx context.Context, sshTarget, seedToken, nodeName s
 	joinArgs = append(joinArgs, seedToken)
 	if out, err := sshPln(ctx, sshTarget, joinArgs...).CombinedOutput(); err != nil {
 		return fmt.Errorf("failed to enroll relay node: %w\n%s", err, strings.TrimSpace(string(out)))
+	}
+	// pln set persists to config.yaml. The control-tls listener binds on
+	// the next pln up, so this must run before the start step below.
+	if wireAddr != "" {
+		if out, err := sshPln(ctx, sshTarget, "set", "control-tls", wireAddr).CombinedOutput(); err != nil {
+			return fmt.Errorf("failed to enable wire on relay node: %w\n%s", err, strings.TrimSpace(string(out)))
+		}
 	}
 	upArgs := []string{"pln", "up", "-d"}
 	if nodeName != "" {
@@ -869,10 +902,11 @@ func runGrant(cmd *cobra.Command, args []string, env *cliEnv) error {
 	}))
 	if err != nil {
 		// codes.Unavailable is the daemon's signal that the peer has no
-		// live mesh session: a wire-mode tenant. Fall back to a
-		// subject-pinned invite ticket the operator delivers out-of-band.
-		// Every other failure (recipient rejection, permission, etc.)
-		// surfaces verbatim so the operator sees what the daemon said.
+		// live mesh session: a tenant only reachable over the wire.
+		// Fall back to a subject-pinned invite ticket the operator
+		// delivers out-of-band. Every other failure (recipient
+		// rejection, permission, etc.) surfaces verbatim so the
+		// operator sees what the daemon said.
 		if connect.CodeOf(err) == connect.CodeUnavailable {
 			return issueUpgradeToken(cmd, env, peerID, peerShort, caps, budget)
 		}
@@ -888,8 +922,8 @@ func runGrant(cmd *cobra.Command, args []string, env *cliEnv) error {
 func issueUpgradeToken(cmd *cobra.Command, env *cliEnv, peerID []byte, peerShort string, caps *identityv1.Capabilities, budget *identityv1.Budget) error {
 	encoded, err := mintInviteTicket(cmd, env, peerID, caps, budget)
 	if errors.Is(err, errCannotSignTokens) {
-		if sshHost := envSSHHost(env); sshHost != "" {
-			return fmt.Errorf("%s has no live mesh daemon and this context's local keys can't sign upgrade tokens. Mint one on the admin host:\n  ssh %s pln invite --subject %s", peerShort, sshHost, peerShort)
+		if env.transport.IsSSHBridge() {
+			return fmt.Errorf("%s has no live mesh daemon and this context's local keys can't sign upgrade tokens. Mint one on the admin host:\n  ssh %s pln invite --subject %s", peerShort, env.transport.SSHHost(), peerShort)
 		}
 		return fmt.Errorf("%s has no live mesh daemon and this node cannot mint upgrade tokens; only delegated admins can sign them", peerShort)
 	}
@@ -1087,8 +1121,9 @@ func resolveBootstrapPeers(ctx context.Context, env *cliEnv) ([]*admissionv1.Boo
 			continue
 		}
 		out = append(out, &admissionv1.BootstrapPeer{
-			PeerPub: append([]byte(nil), p.GetPeer().GetPeerPub()...),
-			Addrs:   append([]string(nil), p.GetAddrs()...),
+			PeerPub:      append([]byte(nil), p.GetPeer().GetPeerPub()...),
+			Addrs:        append([]string(nil), p.GetAddrs()...),
+			WireEndpoint: p.GetWireEndpoint(),
 		})
 	}
 	if len(out) == 0 {

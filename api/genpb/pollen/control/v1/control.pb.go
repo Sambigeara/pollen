@@ -689,9 +689,12 @@ func (*GetBootstrapInfoRequest) Descriptor() ([]byte, []int) {
 }
 
 type BootstrapPeerInfo struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Peer          *NodeRef               `protobuf:"bytes,1,opt,name=peer,proto3" json:"peer,omitempty"`
-	Addrs         []string               `protobuf:"bytes,2,rep,name=addrs,proto3" json:"addrs,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Peer  *NodeRef               `protobuf:"bytes,1,opt,name=peer,proto3" json:"peer,omitempty"`
+	Addrs []string               `protobuf:"bytes,2,rep,name=addrs,proto3" json:"addrs,omitempty"`
+	// host:port of this peer's TLS+mTLS control listener. Empty if the
+	// peer has no wire listener configured.
+	WireEndpoint  string `protobuf:"bytes,3,opt,name=wire_endpoint,json=wireEndpoint,proto3" json:"wire_endpoint,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -738,6 +741,13 @@ func (x *BootstrapPeerInfo) GetAddrs() []string {
 		return x.Addrs
 	}
 	return nil
+}
+
+func (x *BootstrapPeerInfo) GetWireEndpoint() string {
+	if x != nil {
+		return x.WireEndpoint
+	}
+	return ""
 }
 
 type GetBootstrapInfoResponse struct {
@@ -3974,10 +3984,11 @@ const file_pollen_control_v1_control_proto_rawDesc = "" +
 	"\bprotocol\x18\x04 \x01(\x0e2 .pollen.state.v1.ServiceProtocolR\bprotocol\"\x11\n" +
 	"\x0fShutdownRequest\"\x12\n" +
 	"\x10ShutdownResponse\"\x19\n" +
-	"\x17GetBootstrapInfoRequest\"Y\n" +
+	"\x17GetBootstrapInfoRequest\"~\n" +
 	"\x11BootstrapPeerInfo\x12.\n" +
 	"\x04peer\x18\x01 \x01(\v2\x1a.pollen.control.v1.NodeRefR\x04peer\x12\x14\n" +
-	"\x05addrs\x18\x02 \x03(\tR\x05addrs\"V\n" +
+	"\x05addrs\x18\x02 \x03(\tR\x05addrs\x12#\n" +
+	"\rwire_endpoint\x18\x03 \x01(\tR\fwireEndpoint\"V\n" +
 	"\x18GetBootstrapInfoResponse\x12:\n" +
 	"\x05peers\x18\x01 \x03(\v2$.pollen.control.v1.BootstrapPeerInfoR\x05peers\"\x12\n" +
 	"\x10GetStatusRequest\"\xca\x03\n" +

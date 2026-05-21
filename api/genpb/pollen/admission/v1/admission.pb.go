@@ -26,9 +26,14 @@ const (
 )
 
 type BootstrapPeer struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	PeerPub       []byte                 `protobuf:"bytes,1,opt,name=peer_pub,json=peerPub,proto3" json:"peer_pub,omitempty"`
-	Addrs         []string               `protobuf:"bytes,2,rep,name=addrs,proto3" json:"addrs,omitempty"`
+	state   protoimpl.MessageState `protogen:"open.v1"`
+	PeerPub []byte                 `protobuf:"bytes,1,opt,name=peer_pub,json=peerPub,proto3" json:"peer_pub,omitempty"`
+	Addrs   []string               `protobuf:"bytes,2,rep,name=addrs,proto3" json:"addrs,omitempty"`
+	// host:port of this peer's TLS+mTLS control listener (control-tls).
+	// Empty if the peer has no wire listener. Joiners writing a ctx may use
+	// this as the wire fallback so the CLI keeps working when the local
+	// daemon is down. No scheme: callers prepend `pln://` for display.
+	WireEndpoint  string `protobuf:"bytes,3,opt,name=wire_endpoint,json=wireEndpoint,proto3" json:"wire_endpoint,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -75,6 +80,13 @@ func (x *BootstrapPeer) GetAddrs() []string {
 		return x.Addrs
 	}
 	return nil
+}
+
+func (x *BootstrapPeer) GetWireEndpoint() string {
+	if x != nil {
+		return x.WireEndpoint
+	}
+	return ""
 }
 
 type AccessTokenClaims struct {
@@ -667,10 +679,11 @@ var File_pollen_admission_v1_admission_proto protoreflect.FileDescriptor
 
 const file_pollen_admission_v1_admission_proto_rawDesc = "" +
 	"\n" +
-	"#pollen/admission/v1/admission.proto\x12\x13pollen.admission.v1\x1a\x1bbuf/validate/validate.proto\"Y\n" +
+	"#pollen/admission/v1/admission.proto\x12\x13pollen.admission.v1\x1a\x1bbuf/validate/validate.proto\"~\n" +
 	"\rBootstrapPeer\x12\"\n" +
 	"\bpeer_pub\x18\x01 \x01(\fB\a\xbaH\x04z\x02h R\apeerPub\x12$\n" +
-	"\x05addrs\x18\x02 \x03(\tB\x0e\xbaH\v\x92\x01\b\b\x01\"\x04r\x02\x10\x01R\x05addrs\"\xce\x01\n" +
+	"\x05addrs\x18\x02 \x03(\tB\x0e\xbaH\v\x92\x01\b\b\x01\"\x04r\x02\x10\x01R\x05addrs\x12#\n" +
+	"\rwire_endpoint\x18\x03 \x01(\tR\fwireEndpoint\"\xce\x01\n" +
 	"\x11AccessTokenClaims\x12C\n" +
 	"\bresource\x18\x01 \x01(\v2\x1f.pollen.admission.v1.ResourceIDB\x06\xbaH\x03\xc8\x01\x01R\bresource\x12&\n" +
 	"\n" +

@@ -27,8 +27,8 @@ func contextGrantCheck(dir string) (*identityv1.Grant, identity.GrantCheck, bool
 	return creds.Grant(), identity.CheckGrant(creds.Grant(), creds.RootPub(), time.Now(), nil, nil), true
 }
 
-// wireCertDiagnosis turns an opaque wire-mode dial failure into a
-// precise, actionable message by inspecting the local context grant.
+// wireCertDiagnosis turns an opaque wire dial failure into a precise,
+// actionable message by inspecting the local context grant.
 // "remote error: tls: bad certificate" almost always means the local
 // grant is past its deadline or no longer chains to the cluster root,
 // not that the endpoint is down. Say which.
@@ -64,20 +64,23 @@ func runContextShow(cmd *cobra.Command, args []string) error {
 	if len(args) == 1 {
 		name = args[0]
 	}
-	dir, host, err := resolveContextBindings(name, defaultRootDir())
+	entry, err := resolveContextBindings(name, defaultRootDir())
 	if err != nil {
 		return err
 	}
 	w := cmd.OutOrStdout()
 	fmt.Fprintf(w, "context: %s\n", name)
-	if host != "" {
-		fmt.Fprintf(w, "target:  %s\n", host)
+	switch {
+	case entry.Wire != "":
+		fmt.Fprintf(w, "target:  %s\n", entry.Wire)
+	case entry.Host != "":
+		fmt.Fprintf(w, "target:  %s\n", entry.Host)
 	}
-	if dir != "" {
-		fmt.Fprintf(w, "dir:     %s\n", dir)
+	if entry.Dir != "" {
+		fmt.Fprintf(w, "dir:     %s\n", entry.Dir)
 	}
 
-	grant, chk, ok := contextGrantCheck(dir)
+	grant, chk, ok := contextGrantCheck(entry.Dir)
 	if !ok {
 		fmt.Fprintln(w, "identity: none (run `pln join <token>`)")
 		return nil

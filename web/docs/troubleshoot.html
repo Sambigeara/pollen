@@ -133,7 +133,7 @@ hello   4f3a7c91  unknown   0/2       -      30s</span>
 
     <h2 id="grant-not-applied"><code>pln grant</code> succeeds but the peer still shows the old tier</h2>
     <p><strong>Symptom.</strong> An admin runs <code>pln grant peer --admin</code> and gets <code>upgraded ... → admin</code>, but the peer's own <code>pln status</code> still projects a leaf view and lists only its own resources.</p>
-    <p><strong>Cause.</strong> The push reached the peer's daemon, was verified, and was adopted into in-memory credentials, but a wire-mode client on the peer's side is still authenticating with a session minted from the old grant cached in the TLS extension. Sessions self-mint from the current grant on next refresh; the in-flight session keeps the old view for its remaining lifetime.</p>
+    <p><strong>Cause.</strong> The push reached the peer's daemon, was verified, and was adopted into in-memory credentials, but a CLI dialling the same context over the wire is still authenticating with a session minted from the old grant cached in the TLS extension. Sessions self-mint from the current grant on next refresh; the in-flight session keeps the old view for its remaining lifetime.</p>
     <p><strong>Fix.</strong> Wait for the next session refresh, or force a fresh dial:</p>
     <div class="terminal">
       <span class="cmd">pln status                                       <span class="cmt"># after a short delay, reflects the new tier</span></span>
@@ -146,7 +146,7 @@ hello   4f3a7c91  unknown   0/2       -      30s</span>
       <span class="out">pln: 44a13d80 has no live mesh daemon; deliver this token and have 44a13d80 run `pln join`</span>
       <span class="out">Csm…&lt;base64 invite ticket&gt;…</span>
     </div>
-    <p><strong>Cause.</strong> The target is a wire-mode tenant with no daemon for the admin to push to, so <code>pln grant</code> falls back to minting a subject-pinned invite ticket. The tenant has to redeem it themselves; the admin cannot complete the swap on the tenant's behalf because only the tenant holds the signing key the cluster CRDT requires for the new grant.</p>
+    <p><strong>Cause.</strong> The target peer has no live daemon for the admin to push to, so <code>pln grant</code> falls back to minting a subject-pinned invite ticket. The peer has to redeem it themselves; the admin cannot complete the swap on the peer's behalf because only the peer holds the signing key the cluster CRDT requires for the new grant.</p>
     <p><strong>Fix.</strong> Hand the token to the tenant (a pasted SSH command works fine) and run <a href="cli.html#join"><code>pln join &lt;token&gt;</code></a> on the tenant's host. <code>pln join</code> verifies the token, swaps the on-disk grant in place, and preserves the tenant's existing signing key so their identity is unchanged. See <a href="cli.html#grant"><code>pln grant</code></a>.</p>
 
     <h2 id="fetch-no-publisher"><code>pln fetch</code> fails with <code>no publisher known for blob</code></h2>
@@ -237,7 +237,7 @@ hello   4f3a7c91  unknown   0/2       -      30s</span>
     <div class="terminal">
       <span class="out">node grant no longer valid — starting in degraded mode; rejoin with `pln join &lt;token&gt;`</span>
     </div>
-    <p>In wire mode the failing command itself diagnoses it: an opaque dial error is turned into an actionable two-line message on stderr.</p>
+    <p>When the CLI hits the wire transport (no daemon up for this context) and the dial fails, the command itself diagnoses the cause: an opaque dial error is turned into an actionable two-line message on stderr.</p>
     <div class="terminal">
       <span class="cmd">pln --context staging status</span>
       <span class="out">cannot reach pln://staging.example.com: unavailable: remote error: tls: bad certificate

@@ -174,11 +174,7 @@ func setLogLevel(dst *string, value string) (string, error) {
 }
 
 func setAddr(dst *string, value string) (string, error) {
-	normalised := value
-	if _, err := strconv.Atoi(value); err == nil {
-		normalised = ":" + value
-	}
-	host, port, err := net.SplitHostPort(normalised)
+	host, port, err := splitListenAddr(value)
 	if err != nil {
 		return "", fmt.Errorf("invalid address %q: %w", value, err)
 	}
@@ -188,4 +184,13 @@ func setAddr(dst *string, value string) (string, error) {
 	canonical := net.JoinHostPort(host, port)
 	*dst = canonical
 	return canonical, nil
+}
+
+// splitListenAddr normalises a bind addr and returns (host, port).
+// Accepts "7443" (bare port), ":7443" (port-only), and "host:7443".
+func splitListenAddr(value string) (host, port string, err error) {
+	if _, err := strconv.Atoi(value); err == nil {
+		value = ":" + value
+	}
+	return net.SplitHostPort(value)
 }

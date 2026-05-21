@@ -81,6 +81,9 @@ authority so your root machine doesn't need to stay online.
 ```bash
 pln bootstrap ssh user@host [--publisher|--admin] [--prop region=eu]
 
+# Public box that should serve the CLI over the wire too:
+pln bootstrap ssh edge=root@198.51.100.10 --admin --wire :7443
+
 # Or pipe labelled targets from stdin or a file:
 echo "media=alice@10.0.0.5" | pln bootstrap ssh -
 ```
@@ -90,7 +93,11 @@ needs SSH as root or passwordless sudo. The default tier is leaf
 (consume only); `--publisher` allows the joiner to publish, `--admin`
 delegates full admin authority. `--prop` bakes properties into each
 joiner's grant at issue time; prefix a target with `name=` to label the
-node. Run `pln bootstrap ssh --help` for the full flag set.
+node. `--wire :7443` enables the joining node's TLS+mTLS control
+listener and writes it as this context's wire fallback so the local
+CLI keeps working when the local daemon is down; open the inbound
+port at the cloud or host firewall yourself. Run
+`pln bootstrap ssh --help` for the full flag set.
 
 **Out-of-band.** Mint a token on an admin node, ship it to the joiner:
 
@@ -203,11 +210,11 @@ pln props --clear                       # wipe
 
 A delegated grant carries a single 30-day deadline, the bound on how
 long a lost key stays usable; admin grants carry none. Renewal is
-automatic: a daemon renews in the background against any reachable
-delegating peer, and a wire-mode context renews on its next command,
-so the root and the original issuer can both be offline. There is no
-`pln renew`. If a grant does lapse, mint a fresh invite on an admin
-and `pln join` again.
+automatic: a running daemon renews in the background against any
+reachable delegating peer, and a context with no daemon up renews on
+its next command, so the root and the original issuer can both be
+offline. There is no `pln renew`. If a grant does lapse, mint a fresh
+invite on an admin and `pln join` again.
 
 ### Restrict who can call what
 
