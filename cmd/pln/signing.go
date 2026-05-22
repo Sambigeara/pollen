@@ -17,8 +17,7 @@ import (
 
 // signFact loads the caller's signing key from dir and invokes fn with
 // a durable per-context fact signer to produce a presigned Fact. Used
-// by every publish/tombstone path that runs over the wire; the
-// load-creds error message is shared across all callers. Refuses to
+// by every publish/tombstone path that runs over the wire. Refuses to
 // run when a local daemon is up for this ctx: both signers would
 // advance the same FactSeqPath without coordination and could mint
 // duplicate seqs under one authority key.
@@ -48,7 +47,7 @@ func signFact(dir string, fn func(*fact.Signer) (*factv1.Fact, error)) (*factv1.
 // The presigned* builders below mirror, exactly, the (resource, body)
 // pairing the daemon recomputes for the same spec kind in
 // pkg/state/mutations.go (seedResourceID/staticResourceID/blobResourceID
-// + wrapSpecBody) and re-derives at admission in gate.decodeSpecChange.
+// + wrapSpecBody) and re-derives at admission in decodeSpecChange.
 // Any divergence makes the body hash or resource mismatch and the
 // daemon silently rejects the Fact, so they must stay in lock-step.
 

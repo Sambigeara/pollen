@@ -151,7 +151,7 @@ func New(rootPub []byte, store StateReader) *Pipeline {
 // SetManifestPaths wires a static-manifest reader so Fetch can authorise
 // blobs nested inside a published static site. Without it, only direct
 // references (workload hash, blob digest, manifest digest itself) are
-// authorised — nested file blobs are denied, breaking cross-node static
+// authorised: nested file blobs are denied, breaking cross-node static
 // replication. Call once after the blobs service is constructed.
 func (p *Pipeline) SetManifestPaths(mp state.ManifestPaths) {
 	p.manifests = mp
@@ -187,8 +187,8 @@ func (p *Pipeline) Admit(sc *statev1.SpecChange) error {
 // resolved within the caller's own authority): the decision is against
 // exactly that publication's Fact, and the publication's content hash
 // must equal hash so a permissive policy cannot be paired with other
-// bytes. When pub is nil — a downstream relay hop, or a bare-hash
-// invoke that names no publication — the decision is a union over every
+// bytes. When pub is nil (a downstream relay hop, or a bare-hash
+// invoke that names no publication) the decision is a union over every
 // publication of these bytes, mirroring Fetch: admitted if any one
 // allows the caller. The deduped artefact map is never consulted, so a
 // co-publisher of identical bytes can neither mask nor satisfy
@@ -344,7 +344,7 @@ func (p *Pipeline) MayHost(hostGrant *identityv1.Grant, f *factv1.Fact) error {
 
 // MayHostByHash authorises hostGrant to host the bytes at hash. Hosting
 // is artefact-shared: one module serves every publication of identical
-// bytes, so the decision is a union over WorkloadEntitlements(hash) —
+// bytes, so the decision is a union over WorkloadEntitlements(hash):
 // the host may run the bytes if any referencing publication's policy
 // admits it, mirroring blobs.MayStore over BlobEntitlements. A
 // co-publisher's stricter policy therefore cannot suppress hosting of a

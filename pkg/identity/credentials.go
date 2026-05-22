@@ -67,8 +67,7 @@ func (c *Credentials) Grant() *identityv1.Grant {
 // proactive renewal and admin-initiated upgrade. denied may be nil
 // when the issuing server has already enforced the denylist and the
 // caller has no local cluster view (wire client); the mesh handler
-// supplies a real DenyChecker. On persist failure the in-memory swap
-// is rolled back before the lock releases.
+// supplies a real DenyChecker.
 func (c *Credentials) AdoptGrant(g *identityv1.Grant, now time.Time, denied DenyChecker) error {
 	chk := CheckGrant(g, c.rootPub, now, c.SubjectPub(), denied)
 	if !chk.Status.Valid() {

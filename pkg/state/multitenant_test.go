@@ -75,7 +75,7 @@ func TestMultiTenantSpecIsolation(t *testing.T) {
 // in cluster state; a retain set without the kind tombstones it.
 // Exercises the contract that a partial cap-shrink (e.g. publish:sites
 // drops while publish:functions stays) does not collapse the publisher's
-// entire surface — only the kinds that lost authority go.
+// entire surface: only the kinds that lost authority go.
 func TestRevokeOwnSpecsRetainsAuthorisedKinds(t *testing.T) {
 	rootPub, rootPriv := keyPair(t)
 	now := time.Now()

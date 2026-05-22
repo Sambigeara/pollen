@@ -17,8 +17,6 @@ import (
 // between their Vivaldi coordinates. A peer that is absent from the
 // snapshot or whose coordinate has not converged is infinitely far, so
 // it sorts last and is chosen only when nothing nearer is available.
-// This is the metric lifted verbatim from placement dispatch so blob
-// fetch and workload routing agree on what "nearest" means.
 func Distance(snap state.Snapshot, self, peer types.PeerKey) float64 {
 	selfNV, sok := snap.Nodes[self]
 	peerNV, pok := snap.Nodes[peer]
@@ -29,9 +27,7 @@ func Distance(snap state.Snapshot, self, peer types.PeerKey) float64 {
 }
 
 // orderByDistance sorts a copy of candidates nearest-first by Distance
-// alone. This is the placement-dispatch ordering lifted verbatim
-// (distance-only, no tie-break) so the workload path's behaviour is
-// unchanged by the move into this package.
+// alone, with no tie-break.
 func orderByDistance(snap state.Snapshot, self types.PeerKey, candidates []types.PeerKey) []types.PeerKey {
 	out := slices.Clone(candidates)
 	slices.SortFunc(out, func(a, b types.PeerKey) int {
@@ -68,8 +64,7 @@ func Nearest(snap state.Snapshot, self types.PeerKey, candidates []types.PeerKey
 // the skip predicate rejects, and returns a uniform random pick among
 // the survivors (the full nearest-k when every one is skipped). skip
 // may be nil; rng must return a value in [0,n). ok is false only when
-// candidates is empty. This is the placement dispatch policy lifted
-// verbatim so the same locality-aware selection backs every holder set.
+// candidates is empty.
 func PowerOfTwo(snap state.Snapshot, self types.PeerKey, candidates []types.PeerKey, k int, skip func(types.PeerKey) bool, rng func(n int) int) (types.PeerKey, bool) {
 	if len(candidates) == 0 {
 		return types.PeerKey{}, false

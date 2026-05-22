@@ -60,7 +60,7 @@ type workloadCallerJSON struct {
 // access token, seed hash, and function name. CallerInfo.PeerKey is
 // overridden with the transport-authenticated peer; wire values would
 // be spoofable. The access token (if present) authorises an anonymous
-// invocation chain — the receiver gates with InvokeByToken instead of
+// invocation chain: the receiver gates with InvokeByToken instead of
 // the peer's cert.
 func ReadHeader(r io.Reader, peer types.PeerKey) (wasm.CallerInfo, []string, *admissionv1.AccessToken, *admission.Publication, string, string, error) {
 	info := wasm.CallerInfo{PeerKey: peer}

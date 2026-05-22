@@ -52,14 +52,10 @@ type ScopedView struct {
 func Project(snap state.Snapshot, lens Lens) ScopedView {
 	sv := ScopedView{Lens: lens}
 	// Iterate the un-deduped per-(authority,name) publication sources,
-	// not the deduped runtime maps: the deduped Specs/BlobSpecs key on
-	// artefact content and StaticSpecs on name, so a tenant whose bytes
-	// or name collide with another's is dropped before the lens runs.
-	// Visibility is a publication concern and reads the publication
-	// source. Each (authority, name) is carried through verbatim, so an
-	// admin lens sees every colliding tenant and a tenant sees only its
-	// own; (authority, name) is already unique in the source, so there
-	// is no tie-break.
+	// not the deduped runtime maps: the deduped maps key on artefact
+	// content or name, so a tenant whose bytes or name collide with
+	// another's would be dropped before the lens runs. Visibility is a
+	// publication concern, so it reads the publication source.
 	for _, w := range snap.SpecsAll {
 		if Permits(lens, w.Publisher, snap) {
 			sv.Workloads = append(sv.Workloads, w)

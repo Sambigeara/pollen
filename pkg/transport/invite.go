@@ -78,7 +78,7 @@ func redeemInviteWithDial(
 			continue
 		}
 
-		// Invite tickets are one-shot — racing redemptions would burn the ticket.
+		// Invite tickets are one-shot: racing redemptions would burn the ticket.
 		grantToken, redeemErr := redeemInviteOnConn(ctx, qc, ticket, subjectPub)
 		_ = qc.CloseWithError(0, "invite redeemed")
 		if redeemErr != nil {

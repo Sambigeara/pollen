@@ -75,7 +75,7 @@ func TestResolveInspectTarget_NotFound(t *testing.T) {
 }
 
 func TestResolveInspectTarget_AmbiguousPeerPrefix(t *testing.T) {
-	// Two peers whose hex starts with "61" — the test helper sets the first
+	// Two peers whose hex starts with "61": the test helper sets the first
 	// byte from the rune, so any single hex char hits a single peer; we use
 	// matching first bytes to force a collision.
 	peerA := &controlv1.NodeSummary{Node: nodeRef("a")}

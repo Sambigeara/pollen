@@ -98,7 +98,7 @@ func newGatewayHandler(g *admission.Pipeline, snap admission.StateReader, b gate
 // tokenLimiter is a per-token token-bucket rate limiter with bounded
 // memory. Entries are pruned in insertion order (FIFO) when the cache
 // fills up. Callers MUST key on a validated identity (e.g. the
-// verified issuer pub plus resource ID) — keying on the raw URL path
+// verified issuer pub plus resource ID): keying on the raw URL path
 // would let an attacker churn the cache with garbage paths and evict
 // legitimate buckets.
 type tokenLimiter struct {
@@ -157,7 +157,7 @@ func (l *tokenLimiter) allow(key [32]byte) (bool, time.Duration) {
 // tokenLimiterKey derives a stable per-token identity from the
 // signature-verified claims. Using (issuer_pub || resource_id_bytes)
 // makes the key independent of payload-encoding noise and binds a
-// caller's rate budget to the resource they're invoking — two
+// caller's rate budget to the resource they're invoking: two
 // concurrent shares from one issuer over different resources get
 // separate buckets.
 func tokenLimiterKey(token *admissionv1.AccessToken) [32]byte {
@@ -184,7 +184,7 @@ func (l *tokenLimiter) evictIfFullLocked() {
 		return
 	}
 	// Drop the oldest insertion. Keys observed since the cache filled
-	// up will re-fill on next hit at l.burst tokens — fine for the
+	// up will re-fill on next hit at l.burst tokens, fine for the
 	// "leaked URL" attack model since the new entry still has to
 	// refill from one per RPS.
 	victim := l.order[0]

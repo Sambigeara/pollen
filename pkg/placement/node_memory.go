@@ -60,7 +60,7 @@ func detectNodeMemoryCeiling() int64 {
 	return int64(float64(vm.Total) * nodeMemoryFraction)
 }
 
-// Reserve is idempotent per hash — replays must not double-count.
+// Reserve is idempotent per hash: replays must not double-count.
 func (b *nodeMemoryGuard) Reserve(hash string, bytes int64) bool {
 	if b.totalBytes <= 0 {
 		return true

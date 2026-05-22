@@ -15,27 +15,24 @@ import (
 )
 
 // ErrPeerOffline reports that the local node has no live mesh session
-// to the target peer and the routing layer has no next hop either. The
-// upgrade flow surfaces this so the operator can either retry once the
-// peer is back, or hand off to a subject-pinned invite token for
-// wire-mode peers that never run a daemon.
+// to the target peer. The upgrade flow surfaces this so the operator
+// can either retry once the peer is back, or hand off to a
+// subject-pinned invite token for wire-mode peers that never run a
+// daemon.
 var ErrPeerOffline = errors.New("peer is not reachable over the mesh")
 
 // SendGrantOffer pushes a freshly-minted grant to peerKey over the
 // existing mesh peer connection and blocks for the recipient's
-// acknowledgement. The recipient verifies the grant, swaps it into its
-// local credentials, runs the cap-aware spec revoke pass and gossips
-// the new grant with its own subject PoP before replying. The
-// substrate's gossip CRDT invariant (subject-PoP on Principal updates)
-// holds end-to-end because PoP is added by the recipient, never by the
-// issuer.
+// acknowledgement. The recipient adds its own subject PoP before
+// gossiping the grant, so the gossip CRDT invariant (subject-PoP on
+// Principal updates) holds end-to-end: PoP is never added by the issuer.
 //
 // Direct-only: callers receive ErrPeerOffline when the issuer holds no
 // live session to peerKey, even when a routed path exists. The brief
 // reserves routed delivery for tunnel/blob/workload/membership streams;
 // upgrade grants are short, infrequent, and the offline path already
-// has a clean operator fallback (subject-pinned invite token), so the
-// extra route-allow-list surface is not worth the added stream type.
+// has a clean operator fallback, so the extra route-allow-list surface
+// is not worth the added stream type.
 func (m *QUICTransport) SendGrantOffer(ctx context.Context, peerKey types.PeerKey, grant *identityv1.Grant) (*meshv1.GrantOfferResponse, error) {
 	if _, ok := m.getSession(peerKey); !ok {
 		return nil, ErrPeerOffline

@@ -45,7 +45,7 @@ func (*NoopService) Call(context.Context, string, string, []byte) ([]byte, error
 
 func (*NoopService) Status() []WorkloadSummary { return nil }
 
-// Serve should be unreachable on a relay-only node — peers won't pick a
+// Serve should be unreachable on a relay-only node: peers won't pick a
 // non-claimant target. Close defensively if it does fire.
 func (*NoopService) Serve(stream io.ReadWriteCloser, _ types.PeerKey) {
 	_ = stream.Close()

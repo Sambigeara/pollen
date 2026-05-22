@@ -263,7 +263,7 @@ func (s *Server) injectCaller(ctx context.Context) context.Context {
 	// Only fall back to the daemon's own grant when the inbound
 	// transport is a local credential (unix socket). On TLS paths a
 	// missing peer cert means the mTLS handshake didn't populate
-	// peer.AuthInfo as expected — leaking daemon-self privileges to
+	// peer.AuthInfo as expected. Leaking daemon-self privileges to
 	// such a caller would erase the wire-mode security boundary.
 	if !isLocalCallerCtx(ctx) {
 		return ctx
@@ -1162,12 +1162,9 @@ func (s *Service) UpgradePeer(ctx context.Context, req *controlv1.UpgradePeerReq
 	if err := identity.ValidateAttributes(caps.GetAttributes()); err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
-	// Caller cannot grant capabilities they don't hold themselves.
-	// Bool caps gate cluster-admin escalation; MaxDepth and Attributes
-	// gate downstream delegation reach and runtime policy clauses. The
-	// membership signer only enforces child ≤ this node's parent chain,
-	// so a CanDelegate tenant could otherwise request a child with
-	// MaxDepth=255 / attrs={role:"admin"} via a higher-cap relay daemon.
+	// Caller cannot grant capabilities they don't hold themselves; see
+	// enforceGrantCeiling and enforceBudgetCeiling for the relay-daemon
+	// escalation this closes.
 	if err := enforceGrantCeiling(caps, caller.Capabilities); err != nil {
 		return nil, err
 	}
@@ -1294,8 +1291,7 @@ func enforceBudgetCeiling(req, caller *identityv1.Budget) error {
 }
 
 // grantCapsPublishExceeds reports whether child requests any publish
-// kind the parent does not hold. Publish is per-kind now, so the old
-// single CanPublish bool becomes a per-kind subset check.
+// kind the parent does not hold.
 func grantCapsPublishExceeds(child, parent *identityv1.Capabilities) bool {
 	cp, pp := child.GetPublish(), parent.GetPublish()
 	return (cp.GetFunctions() && !pp.GetFunctions()) ||
@@ -1699,8 +1695,9 @@ func (s *Service) pathBasedURL(subdomain, name string, publisher types.PeerKey, 
 	return "https://" + subdomain + s.staticDomain + "/" + publisher.Slug() + "/" + name
 }
 
-// Restricts holders to live peers; stale BlobAvailability from offline
-// peers would inflate replicas and surface phantom orphans.
+// buildBlobSummaries restricts holders to live peers; stale
+// BlobAvailability from offline peers would inflate replicas and
+// surface phantom orphans.
 func (s *Service) buildBlobSummaries(snap state.Snapshot, scoped view.ScopedView, lens view.Lens, operator bool) []*controlv1.BlobSummary {
 	liveSet := make(map[types.PeerKey]struct{}, len(snap.PeerKeys))
 	for _, pk := range snap.PeerKeys {
@@ -1843,7 +1840,7 @@ func (s *Service) callerWasmContext(ctx context.Context) context.Context {
 }
 
 // callerGrant returns the caller's grant from the RPC context. Returns
-// nil if no caller is present — the interceptor (injectCaller) is the
+// nil if no caller is present: the interceptor (injectCaller) is the
 // only legitimate source of a caller grant, and its TLS-path guard
 // refuses the daemon-self fallback for wire-mode peers. Mirroring that
 // refusal here keeps the security boundary at one well-defined edge.

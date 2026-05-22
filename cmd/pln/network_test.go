@@ -103,9 +103,6 @@ func TestCertExpiryFooter(t *testing.T) {
 	})
 
 	t.Run("admin/root grant with no deadline has no footer", func(t *testing.T) {
-		// GrantDeadlineUnix==0 is time.Unix(0,0) (1970), not the Go zero
-		// time; before the fix this rendered a spurious "membership
-		// expired" line on a healthy admin node.
 		got := certExpiryFooter(resp(&controlv1.CertInfo{
 			CanAdmit: true, CanDelegate: true,
 			Health: controlv1.CertHealth_CERT_HEALTH_OK,
@@ -310,7 +307,6 @@ func TestCollectBlobsSection_OrphanLabelling(t *testing.T) {
 
 	t.Run("default hides remote orphans, labels local orphans", func(t *testing.T) {
 		sec := collectBlobsSection(resp, statusViewOpts{})
-		// Remote orphan filtered out; local orphan + named blob shown.
 		require.Len(t, sec.rows, 2)
 		// Rows are emitted in the order they pass the filter.
 		require.Equal(t, "(orphaned)", sec.rows[0][0])

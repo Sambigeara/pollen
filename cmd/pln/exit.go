@@ -61,12 +61,9 @@ func exitCodeOf(err error) int {
 	return exitGeneric
 }
 
-// errorLine renders err for the operator as "Error: <message>". The
-// connect client surfaces a daemon status as a *connect.Error whose
-// Error() is "<code>: <message>" (e.g. "failed_precondition: admission:
-// ..."); the gRPC code is transport detail the operator did not ask
-// for, so it is dropped to the daemon's own message. Local errors,
-// which carry no such envelope, print verbatim.
+// errorLine renders err for the operator as "Error: <message>". For a
+// daemon status (a *connect.Error) it prints the message without the
+// transport-level gRPC code; local errors print verbatim.
 func errorLine(err error) string {
 	msg := err.Error()
 	var ce *connect.Error

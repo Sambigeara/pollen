@@ -51,10 +51,9 @@ func pickBootstrapPeers(snap state.Snapshot) []*controlv1.BootstrapPeerInfo {
 		add(peerID, nv)
 	}
 
-	// Process buckets in network-preference order: public IPs win over LAN
-	// so the resulting BootstrapPeerInfo list is ordered most-routable-first
-	// and consumers picking "the first wire-bearing peer" land on a routable
-	// edge by construction.
+	// Process buckets in networkBucketOrder so the BootstrapPeerInfo list
+	// is ordered most-routable-first and a consumer picking the first
+	// wire-bearing peer lands on a routable edge by construction.
 	bucketKeys := make([]string, 0, len(buckets))
 	for _, k := range networkBucketOrder {
 		if _, ok := buckets[k]; ok {

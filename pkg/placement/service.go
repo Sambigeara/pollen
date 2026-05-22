@@ -35,12 +35,12 @@ const (
 	//
 	// Canonical timeout stack (outermost wins):
 	//   1. Caller deadline (e.g. `pln call --timeout`, upstream workload's ctx)
-	//   2. gRPC server — honours caller deadline on CallWorkload
-	//   3. placement.Call — inherits caller ctx; forwards it to Runtime.Call
+	//   2. gRPC server: honours caller deadline on CallWorkload
+	//   3. placement.Call: inherits caller ctx; forwards it to Runtime.Call
 	//      and to forwardCall, which opens a stream to the target peer
-	//   4. Target peer stream handler — this ceiling (min() with caller's
+	//   4. Target peer stream handler: this ceiling (min() with caller's
 	//      deadline once wire-level deadline propagation lands)
-	//   5. wasm.Runtime.Call — inherits; Extism enforces its own per-workload
+	//   5. wasm.Runtime.Call: inherits; Extism enforces its own per-workload
 	//      timeout from the seed config as a further cap
 	//
 	// Never introduce a timeout above this layer that's shorter than the
@@ -487,8 +487,7 @@ func (s *Service) callDispatchedHop(ctx context.Context, hash, function string, 
 	// Carry this seed's publication forward so a tail call it emits
 	// resolves the target name in this seed's publisher namespace, not
 	// the original caller's, and so the executing authority is the
-	// invoked publication's rather than the deduped artefact winner's
-	// (confused-deputy safe).
+	// invoked publication's rather than the deduped artefact winner's.
 	if pub != nil {
 		ctx = admission.WithInvokedPublication(ctx, pub)
 	}
@@ -531,19 +530,15 @@ func (s *Service) callerGrant(ctx context.Context, peerKey types.PeerKey) *ident
 }
 
 // resolveAuthority returns the Principal a workload name resolves
-// under. When a seed is executing (a tail call it returned, or a
-// seed:// host call it made) the name resolves in that seed's own
-// publisher namespace, so a caller cannot redirect a shared seed's
-// internal delegation at code of the caller's choosing
-// (confused-deputy safe). That authority is the invoked publication's,
-// threaded onto the context at dispatch; only when the call named no
-// publication (a bare hash, deliberately cross-tenant) does it fall
-// back to the deduped artefact winner. A genuine first hop (a human
-// `pln call`, the gateway) has no executing seed and resolves under
-// the caller's own authority, so `pln call hello` finds the caller's
-// hello and never another tenant's. The zero key (anonymous/token
-// callers with no publication) resolves nothing by name, which is
-// correct because that path arrives pre-resolved to a content hash.
+// under. An executing seed (a tail call it returned, or a seed:// host
+// call it made) resolves names in its own invoked publication's
+// namespace, threaded on at dispatch, so a caller cannot redirect a
+// shared seed's internal delegation (confused-deputy safe); a bare hash
+// that named no publication falls back to the deduped artefact winner.
+// A genuine first hop (`pln call`, the gateway) has no executing seed
+// and resolves under the caller's own authority. The zero key resolves
+// nothing by name, correct because that path arrives pre-resolved to a
+// content hash.
 func (s *Service) resolveAuthority(ctx context.Context) types.PeerKey {
 	if execHash := wasm.ExecutingSeedFromContext(ctx); execHash != "" {
 		if p, ok := admission.InvokedPublicationFromContext(ctx); ok {

@@ -52,7 +52,7 @@ func TestBuildShareResource_AllowsPublisherWorkload(t *testing.T) {
 
 func TestBuildShareResource_AllowsBlobWithoutPublisher(t *testing.T) {
 	// Anonymous publishers (legacy entries) leave Publisher unset.
-	// Permit those rather than fail-closed — the share will still 403
+	// Permit those rather than fail-closed: the share will still 403
 	// at the gateway, but historically tests used this shape.
 	mine := []byte{0xaa, 0x01}
 	hashHex := strings.Repeat("d", 64)

@@ -40,7 +40,7 @@ func staticSpecChange(name string) (*statev1.StaticSpecChange, *admissionv1.Reso
 // TestAuthoriseRejectsMissingPublishBit proves the new authorise stage
 // rejects a Fact whose authority Grant lacks the per-kind publish
 // capability, and admits it once the bit is present. authenticate
-// passes either way (the grant is well-formed and chains to root) — the
+// passes either way (the grant is well-formed and chains to root). The
 // rejection is specifically at authorise.
 func TestAuthoriseRejectsMissingPublishBit(t *testing.T) {
 	now := time.Now()

@@ -842,7 +842,7 @@ func blobCollisionError(name string, matches []*controlv1.BlobSummary) error {
 	// When publishers differ, the name+publisher-prefix uniquely picks
 	// one blob. When the same publisher has multiple blobs sharing a
 	// name (publisher uploaded a "logo" twice with different content),
-	// publisher prefixes collapse — fall back to a hash prefix so the
+	// publisher prefixes collapse: fall back to a hash prefix so the
 	// operator has something unique to type.
 	pubs := make(map[string]struct{}, len(matches))
 	for _, m := range matches {

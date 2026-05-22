@@ -137,14 +137,10 @@ func New(pollenDir string, self types.PeerKey, mesh streamOpener, st blobState, 
 // the plaintext, not the envelope.
 //
 // Put is idempotent: re-Putting content we already hold under a valid
-// self-wrapping skips re-encryption entirely. AES-GCM uses a fresh
-// nonce per Encrypt, so a naive re-Put would overwrite the envelope on
-// disk with one encrypted under a new DEK while the wrappings issued
-// to remote peers still encoded the old DEK — the receiver would then
-// AEAD-fail at Get time. Idempotency keeps wrappings consistent across
-// re-seeds of the same content. The defence-in-depth refanout below
-// only fires when the envelope went missing (e.g. manual cleanup) and
-// we have to re-Put through the full path.
+// self-wrapping skips re-encryption, so wrappings already issued stay
+// valid against the stored envelope (see cas.ErrAEADAuth). The refanout
+// below only fires when the envelope went missing (e.g. manual cleanup)
+// and we have to re-Put through the full path.
 func (s *Service) Put(r io.Reader) (string, error) {
 	plaintext, err := io.ReadAll(r)
 	if err != nil {
@@ -182,14 +178,11 @@ func (s *Service) Put(r io.Reader) (string, error) {
 		return "", err
 	}
 	s.cacheDEK(hash, dek)
-	// Refresh any existing fanout wrappings under the fresh DEK. Only
-	// reachable when the local envelope was missing but stale wrappings
-	// were left in gossip from a previous tenure (manual cleanup,
-	// half-pruned state). The common re-Put case takes the idempotent
-	// fast path above. Surface the error at warn so an operator can
-	// see when fanout-refresh has failed and a manual re-wrap is
-	// needed; we don't unwind the local Put because the local
-	// envelope IS valid under the new DEK and self-wrapping succeeded.
+	// Refresh fanout wrappings under the fresh DEK; only reached when the
+	// envelope was missing but stale wrappings lingered in gossip. Warn
+	// rather than unwind: the local envelope is valid under the new DEK,
+	// so a failed refresh only means remote recipients may need a manual
+	// re-wrap.
 	if err := s.refanoutWrappings(hash, dek); err != nil {
 		s.log.Warnw("refanout wrappings failed; existing recipients may need manual re-wrap",
 			"hash", types.ShortHash(hash), "err", err)
@@ -202,7 +195,7 @@ func (s *Service) Put(r io.Reader) (string, error) {
 
 // refanoutWrappings walks every wrapping we previously issued for hash
 // and re-issues it under the supplied DEK. Wrappings issued by other
-// peers are left alone — those gossip slots are theirs to refresh.
+// peers are left alone: those gossip slots are theirs to refresh.
 func (s *Service) refanoutWrappings(hash string, dek []byte) error {
 	if s.state == nil || s.signPriv == nil || s.signer == nil {
 		return nil
@@ -231,12 +224,8 @@ func (s *Service) refanoutWrappings(hash string, dek []byte) error {
 // Get returns an error when no path back to the DEK has been gossiped
 // to this node yet; the caller can retry once gossip settles.
 //
-// AEAD authentication failure means our envelope and the unwrapped DEK
-// disagree — almost certainly stale state from a prior Put cycle where
-// the wrapping in gossip got refreshed but the envelope on disk
-// didn't (or vice versa). Evict both so the next ensureLocal +
-// reconcile pulls a fresh copy and the publisher re-issues a wrapping
-// that matches the envelope it currently holds.
+// On cas.ErrAEADAuth, evict both the envelope and the wrapping so the
+// next ensureLocal and reconcile pull a fresh, matching pair.
 func (s *Service) Get(hash string) (io.ReadCloser, error) {
 	dek, err := s.localDEK(hash)
 	if err != nil {
@@ -313,11 +302,9 @@ func (s *Service) publishSelfWrapping(hash string, dek []byte) error {
 // No-op when this node lacks a signer (test fixtures that bypass
 // wrapping) or recipient is self (Put's self-wrap already covers it).
 //
-// Always re-issues, even when a wrapping already exists in gossip: a
-// stale wrapping from a prior Put cycle would still appear "present"
-// but decrypt to a DEK that no longer matches the current envelope.
-// SetBlobWrapping dedups exact byte-equality, so this is only spammy
-// when the wrapping actually needs to change.
+// Always re-issues rather than trusting a wrapping already in gossip,
+// which may be stale (see cas.ErrAEADAuth). SetBlobWrapping dedups
+// byte-equal entries, so a re-issue only gossips when it changed.
 func (s *Service) issueWrappingFor(hash string, recipient types.PeerKey) error {
 	if s.signPriv == nil || s.state == nil || s.signer == nil {
 		return nil

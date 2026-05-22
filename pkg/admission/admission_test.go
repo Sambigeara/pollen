@@ -164,8 +164,7 @@ func TestAdmit(t *testing.T) {
 // TestAdmitWrapsRejectionsAsErrRejected proves the authorise and
 // account verdicts surface through Admit as ErrRejected with their
 // reason verbatim (the control layer maps that to FailedPrecondition),
-// while the message stays byte-identical to what the daemon logs. The
-// expected strings are the exact text the operator-facing docs quote.
+// while the message stays byte-identical to what the daemon logs.
 func TestAdmitWrapsRejectionsAsErrRejected(t *testing.T) {
 	now := time.Now()
 

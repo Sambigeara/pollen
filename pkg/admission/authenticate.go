@@ -72,12 +72,8 @@ func (p *Pipeline) authenticate(snap state.Snapshot, sc *statev1.SpecChange) (*i
 }
 
 // resolveAndVerify resolves the authority Grant by origin and verifies
-// the Fact against it. A self-authored Fact (authority is this node)
-// resolves from the held local Grant and inherits MayPublish's
-// bootstrap tolerance: before that Grant has gossiped a nil policy is
-// permitted (a nil Grant is returned, treated downstream as the
-// unrestricted bootstrap case) and a non-nil policy is not. Every other
-// Fact resolves from cluster state and must verify against it.
+// the Fact against it. See authenticate for the self-authored versus
+// cluster-sourced split and the bootstrap-tolerance nil-Grant case.
 func (p *Pipeline) resolveAndVerify(snap state.Snapshot, f *factv1.Fact, body fact.Body) (*identityv1.Grant, error) {
 	if types.PeerKeyFromBytes(f.GetAuthorityPub()) == snap.LocalID {
 		g := snap.LocalGrant()

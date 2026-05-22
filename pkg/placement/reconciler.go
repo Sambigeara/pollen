@@ -158,7 +158,7 @@ func (r *reconciler) reconcile(ctx context.Context) {
 	// has shifted under us.
 	//
 	// Tracked in policyReleased so the action loop below doesn't
-	// immediately re-mark the same hash as draining — that would
+	// immediately re-mark the same hash as draining: that would
 	// republish a claim with draining=true and the loop would never
 	// converge.
 	policyReleased := make(map[string]struct{})

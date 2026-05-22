@@ -62,9 +62,7 @@ func Decrypt(envelope, dek []byte) ([]byte, error) {
 	nonce, ct := envelope[:aead.NonceSize()], envelope[aead.NonceSize():]
 	plaintext, err := aead.Open(nil, nonce, ct, nil)
 	if err != nil {
-		// Multiple %w needs Go 1.20+; errors.Is walks both wrapped
-		// targets so callers can match on ErrAEADAuth or on the
-		// underlying aead error.
+		// Wrap both so callers can match ErrAEADAuth or the underlying error.
 		return nil, fmt.Errorf("%w: %w", ErrAEADAuth, err)
 	}
 	return plaintext, nil

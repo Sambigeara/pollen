@@ -365,12 +365,9 @@ func verifyGrantChain(grant *identityv1.Grant) (ed25519.PublicKey, error) {
 	}
 
 	current := grant
-	// depthBelow counts delegation hops beneath the parent at each step.
-	// max_depth is the depth of the subtree a grant may root, so it must
-	// be enforced against the realised chain here at verification, not
-	// only as a monotone scalar at issuance: an attacker holding a
-	// shallow-budget grant could otherwise sign an arbitrarily deep
-	// subtree directly.
+	// depthBelow counts delegation hops beneath the parent at each step,
+	// so max_depth is enforced against the realised subtree, not just the
+	// scalar carried in the claims.
 	depthBelow := 0
 	for _, parent := range grant.GetChain() {
 		if !bytes.Equal(current.GetClaims().GetIssuerPub(), parent.GetClaims().GetSubjectPub()) {
@@ -420,7 +417,7 @@ func verifyGrantChain(grant *identityv1.Grant) (ed25519.PublicKey, error) {
 // ChainSubjectPubs returns every pub authoritatively above (and
 // including) the leaf in this grant's delegation lineage. Walks every
 // grant from leaf to root, collecting each grant's subject_pub plus the
-// topmost issuer_pub. The topmost issuer is the root signing key — for
+// topmost issuer_pub. The topmost issuer is the root signing key. For
 // fully-chained grants it duplicates the root's subject; for short
 // chains it surfaces root authority explicitly so root-issued denies
 // remain authorisable.
@@ -498,7 +495,7 @@ func VerifyGrantStructure(grant *identityv1.Grant, rootPub []byte) error {
 // Implementations typically wrap a cluster snapshot.
 type DenyChecker func(subjectPub []byte) bool
 
-// GrantStatus is the typed result of CheckGrant. A grant has a single
+// GrantStatus is the verdict CheckGrant assigns. A grant has a single
 // durable horizon and no NeedsRenewal state: it is authoritative until
 // grant_deadline, and the short liveness window lives entirely in
 // Session.

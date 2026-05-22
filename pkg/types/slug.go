@@ -34,7 +34,6 @@ func PublisherSlug(subjectPub []byte) string {
 	return slugEncoding.EncodeToString(sum[:])[:SlugLen]
 }
 
-// Slug returns the publisher slug for this peer key.
 func (pk PeerKey) Slug() string {
 	return PublisherSlug(pk[:])
 }

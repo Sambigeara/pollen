@@ -500,8 +500,6 @@ var errCannotSignTokens = errors.New("local context cannot sign tokens")
 // (subject pre-resolved to the target peer's pubkey). The caller
 // supplies caps and budget; this helper resolves bootstrap, derives
 // horizon and TTL from the flag set, and signs the ticket.
-// Returns errCannotSignTokens when this context holds no delegating
-// grant; callers wrap it with command-specific guidance.
 func mintInviteTicket(cmd *cobra.Command, env *cliEnv, subjectPub []byte, caps *identityv1.Capabilities, budget *identityv1.Budget) (string, error) {
 	identityDir := identity.IdentityPath(env.dir)
 	creds, err := identity.LoadCredentials(identityDir)
@@ -953,10 +951,8 @@ func capsCanPublish(c *identityv1.Capabilities) bool {
 	return p.GetFunctions() || p.GetBlobs() || p.GetSites() || p.GetServices()
 }
 
-// tierLabel ranks roles top-down. Admin wins outright (cluster-wide
-// authority). A workspace-admin without admit becomes the workspace
-// tier. A grant that only carries publish caps is a publisher.
-// Everything else is a leaf.
+// tierLabel returns the highest-precedence role tier a capability set
+// satisfies, admin first.
 func tierLabel(canAdmit, isWorkspaceAdmin, canPublish bool) string {
 	switch {
 	case canAdmit:

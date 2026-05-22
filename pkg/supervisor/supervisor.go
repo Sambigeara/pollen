@@ -127,7 +127,7 @@ func New(opts Options, creds *identity.Credentials, inviteConsumer identity.Invi
 	stateStore.SetMutationValidator(runtimeGate.Admit)
 	// One fact signer for the node's lifetime: facts are named by
 	// pubkey and their authority's Grant is resolved from gossip, so
-	// the signer never changes when capabilities change — only the
+	// the signer never changes when capabilities change: only the
 	// gossiped Grant does. The sequence high-water is durable so seq
 	// stays monotonic across daemon restarts.
 	signer, err := fact.NewDurableSigner(privKey, identity.FactSeqPath(identity.IdentityPath(pollenDir)))

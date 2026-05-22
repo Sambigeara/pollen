@@ -22,9 +22,9 @@ import (
 // a single producer (one node's daemon, or one CLI context), so a
 // durable signer persists the sequence high-water and reloads it on
 // construction, keeping seq monotonic across process restarts. The
-// sequence is carried on every fact and is consumed in Phase 3 to
-// discriminate a republish-after-unseed from a replay of the
-// tombstoned original. NewSigner is the ephemeral in-memory variant
+// sequence is carried on every fact to discriminate a
+// republish-after-unseed from a replay of the tombstoned original.
+// NewSigner is the ephemeral in-memory variant
 // for tests and non-persisting callers. It satisfies the state
 // package's local signer contract.
 type Signer struct {
@@ -41,12 +41,10 @@ func NewSigner(priv ed25519.PrivateKey) *Signer {
 	return &Signer{priv: priv}
 }
 
-// NewDurableSigner returns a signer that persists its per-authority
-// sequence high-water to seqPath and resumes from it on construction so
-// seq never repeats or regresses across restarts. A missing file starts
-// the sequence at zero; a present-but-unreadable file is an error
-// rather than a silent reset, since regressing the sequence would let a
-// later fact reuse an earlier seq.
+// NewDurableSigner loads the persisted sequence high-water from seqPath.
+// A missing file starts the sequence at zero; a present-but-unreadable
+// file is an error rather than a silent reset, since regressing the
+// sequence would let a later fact reuse an earlier seq.
 func NewDurableSigner(priv ed25519.PrivateKey, seqPath string) (*Signer, error) {
 	s := &Signer{priv: priv, seqPath: seqPath}
 	raw, err := os.ReadFile(seqPath)

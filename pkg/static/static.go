@@ -92,8 +92,8 @@ func New(localID types.PeerKey, store stateStore, blobs blobStore, canServe bool
 // Empty domain preserves the pre-Pollen-Cloud behaviour (Host == spec
 // name).
 //
-// Call SetDomain before Start: the field is read by request handlers
-// from goroutines spawned by Start.
+// Call SetDomain before Start: handlers read the field from goroutines
+// Start spawns.
 func (s *Service) SetDomain(d string) {
 	if d == "" {
 		s.domain = ""

@@ -202,16 +202,13 @@ func MaybeRenewGrant(ctx context.Context, dir, addr string) error {
 	}
 	// nil denylist: the wire client holds no cluster snapshot, and the
 	// issuing server already enforced the denylist before re-issuing.
-	// AdoptGrant persists internally via the handle's identityDir
-	// captured at load time, so a successful swap is durable before
-	// MaybeRenewGrant returns.
 	return creds.AdoptGrant(g, time.Now(), nil)
 }
 
 // ServerTLSConfig builds the TLS config for the control RPC listener.
 // Inbound clients must present a cert whose Session extension chains
 // back to the configured root AND whose TLS leaf public key matches the
-// Session's grant subject — without that binding, anyone who has seen
+// Session's grant subject: without that binding, anyone who has seen
 // the victim's gossiped Session can mint a new leaf and impersonate
 // them. The verified Session is later retrieved from the gRPC peer
 // context by CallerGrantFromContext.

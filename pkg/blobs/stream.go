@@ -114,7 +114,7 @@ var ErrNoPublisher = errors.New("no publisher known for blob")
 // Resolution mirrors the gate's Fetch fall-through: BlobSpecs first (a
 // named blob published via `pln seed <file> <name>`), then Specs (a
 // workload binary, whose hash is the spec key). Static-manifest digests
-// are intentionally not exposed here — they are an internal artefact
+// are intentionally not exposed here: they are an internal artefact
 // of the static-site spec and have no user-facing export use case.
 //
 // Source peer is distinct from Publisher under the signed-event relay

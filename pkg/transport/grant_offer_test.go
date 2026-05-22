@@ -17,14 +17,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestSendGrantOfferOfflinePeer is the CLI-fallback discriminator's
-// contract test: a node holding no live mesh session to peerKey must
-// surface ErrPeerOffline from SendGrantOffer rather than an opaque
-// stream error, because the control handler uses it (and only it) to
-// raise codes.Unavailable and trigger the subject-pinned-token CLI
-// fallback. A wire-mode tenant otherwise looks identical to a daemon
-// rejection, and the operator would receive a token they should never
-// have been offered.
+// TestSendGrantOfferOfflinePeer pins that an absent mesh session
+// surfaces ErrPeerOffline, the sentinel the CLI fallback keys on.
 func TestSendGrantOfferOfflinePeer(t *testing.T) {
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
 	require.NoError(t, err)
@@ -53,13 +47,8 @@ func TestSendGrantOfferOfflinePeer(t *testing.T) {
 	require.ErrorIs(t, err, ErrPeerOffline)
 }
 
-// TestGrantOfferEnvelopeOneofSlots pins the proto envelope's oneof slot
-// numbers for grant offers. Drift on these field numbers silently
-// breaks the recipient: the writer would emit one wire format, the
-// reader expects another, the type assertion in ReadGrantOfferRequest
-// returns false, and an upgrade attempt becomes an opaque "unexpected
-// message" error rather than a clean codec failure. Pinning the slots
-// here means the proto change is caught at test time, not on staging.
+// TestGrantOfferEnvelopeOneofSlots pins the envelope oneof slot numbers;
+// drift would silently break the reader's type assertion at runtime.
 func TestGrantOfferEnvelopeOneofSlots(t *testing.T) {
 	req := &meshv1.Envelope{Body: &meshv1.Envelope_GrantOfferRequest{
 		GrantOfferRequest: &meshv1.GrantOfferRequest{},

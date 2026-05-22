@@ -254,8 +254,7 @@ func (s Snapshot) LocalSpecByName(name string, localID types.PeerKey) (string, b
 
 // LocalPublishesWorkload reports whether localID published a workload
 // under hash. Like LocalSpecByName it scans SpecsAll, not the deduped
-// Specs map, so a remote tenant's byte-identical content cannot shadow
-// this node's own publication.
+// Specs map.
 func (s Snapshot) LocalPublishesWorkload(hash string, localID types.PeerKey) bool {
 	for _, sv := range s.SpecsAll {
 		if sv.Spec.Hash == hash && sv.Publisher == localID {
@@ -370,11 +369,8 @@ type ManifestPaths interface {
 // node may hold or serve the bytes if any one Fact satisfies the
 // caller; the set is a union, not an intersection, so revoking one
 // publisher's entitlement only matters if it was the last reference
-// standing. It is taken over the per-(authority,name) publication
-// sources, never the deduped runtime maps: byte-identical bytes from
-// two tenants are distinct publications with their own policies, and
-// collapsing them to one arbitrary co-publisher would deny the loser's
-// own entitled fetches and block its replicas.
+// standing. Like WorkloadEntitlements it reads the per-(authority,name)
+// publication sources, never the deduped runtime maps.
 //
 // Pass a nil mp to skip nested-manifest resolution; callers without a
 // CAS handle (e.g. snapshot-only tests) still get correct answers for
