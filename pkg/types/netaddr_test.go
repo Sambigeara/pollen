@@ -15,7 +15,7 @@ func TestIsRoutableIP(t *testing.T) {
 		in   string
 		want bool
 	}{
-		{"91.99.170.199", true},
+		{"198.51.100.199", true},
 		{"192.168.0.5", true},
 		{"10.0.0.42", true},
 		{"2001:db8::1", true},
@@ -41,7 +41,7 @@ func TestIsPublicIP(t *testing.T) {
 		in   string
 		want bool
 	}{
-		{"91.99.170.199", true},
+		{"198.51.100.199", true},
 		{"2001:db8::1", true},
 		{"192.168.0.5", false},
 		{"10.0.0.42", false},

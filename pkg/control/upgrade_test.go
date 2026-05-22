@@ -6,7 +6,6 @@ package control
 import (
 	"context"
 	"crypto/ed25519"
-	"crypto/rand"
 	"errors"
 	"testing"
 	"time"
@@ -14,24 +13,83 @@ import (
 	controlv1 "github.com/sambigeara/pollen/api/genpb/pollen/control/v1"
 	identityv1 "github.com/sambigeara/pollen/api/genpb/pollen/identity/v1"
 	meshv1 "github.com/sambigeara/pollen/api/genpb/pollen/mesh/v1"
-	"github.com/sambigeara/pollen/pkg/auth"
 	"github.com/sambigeara/pollen/pkg/identity"
 	"github.com/sambigeara/pollen/pkg/transport"
 	"github.com/sambigeara/pollen/pkg/types"
 	"github.com/stretchr/testify/require"
-	"go.uber.org/zap"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
 
+// TestUpgradePeer_AuthorityScope pins that the hijack guard applies the
+// same authority rule as DenyPeer: a workspace-admin may upgrade peers
+// inside its subtree but not steal a peer rooted under a sibling.
+func TestUpgradePeer_AuthorityScope(t *testing.T) {
+	rootPub, rootPriv := ed25519Pair(t)
+	rootGrant := issuePrincipalGrant(t, rootPriv, nil, rootPub, identity.FullCapabilities())
+
+	wsPub, wsPriv := ed25519Pair(t)
+	wsGrant := issuePrincipalGrant(t, rootPriv, rootGrant, wsPub, identity.WorkspaceCapabilities())
+
+	tenantPub, _ := ed25519Pair(t)
+	tenantGrant := issuePrincipalGrant(t, wsPriv, wsGrant, tenantPub, identity.LeafCapabilities())
+	tenantKey := types.PeerKeyFromBytes(tenantPub)
+
+	otherWSPub, otherWSPriv := ed25519Pair(t)
+	otherWSGrant := issuePrincipalGrant(t, rootPriv, rootGrant, otherWSPub, identity.WorkspaceCapabilities())
+	otherPub, _ := ed25519Pair(t)
+	otherGrant := issuePrincipalGrant(t, otherWSPriv, otherWSGrant, otherPub, identity.LeafCapabilities())
+	otherKey := types.PeerKeyFromBytes(otherPub)
+
+	snap := &stubState{grants: map[types.PeerKey]*identityv1.Grant{
+		tenantKey: tenantGrant,
+		otherKey:  otherGrant,
+	}}
+
+	t.Run("workspace-admin upgrades peer in own subtree", func(t *testing.T) {
+		delivery := &stubDelivery{resp: &meshv1.GrantOfferResponse{Accepted: true}}
+		svc := newAuthorityService(t, &stubMembership{rootPriv: rootPriv}, snap, delivery)
+		resp, err := svc.UpgradePeer(callerCtx(wsGrant), &controlv1.UpgradePeerRequest{
+			PeerPub:      tenantPub,
+			Capabilities: identity.PublisherCapabilities(),
+		})
+		require.NoError(t, err)
+		require.True(t, resp.GetDelivered())
+		require.True(t, delivery.called, "grant must be dispatched to the target")
+		require.Equal(t, tenantKey, delivery.lastTo)
+	})
+
+	t.Run("workspace-admin cannot hijack across workspaces", func(t *testing.T) {
+		delivery := &stubDelivery{resp: &meshv1.GrantOfferResponse{Accepted: true}}
+		svc := newAuthorityService(t, &stubMembership{rootPriv: rootPriv}, snap, delivery)
+		_, err := svc.UpgradePeer(callerCtx(wsGrant), &controlv1.UpgradePeerRequest{
+			PeerPub:      otherPub,
+			Capabilities: identity.PublisherCapabilities(),
+		})
+		require.Error(t, err)
+		require.Equal(t, codes.PermissionDenied, status.Code(err))
+		require.Contains(t, status.Convert(err).Message(), "outside caller's authority",
+			"the hijack guard must fire, not the ceiling check")
+		require.False(t, delivery.called, "must reject before minting or dispatching")
+	})
+}
+
 // stubMembership mints child grants under a fixed root, returning the
 // grant the handler receives but never gossiping anything. It mirrors
 // the membership.IssueGrant primitive without standing up a Service.
+// lastDenied records the most recent DenyPeer target so positive tests
+// can prove the handler reached the underlying primitive (zero value
+// means the handler short-circuited before calling DenyPeer).
 type stubMembership struct {
-	rootPriv ed25519.PrivateKey
+	rootPriv   ed25519.PrivateKey
+	lastDenied types.PeerKey
 }
 
-func (m *stubMembership) DenyPeer(types.PeerKey) error { return nil }
+func (m *stubMembership) DenyPeer(key types.PeerKey) error {
+	m.lastDenied = key
+	return nil
+}
+
 func (m *stubMembership) IssueGrant(_ context.Context, peerKey types.PeerKey, caps *identityv1.Capabilities, budget *identityv1.Budget) (*identityv1.Grant, error) {
 	if budget == nil {
 		budget = identity.UnlimitedBudget()
@@ -62,49 +120,28 @@ func (d *stubDelivery) SendGrantOffer(_ context.Context, peer types.PeerKey, gra
 	return d.resp, nil
 }
 
-// adminCaller builds an admin caller context for handler tests: full
-// capabilities, root-signed grant. CanDelegate is what UpgradePeer's
-// permission gate requires.
-func adminCaller(t *testing.T, rootPriv ed25519.PrivateKey) context.Context {
-	t.Helper()
-	pub, _, err := ed25519.GenerateKey(rand.Reader)
-	require.NoError(t, err)
-	grant, err := identity.IssueGrant(rootPriv, nil, pub, identity.FullCapabilities(), identity.UnlimitedBudget(),
-		time.Now().Add(-time.Hour), time.Time{})
-	require.NoError(t, err)
-	return auth.WithCaller(context.Background(), identity.PrincipalFromGrant(grant))
-}
-
-func newUpgradeService(t *testing.T, rootPriv ed25519.PrivateKey, delivery PeerDelivery) *Service {
-	t.Helper()
-	return &Service{
-		membership: &stubMembership{rootPriv: rootPriv},
-		delivery:   delivery,
-		log:        zap.NewNop().Sugar(),
-	}
-}
-
 // TestUpgradePeer pins the issuer-side handler's contract: caller must
 // hold CanDelegate, capabilities must be supplied, offline peers raise
 // codes.Unavailable so the CLI can fall back to a subject-pinned token,
 // recipient rejections surface as Delivered=false with the recipient's
 // reason, and the happy path returns Delivered=true after the grant
-// has been pushed.
+// has been pushed. The caller is root, the universal authority, so the
+// hijack guard always passes and these cases exercise delivery alone.
 func TestUpgradePeer(t *testing.T) {
-	_, rootPriv, err := ed25519.GenerateKey(rand.Reader)
-	require.NoError(t, err)
-	subjectPub, _, err := ed25519.GenerateKey(rand.Reader)
-	require.NoError(t, err)
+	rootPub, rootPriv := ed25519Pair(t)
+	rootGrant := issuePrincipalGrant(t, rootPriv, nil, rootPub, identity.FullCapabilities())
+
+	subjectPub, _ := ed25519Pair(t)
 	subjectKey := types.PeerKeyFromBytes(subjectPub)
+	subjectGrant := issuePrincipalGrant(t, rootPriv, rootGrant, subjectPub, identity.LeafCapabilities())
+	snap := &stubState{grants: map[types.PeerKey]*identityv1.Grant{subjectKey: subjectGrant}}
 
 	t.Run("non-delegating caller is rejected with PermissionDenied", func(t *testing.T) {
-		leaf, err := identity.IssueGrant(rootPriv, nil, subjectPub, identity.LeafCapabilities(), identity.UnlimitedBudget(),
-			time.Now().Add(-time.Hour), time.Now().Add(30*24*time.Hour))
-		require.NoError(t, err)
-		ctx := auth.WithCaller(context.Background(), identity.PrincipalFromGrant(leaf))
-		svc := newUpgradeService(t, rootPriv, &stubDelivery{})
+		leafPub, _ := ed25519Pair(t)
+		leaf := issuePrincipalGrant(t, rootPriv, rootGrant, leafPub, identity.LeafCapabilities())
+		svc := newAuthorityService(t, &stubMembership{rootPriv: rootPriv}, snap, &stubDelivery{})
 
-		_, err = svc.UpgradePeer(ctx, &controlv1.UpgradePeerRequest{
+		_, err := svc.UpgradePeer(callerCtx(leaf), &controlv1.UpgradePeerRequest{
 			PeerPub:      subjectPub,
 			Capabilities: identity.FullCapabilities(),
 		})
@@ -113,20 +150,18 @@ func TestUpgradePeer(t *testing.T) {
 	})
 
 	t.Run("missing capabilities is InvalidArgument", func(t *testing.T) {
-		ctx := adminCaller(t, rootPriv)
-		svc := newUpgradeService(t, rootPriv, &stubDelivery{})
+		svc := newAuthorityService(t, &stubMembership{rootPriv: rootPriv}, snap, &stubDelivery{})
 
-		_, err := svc.UpgradePeer(ctx, &controlv1.UpgradePeerRequest{PeerPub: subjectPub})
+		_, err := svc.UpgradePeer(callerCtx(rootGrant), &controlv1.UpgradePeerRequest{PeerPub: subjectPub})
 		require.Error(t, err)
 		require.Equal(t, codes.InvalidArgument, status.Code(err))
 	})
 
 	t.Run("happy path returns Delivered=true and offers the minted grant to the peer", func(t *testing.T) {
-		ctx := adminCaller(t, rootPriv)
 		delivery := &stubDelivery{resp: &meshv1.GrantOfferResponse{Accepted: true}}
-		svc := newUpgradeService(t, rootPriv, delivery)
+		svc := newAuthorityService(t, &stubMembership{rootPriv: rootPriv}, snap, delivery)
 
-		resp, err := svc.UpgradePeer(ctx, &controlv1.UpgradePeerRequest{
+		resp, err := svc.UpgradePeer(callerCtx(rootGrant), &controlv1.UpgradePeerRequest{
 			PeerPub:      subjectPub,
 			Capabilities: identity.FullCapabilities(),
 		})
@@ -138,11 +173,10 @@ func TestUpgradePeer(t *testing.T) {
 	})
 
 	t.Run("offline peer surfaces codes.Unavailable for CLI fallback", func(t *testing.T) {
-		ctx := adminCaller(t, rootPriv)
 		delivery := &stubDelivery{err: transport.ErrPeerOffline}
-		svc := newUpgradeService(t, rootPriv, delivery)
+		svc := newAuthorityService(t, &stubMembership{rootPriv: rootPriv}, snap, delivery)
 
-		_, err := svc.UpgradePeer(ctx, &controlv1.UpgradePeerRequest{
+		_, err := svc.UpgradePeer(callerCtx(rootGrant), &controlv1.UpgradePeerRequest{
 			PeerPub:      subjectPub,
 			Capabilities: identity.FullCapabilities(),
 		})
@@ -151,11 +185,10 @@ func TestUpgradePeer(t *testing.T) {
 	})
 
 	t.Run("recipient rejection returns Delivered=false with the reason verbatim", func(t *testing.T) {
-		ctx := adminCaller(t, rootPriv)
 		delivery := &stubDelivery{resp: &meshv1.GrantOfferResponse{Reason: "denylisted"}}
-		svc := newUpgradeService(t, rootPriv, delivery)
+		svc := newAuthorityService(t, &stubMembership{rootPriv: rootPriv}, snap, delivery)
 
-		resp, err := svc.UpgradePeer(ctx, &controlv1.UpgradePeerRequest{
+		resp, err := svc.UpgradePeer(callerCtx(rootGrant), &controlv1.UpgradePeerRequest{
 			PeerPub:      subjectPub,
 			Capabilities: identity.FullCapabilities(),
 		})
@@ -165,11 +198,10 @@ func TestUpgradePeer(t *testing.T) {
 	})
 
 	t.Run("dispatch error other than offline surfaces as Internal", func(t *testing.T) {
-		ctx := adminCaller(t, rootPriv)
 		delivery := &stubDelivery{err: errors.New("write deadline exceeded")}
-		svc := newUpgradeService(t, rootPriv, delivery)
+		svc := newAuthorityService(t, &stubMembership{rootPriv: rootPriv}, snap, delivery)
 
-		_, err := svc.UpgradePeer(ctx, &controlv1.UpgradePeerRequest{
+		_, err := svc.UpgradePeer(callerCtx(rootGrant), &controlv1.UpgradePeerRequest{
 			PeerPub:      subjectPub,
 			Capabilities: identity.FullCapabilities(),
 		})

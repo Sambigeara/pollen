@@ -40,11 +40,11 @@ func TestSplitListenAddr(t *testing.T) {
 func TestPickFounderWireEndpoint(t *testing.T) {
 	peers := []bootstrapResult{
 		{target: "lan", addrs: []string{"192.168.0.10:60611"}, public: false},
-		{target: "edge", addrs: []string{"91.99.170.199:60611"}, public: true},
+		{target: "edge", addrs: []string{"198.51.100.199:60611"}, public: true},
 		{target: "edge2", addrs: []string{"203.0.113.5:60611"}, public: true},
 	}
-	require.Equal(t, "91.99.170.199:7443", pickFounderWireEndpoint(peers, ":7443"))
-	require.Equal(t, "91.99.170.199:7443", pickFounderWireEndpoint(peers, "7443"))
+	require.Equal(t, "198.51.100.199:7443", pickFounderWireEndpoint(peers, ":7443"))
+	require.Equal(t, "198.51.100.199:7443", pickFounderWireEndpoint(peers, "7443"))
 	require.Empty(t, pickFounderWireEndpoint(peers, ""), "no port means no endpoint")
 
 	lanOnly := []bootstrapResult{

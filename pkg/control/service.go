@@ -1127,10 +1127,11 @@ func (s *Service) DisconnectService(ctx context.Context, req *controlv1.Disconne
 }
 
 func (s *Service) DenyPeer(ctx context.Context, req *controlv1.DenyPeerRequest) (*controlv1.DenyPeerResponse, error) {
-	if err := s.requireCallerCap(ctx, admitCap, "admit"); err != nil {
+	target := types.PeerKeyFromBytes(req.GetPeerPub())
+	if err := s.requireAuthorityOverPeer(ctx, target); err != nil {
 		return nil, err
 	}
-	if err := s.membership.DenyPeer(types.PeerKeyFromBytes(req.GetPeerPub())); err != nil {
+	if err := s.membership.DenyPeer(target); err != nil {
 		return nil, s.fail(err, "deny peer failed")
 	}
 	return &controlv1.DenyPeerResponse{}, nil
@@ -1173,8 +1174,15 @@ func (s *Service) UpgradePeer(ctx context.Context, req *controlv1.UpgradePeerReq
 	if err := enforceBudgetCeiling(req.GetBudget(), caller.Budget); err != nil {
 		return nil, err
 	}
-	peerKey := types.PeerKeyFromBytes(req.GetPeerPub())
-	grant, err := s.membership.IssueGrant(ctx, peerKey, caps, req.GetBudget())
+	target := types.PeerKeyFromBytes(req.GetPeerPub())
+	// Hijack guard: a non-admin caller (workspace-admin and below) may
+	// only upgrade peers already in its subtree. Without this, W1 could
+	// re-issue T2's grant under W1's chain and silently move T2 from W2
+	// to W1 on accept.
+	if err := s.requireAuthorityOverPeer(ctx, target); err != nil {
+		return nil, err
+	}
+	grant, err := s.membership.IssueGrant(ctx, target, caps, req.GetBudget())
 	if err != nil {
 		if errors.Is(err, membership.ErrNotDelegating) {
 			return nil, status.Error(codes.FailedPrecondition, "this node has no delegation authority; target a delegating node")
@@ -1182,12 +1190,12 @@ func (s *Service) UpgradePeer(ctx context.Context, req *controlv1.UpgradePeerReq
 		return nil, s.fail(err, "mint upgrade grant failed")
 	}
 
-	resp, err := s.delivery.SendGrantOffer(ctx, peerKey, grant)
+	resp, err := s.delivery.SendGrantOffer(ctx, target, grant)
 	if err != nil {
 		if errors.Is(err, transport.ErrPeerOffline) {
 			return nil, status.Error(codes.Unavailable, "peer has no live mesh daemon")
 		}
-		s.log.Errorw("grant offer dispatch failed", "peer", peerKey.Short(), zap.Error(err))
+		s.log.Errorw("grant offer dispatch failed", "peer", target.Short(), zap.Error(err))
 		return nil, status.Error(codes.Internal, "deliver upgrade to peer failed")
 	}
 	if !resp.GetAccepted() {
@@ -1214,7 +1222,7 @@ func (s *Service) UpgradePeer(ctx context.Context, req *controlv1.UpgradePeerReq
 func (s *Service) RenewGrant(ctx context.Context, _ *controlv1.RenewGrantRequest) (*controlv1.RenewGrantResponse, error) {
 	caller, ok := auth.CallerFromContext(ctx)
 	if !ok || !caller.Valid() {
-		return nil, status.Error(codes.Unauthenticated, "no verified caller identity")
+		return nil, status.Error(codes.PermissionDenied, "no verified caller identity")
 	}
 	if caller.Grant.GetClaims().GetGrantDeadlineUnix() == 0 {
 		return nil, status.Error(codes.FailedPrecondition, "grant has no renewal horizon")
@@ -1882,6 +1890,31 @@ func (s *Service) requireCallerCap(ctx context.Context, want capabilityCheck, fr
 	caller, ok := auth.CallerFromContext(ctx)
 	if !ok || !want(caller) {
 		return status.Errorf(codes.PermissionDenied, "%s capability required", friendly)
+	}
+	return nil
+}
+
+// requireAuthorityOverPeer gates verbs that act on another peer: the
+// caller must be a delegation ancestor of target's current grant,
+// mirroring recomputeDeniedLocked's deny-authorisation rule. The cluster
+// root reaches every peer (every chain roots at it); a delegated
+// cluster-admin reaches only its own subtree, since can_admit is not a
+// lateral bypass. Self-target is refused and an unknown target fails
+// closed so a missed gossip cannot default-allow.
+func (s *Service) requireAuthorityOverPeer(ctx context.Context, target types.PeerKey) error {
+	caller, ok := auth.CallerFromContext(ctx)
+	if !ok || !caller.Valid() {
+		return status.Error(codes.PermissionDenied, "no verified caller identity")
+	}
+	if target == caller.Subject() {
+		return status.Error(codes.InvalidArgument, "cannot target self")
+	}
+	targetGrant := s.state.Snapshot().GrantFor(target.Bytes())
+	if targetGrant == nil {
+		return status.Error(codes.FailedPrecondition, "target peer has no known grant")
+	}
+	if !identity.AncestorIn(caller.Subject(), targetGrant) {
+		return status.Error(codes.PermissionDenied, "target peer is outside caller's authority")
 	}
 	return nil
 }

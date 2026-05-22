@@ -485,7 +485,7 @@ func runInvite(cmd *cobra.Command, args []string, env *cliEnv) error {
 	if err != nil {
 		return err
 	}
-	fmt.Fprint(cmd.OutOrStdout(), encoded)
+	fmt.Fprintln(cmd.OutOrStdout(), encoded)
 	return nil
 }
 
@@ -931,7 +931,7 @@ func issueUpgradeToken(cmd *cobra.Command, env *cliEnv, peerID []byte, peerShort
 		return err
 	}
 	fmt.Fprintf(cmd.ErrOrStderr(), "pln: %s has no live mesh daemon; deliver this token and have them run `pln join`\n", peerShort)
-	fmt.Fprint(cmd.OutOrStdout(), encoded)
+	fmt.Fprintln(cmd.OutOrStdout(), encoded)
 	return nil
 }
 

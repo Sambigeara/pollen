@@ -33,8 +33,8 @@ func TestRankCoordinatorsCrossNATPrefersPublicRelay(t *testing.T) {
 			local:  {IPs: []string{"192.168.0.10"}, ObservedExternalIP: "203.0.113.1"},
 			target: {IPs: []string{"10.99.0.20"}, ObservedExternalIP: "198.51.100.7"},
 			publicRelay: {
-				IPs:                []string{"91.99.170.199"},
-				ObservedExternalIP: "91.99.170.199",
+				IPs:                []string{"198.51.100.199"},
+				ObservedExternalIP: "198.51.100.199",
 				PubliclyAccessible: true,
 				Reachable:          reachableTo(target, local),
 			},
@@ -65,11 +65,11 @@ func TestRankCoordinatorsSharedEgressFallsBackToPublicRelay(t *testing.T) {
 	snap := state.Snapshot{
 		LocalID: local,
 		Nodes: map[types.PeerKey]state.NodeView{
-			local:  {IPs: []string{"192.168.0.31"}, ObservedExternalIP: "81.108.176.99"},
-			target: {IPs: []string{"192.168.0.220"}, ObservedExternalIP: "81.108.176.99"},
+			local:  {IPs: []string{"192.168.0.31"}, ObservedExternalIP: "203.0.113.99"},
+			target: {IPs: []string{"192.168.0.220"}, ObservedExternalIP: "203.0.113.99"},
 			publicRelay: {
-				IPs:                []string{"91.99.170.199"},
-				ObservedExternalIP: "91.99.170.199",
+				IPs:                []string{"198.51.100.199"},
+				ObservedExternalIP: "198.51.100.199",
 				PubliclyAccessible: true,
 				Reachable:          reachableTo(target, local),
 			},
@@ -91,16 +91,16 @@ func TestRankCoordinatorsSharedEgressLANBeatsPublicFallback(t *testing.T) {
 	snap := state.Snapshot{
 		LocalID: local,
 		Nodes: map[types.PeerKey]state.NodeView{
-			local:  {IPs: []string{"192.168.0.31"}, ObservedExternalIP: "81.108.176.99"},
-			target: {IPs: []string{"192.168.0.220"}, ObservedExternalIP: "81.108.176.99"},
+			local:  {IPs: []string{"192.168.0.31"}, ObservedExternalIP: "203.0.113.99"},
+			target: {IPs: []string{"192.168.0.220"}, ObservedExternalIP: "203.0.113.99"},
 			lanCoord: {
 				IPs:                []string{"192.168.0.24"},
-				ObservedExternalIP: "81.108.176.99",
+				ObservedExternalIP: "203.0.113.99",
 				Reachable:          reachableTo(target, local),
 			},
 			publicRelay: {
-				IPs:                []string{"91.99.170.199"},
-				ObservedExternalIP: "91.99.170.199",
+				IPs:                []string{"198.51.100.199"},
+				ObservedExternalIP: "198.51.100.199",
 				PubliclyAccessible: true,
 				Reachable:          reachableTo(target, local),
 			},
@@ -167,8 +167,8 @@ func TestRankCoordinatorsAdminPublicBeatsEasyNAT(t *testing.T) {
 				Reachable:          reachableTo(target, local),
 			},
 			publicRelay: {
-				IPs:                []string{"91.99.170.199"},
-				ObservedExternalIP: "91.99.170.199",
+				IPs:                []string{"198.51.100.199"},
+				ObservedExternalIP: "198.51.100.199",
 				PubliclyAccessible: true,
 				Reachable:          reachableTo(target, local),
 			},

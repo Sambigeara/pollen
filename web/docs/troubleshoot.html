@@ -139,6 +139,15 @@ hello   4f3a7c91  unknown   0/2       -      30s</span>
       <span class="cmd">pln status                                       <span class="cmt"># after a short delay, reflects the new tier</span></span>
     </div>
 
+    <h2 id="deny-outside-authority"><code>pln deny</code> refused with <code>outside caller's authority</code></h2>
+    <p><strong>Symptom.</strong></p>
+    <div class="terminal">
+      <span class="cmd">pln deny ab12cd34</span>
+      <span class="out">Error: target peer is outside caller's authority</span>
+    </div>
+    <p><strong>Cause.</strong> Deny follows the delegation tree: a caller can revoke any peer beneath it. The cluster root reaches every peer; a workspace-admin or delegated admin reaches only its own subtree; a leaf or publisher reaches no one. Holding admin authority does not widen this, so an admin cannot revoke a sibling or an ancestor. The target's grant has been checked against the caller's chain and is not a descendant.</p>
+    <p><strong>Fix.</strong> If you are a workspace-admin and the target belongs to a sibling workspace, ask the root admin or that workspace's admin to deny it. If you are a leaf and need revocation rights, request a <code>--workspace</code> upgrade with <a href="cli.html#grant"><code>pln grant</code></a>. <code>pln status nodes</code> on the issuing node shows whose chain a target sits in.</p>
+
     <h2 id="grant-token-fallback"><code>pln grant</code> prints a token instead of <code>upgraded …</code></h2>
     <p><strong>Symptom.</strong> An admin runs <code>pln grant peer --admin</code> and instead of <code>upgraded peer → admin</code> the CLI prints a long base64 string to stdout with a stderr line:</p>
     <div class="terminal">

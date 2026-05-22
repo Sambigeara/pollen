@@ -334,7 +334,7 @@ pln invite --admin --subject $(ssh relay pln id)</code></pre>
     <p>When the named peer has no live daemon for the admin to push to, <code>pln grant</code> falls back to printing a subject-pinned invite token; the peer redeems it with <a href="#join"><code>pln join &lt;token&gt;</code></a> to swap their credentials in place. This is the same path as a first join, bound to the existing identity. See <a href="concepts.html#grants">Grants</a> in Concepts.</p>
 
     <h3 id="deny"><code>pln deny &lt;peer-id&gt;</code></h3>
-    <p>Revoke a peer's membership and tear down its connections. Identify by peer-id prefix. Cascades to peers admitted by the denied node.</p>
+    <p>Revoke a peer's membership and tear down its connections. Identify by peer-id prefix. Cascades to peers admitted by the denied node. Authority follows the delegation tree: a caller can deny any peer beneath it. The cluster root reaches every peer; a workspace-admin or delegated admin reaches only its own subtree, so even an admin cannot deny a sibling or an ancestor. Calls from outside that scope fail with <code>target peer is outside caller's authority</code>; see <a href="troubleshoot.html#deny-outside-authority">Troubleshoot</a>.</p>
     <div class="terminal">
       <span class="cmd">pln deny ab12cd34</span>
       <span class="out">denied peer ab12cd34</span>

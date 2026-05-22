@@ -123,11 +123,11 @@ Persists to config.yaml so the tunnel re-establishes after restart.`,
 The peer is denied future re-admission until an admin re-issues credentials.
 Identify by hex peer-id prefix (as shown by ` + "`pln status`" + `).
 
-Authority is bounded by the delegation tree: a delegated admin can only
-deny peers it (transitively) admitted. Denies that fall outside the
-issuer's subtree are gossiped but ignored by other nodes. The root node
-can deny anyone. Revoking an intermediate admin cascades to the entire
-subtree it issued.`,
+Authority follows the delegation tree: a caller can deny any peer beneath
+it. The cluster root reaches every peer; a workspace-admin or delegated
+admin reaches only its own subtree, so even an admin cannot deny a sibling
+or an ancestor. Calls from outside that scope are refused with ` + "`target peer is outside caller's authority`" + `.
+Revoking an intermediate admin cascades to the entire subtree it issued.`,
 		Example: "  pln deny ab12cd34",
 		Args:    cobra.ExactArgs(1),
 		RunE:    withEnv(runDeny),

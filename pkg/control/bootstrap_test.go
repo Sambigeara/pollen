@@ -29,7 +29,7 @@ func TestClassifyNetwork(t *testing.T) {
 		{"172.16.5.1:60611", "lan"},
 		{"172.20.5.1:60611", "lan"},
 		{"[fd07:b51a:cc66::1]:60611", "lan"},
-		{"91.99.170.199:60611", "public-v4"},
+		{"198.51.100.199:60611", "public-v4"},
 		{"[2001:db8::1]:60611", "public-v6"},
 		{"127.0.0.1:60611", ""},
 		{"169.254.1.1:60611", ""},
@@ -52,7 +52,7 @@ func TestPickBootstrapPeers_OnePerNetwork(t *testing.T) {
 		LocalID: local,
 		Nodes: map[types.PeerKey]state.NodeView{
 			local:  {IPs: []string{"192.168.0.10"}, LocalPort: 60611, LastEventAt: now},
-			remote: {IPs: []string{"91.99.170.199"}, LocalPort: 60611, LastEventAt: now},
+			remote: {IPs: []string{"198.51.100.199"}, LocalPort: 60611, LastEventAt: now},
 		},
 	}
 
@@ -164,7 +164,7 @@ func TestPickBootstrapPeers_WireEndpoint(t *testing.T) {
 				LastEventAt: now,
 			},
 			remote: {
-				IPs:         []string{"192.168.0.11", "91.99.170.199"},
+				IPs:         []string{"192.168.0.11", "198.51.100.199"},
 				LocalPort:   60611,
 				LastEventAt: now,
 				ControlAddr: "0.0.0.0:7443",
@@ -182,7 +182,7 @@ func TestPickBootstrapPeers_WireEndpoint(t *testing.T) {
 		got[string(p.Peer.PeerPub)] = p.WireEndpoint
 	}
 	require.Empty(t, got[string(local.Bytes())], "no ControlAddr means no wire endpoint")
-	require.Equal(t, "91.99.170.199:7443", got[string(remote.Bytes())], "public IP outranks LAN as the wire host")
+	require.Equal(t, "198.51.100.199:7443", got[string(remote.Bytes())], "public IP outranks LAN as the wire host")
 	require.Empty(t, got[string(bare.Bytes())], "ControlAddr empty stays empty")
 }
 
