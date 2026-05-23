@@ -47,6 +47,9 @@ lint-proto-headers:
         exit 1
     fi
 
+lint-proto-breaking against=".git#branch=main": _buf
+    @ "${TOOLS_BIN_DIR}/buf" breaking --against '{{ against }}'
+
 lint-modernize: _modernize
     @ "${TOOLS_BIN_DIR}/modernize" -fix -test ./...
 
