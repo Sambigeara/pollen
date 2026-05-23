@@ -76,9 +76,7 @@ message ServiceID {
 message Predicate {
   InlinePredicate inline = 1;
   // public, when true, permits anonymous callers (no grant) and
-  // short-circuits attribute clause evaluation. The HTTP gateway's
-  // canonical URL (`<sub>.pln.sh/<slug>/<resource>`) is the entry
-  // point that surfaces this.
+  // short-circuits attribute clause evaluation.
   bool public = 2;
 }
 

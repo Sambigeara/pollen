@@ -527,9 +527,7 @@ type Predicate struct {
 	state  protoimpl.MessageState `protogen:"open.v1"`
 	Inline *InlinePredicate       `protobuf:"bytes,1,opt,name=inline,proto3" json:"inline,omitempty"`
 	// public, when true, permits anonymous callers (no grant) and
-	// short-circuits attribute clause evaluation. The HTTP gateway's
-	// canonical URL (`<sub>.pln.sh/<slug>/<resource>`) is the entry
-	// point that surfaces this.
+	// short-circuits attribute clause evaluation.
 	Public        bool `protobuf:"varint,2,opt,name=public,proto3" json:"public,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
