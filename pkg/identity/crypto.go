@@ -4,8 +4,10 @@
 package identity
 
 import (
+	"crypto/ecdh"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/sha512"
 	"encoding/pem"
 	"errors"
 	"fmt"
@@ -13,6 +15,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"filippo.io/edwards25519"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/structpb"
 
@@ -87,6 +90,64 @@ func SignPayload(privateKey ed25519.PrivateKey, payload []byte, context string) 
 
 func VerifyPayload(publicKey ed25519.PublicKey, payload, signature []byte, context string) error {
 	return ed25519.VerifyWithOptions(publicKey, payload, signature, &ed25519.Options{Context: context})
+}
+
+// EdPubToX25519 maps an Ed25519 public key to its X25519 (Montgomery)
+// equivalent via the standard birational map, so the same identity key
+// that signs can also participate in X25519 key agreement.
+func EdPubToX25519(edPub ed25519.PublicKey) ([]byte, error) {
+	if len(edPub) != ed25519.PublicKeySize {
+		return nil, fmt.Errorf("ed25519 pub must be %d bytes, got %d", ed25519.PublicKeySize, len(edPub))
+	}
+	pt, err := new(edwards25519.Point).SetBytes(edPub)
+	if err != nil {
+		return nil, fmt.Errorf("parse ed25519 pub: %w", err)
+	}
+	return pt.BytesMontgomery(), nil
+}
+
+// EdPrivToX25519 derives the X25519 scalar from an Ed25519 private key per
+// RFC 7748: the first 32 bytes of SHA-512(seed) with the standard clamp.
+func EdPrivToX25519(edPriv ed25519.PrivateKey) ([]byte, error) {
+	if len(edPriv) != ed25519.PrivateKeySize {
+		return nil, fmt.Errorf("ed25519 priv must be %d bytes, got %d", ed25519.PrivateKeySize, len(edPriv))
+	}
+	h := sha512.Sum512(edPriv.Seed())
+	var out [32]byte
+	copy(out[:], h[:32])
+	out[0] &= 248
+	out[31] &= 127
+	out[31] |= 64
+	return out[:], nil
+}
+
+// StaticSharedSecret computes the X25519 ECDH secret between a local
+// Ed25519 private key and a remote Ed25519 public key. Both ends of a
+// pair derive the identical secret. The raw secret must be run through a
+// KDF with domain separation before use as a key.
+func StaticSharedSecret(localPriv ed25519.PrivateKey, remotePub ed25519.PublicKey) ([]byte, error) {
+	xPrivBytes, err := EdPrivToX25519(localPriv)
+	if err != nil {
+		return nil, err
+	}
+	xPubBytes, err := EdPubToX25519(remotePub)
+	if err != nil {
+		return nil, err
+	}
+	curve := ecdh.X25519()
+	xPriv, err := curve.NewPrivateKey(xPrivBytes)
+	if err != nil {
+		return nil, fmt.Errorf("x25519 priv: %w", err)
+	}
+	xPub, err := curve.NewPublicKey(xPubBytes)
+	if err != nil {
+		return nil, fmt.Errorf("x25519 pub: %w", err)
+	}
+	secret, err := xPriv.ECDH(xPub)
+	if err != nil {
+		return nil, fmt.Errorf("x25519 ecdh: %w", err)
+	}
+	return secret, nil
 }
 
 func generateKeyPair(dir, privName, pubName, privPEMType, pubPEMType string) (ed25519.PrivateKey, ed25519.PublicKey, error) {

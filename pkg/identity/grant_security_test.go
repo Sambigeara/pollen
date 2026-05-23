@@ -207,6 +207,32 @@ func TestForgedBudgetRejected(t *testing.T) {
 	require.Contains(t, chk.Reason, "child budget exceeds parent")
 }
 
+// A node that is not itself infrastructure cannot mint an
+// infrastructure child: a tenant grant can never confer the relay-for-all
+// and infra-visibility role on its own nodes.
+func TestInfrastructureCapabilityMonotone(t *testing.T) {
+	now := time.Now()
+	rootPub, rootPriv := kp(t)
+	mPub, mPriv := kp(t)
+
+	mGrant, err := IssueGrant(rootPriv, nil, mPub,
+		&identityv1.Capabilities{CanDelegate: true, MaxDepth: 5, Publish: &identityv1.PublishCapability{}},
+		UnlimitedBudget(), now.Add(-time.Hour), time.Time{})
+	require.NoError(t, err)
+
+	infraCaps := &identityv1.Capabilities{IsInfrastructure: true, Publish: &identityv1.PublishCapability{}}
+	cPub, _ := kp(t)
+
+	_, err = IssueGrant(mPriv, mGrant, cPub, infraCaps, UnlimitedBudget(), now, time.Time{})
+	require.ErrorContains(t, err, "child capabilities exceed parent: IsInfrastructure")
+
+	forged, err := signGrant(mPriv, mGrant, cPub, infraCaps, UnlimitedBudget(), now, time.Time{})
+	require.NoError(t, err)
+	chk := CheckGrant(forged, rootPub, now, nil, nil)
+	require.Equal(t, GrantStatusInvalidChain, chk.Status, chk.Reason)
+	require.Contains(t, chk.Reason, "IsInfrastructure")
+}
+
 func TestOverDeepChainRejected(t *testing.T) {
 	now := time.Now()
 	rootPub, rootPriv := kp(t)

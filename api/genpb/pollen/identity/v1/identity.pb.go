@@ -108,6 +108,12 @@ type Capabilities struct {
 	// see their chain ancestors (operational context) and may delegate
 	// further workspace-admins and publishers beneath them.
 	IsWorkspaceAdmin bool `protobuf:"varint,6,opt,name=is_workspace_admin,json=isWorkspaceAdmin,proto3" json:"is_workspace_admin,omitempty"`
+	// is_infrastructure marks an operator-run shared node that may relay
+	// traffic for any mesh member and is visible, in reduced form, to
+	// tenants whose paths cross it. Set explicitly by the operator, never
+	// implied by admit or delegate authority, so a tenant grant can never
+	// carry it. Like the other capability bits it is monotone down-chain.
+	IsInfrastructure bool `protobuf:"varint,7,opt,name=is_infrastructure,json=isInfrastructure,proto3" json:"is_infrastructure,omitempty"`
 	unknownFields    protoimpl.UnknownFields
 	sizeCache        protoimpl.SizeCache
 }
@@ -180,6 +186,13 @@ func (x *Capabilities) GetPublish() *PublishCapability {
 func (x *Capabilities) GetIsWorkspaceAdmin() bool {
 	if x != nil {
 		return x.IsWorkspaceAdmin
+	}
+	return false
+}
+
+func (x *Capabilities) GetIsInfrastructure() bool {
+	if x != nil {
+		return x.IsInfrastructure
 	}
 	return false
 }
@@ -841,7 +854,7 @@ const file_pollen_identity_v1_identity_proto_rawDesc = "" +
 	"\tfunctions\x18\x01 \x01(\bR\tfunctions\x12\x14\n" +
 	"\x05blobs\x18\x02 \x01(\bR\x05blobs\x12\x14\n" +
 	"\x05sites\x18\x03 \x01(\bR\x05sites\x12\x1a\n" +
-	"\bservices\x18\x04 \x01(\bR\bservices\"\x9b\x02\n" +
+	"\bservices\x18\x04 \x01(\bR\bservices\"\xc8\x02\n" +
 	"\fCapabilities\x12!\n" +
 	"\fcan_delegate\x18\x01 \x01(\bR\vcanDelegate\x12\x1b\n" +
 	"\tcan_admit\x18\x02 \x01(\bR\bcanAdmit\x12\x1b\n" +
@@ -850,7 +863,8 @@ const file_pollen_identity_v1_identity_proto_rawDesc = "" +
 	"attributes\x18\x04 \x01(\v2\x17.google.protobuf.StructR\n" +
 	"attributes\x12G\n" +
 	"\apublish\x18\x05 \x01(\v2%.pollen.identity.v1.PublishCapabilityB\x06\xbaH\x03\xc8\x01\x01R\apublish\x12,\n" +
-	"\x12is_workspace_admin\x18\x06 \x01(\bR\x10isWorkspaceAdmin\"\x97\x01\n" +
+	"\x12is_workspace_admin\x18\x06 \x01(\bR\x10isWorkspaceAdmin\x12+\n" +
+	"\x11is_infrastructure\x18\a \x01(\bR\x10isInfrastructure\"\x97\x01\n" +
 	"\x06Budget\x12#\n" +
 	"\rmax_functions\x18\x01 \x01(\rR\fmaxFunctions\x12\x1b\n" +
 	"\tmax_blobs\x18\x02 \x01(\rR\bmaxBlobs\x12\x1b\n" +

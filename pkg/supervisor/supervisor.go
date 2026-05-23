@@ -207,6 +207,9 @@ func New(opts Options, creds *identity.Credentials, inviteConsumer identity.Invi
 		transport.WithIsDenied(func(pk types.PeerKey) bool {
 			return slices.Contains(stateStore.Snapshot().DeniedPeers(), pk)
 		}),
+		transport.WithRelayPermit(func(upstream types.PeerKey) bool {
+			return identity.MayRelay(creds.Grant(), stateStore.Snapshot().GrantFor(upstream[:]))
+		}),
 		transport.WithMetrics(metrics.NewMeshMetrics(mp.Meter())),
 		transport.WithTracer(tp.Tracer()),
 		transport.WithRouter(router),
@@ -800,7 +803,11 @@ func (n *Supervisor) recomputeRoutes() {
 			Coord:     c,
 		})
 	}
-	n.router.set(routing.Build(snap.LocalID, topology, n.mesh.ConnectedPeers()))
+	localGrant := n.creds.Grant()
+	permitTransit := func(c types.PeerKey) bool {
+		return identity.MayRelay(snap.GrantFor(c[:]), localGrant)
+	}
+	n.router.set(routing.Build(snap.LocalID, topology, n.mesh.ConnectedPeers(), permitTransit))
 }
 
 func (n *Supervisor) saveState() {

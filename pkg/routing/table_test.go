@@ -178,7 +178,7 @@ func TestBuild(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			table := Build(tt.self, tt.topology, tt.connected)
+			table := Build(tt.self, tt.topology, tt.connected, nil)
 
 			for dest, wantNext := range tt.expected {
 				next, ok := table.NextHop(dest)
@@ -204,8 +204,8 @@ func TestBuild_Idempotent(t *testing.T) {
 	}
 	connected := []types.PeerKey{B}
 
-	t1 := Build(A, topology, connected)
-	t2 := Build(A, topology, connected)
+	t1 := Build(A, topology, connected, nil)
+	t2 := Build(A, topology, connected, nil)
 
 	require.Equal(t, t1.routes, t2.routes)
 }

@@ -30,7 +30,13 @@ func (t Table) NextHop(dest types.PeerKey) (types.PeerKey, bool) {
 	return next, ok
 }
 
-func Build(self types.PeerKey, topology []PeerTopology, connected []types.PeerKey) Table {
+// Build computes this node's shortest-path next-hop table. permitTransit,
+// when non-nil, gates which peers may serve as intermediate relays: a
+// peer it rejects can still be a destination but is never routed
+// through, so an honest node never attempts to relay through a sibling
+// tenant (the relay would refuse anyway). A nil predicate transits any
+// peer.
+func Build(self types.PeerKey, topology []PeerTopology, connected []types.PeerKey, permitTransit func(types.PeerKey) bool) Table {
 	coordOf := make(map[types.PeerKey]*coords.Coord, len(topology))
 	for i := range topology {
 		coordOf[topology[i].Key] = topology[i].Coord
@@ -52,6 +58,11 @@ func Build(self types.PeerKey, topology []PeerTopology, connected []types.PeerKe
 	for h.Len() > 0 {
 		cur := heap.Pop(h).(heapEntry) //nolint:forcetypeassert
 		if d, seen := dist[cur.node]; seen && cur.dist > d {
+			continue
+		}
+		// A peer we may not transit stays reachable as a destination (its
+		// firstHop is already recorded) but we do not expand paths through it.
+		if cur.node != self && permitTransit != nil && !permitTransit(cur.node) {
 			continue
 		}
 		for _, neighbor := range adj[cur.node] {

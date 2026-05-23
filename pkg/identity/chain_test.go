@@ -117,3 +117,70 @@ func TestWorkspaceOf(t *testing.T) {
 		require.NotEqual(t, identity.WorkspaceOf(alice), identity.WorkspaceOf(bob))
 	})
 }
+
+func mkInfraGrant(subject []byte, chain []*identityv1.Grant) *identityv1.Grant {
+	return &identityv1.Grant{
+		Claims: &identityv1.GrantClaims{
+			SubjectPub:   subject,
+			Capabilities: &identityv1.Capabilities{IsInfrastructure: true},
+		},
+		Chain: chain,
+	}
+}
+
+func TestMayRelay(t *testing.T) {
+	rootPub := []byte{0x01}
+	wsA, wsB := []byte{0x0a}, []byte{0x0b}
+
+	chainA := []*identityv1.Grant{mkGrant(wsA, true, nil), mkGrant(rootPub, false, nil)}
+	chainB := []*identityv1.Grant{mkGrant(wsB, true, nil), mkGrant(rootPub, false, nil)}
+	tenantA1 := mkGrant([]byte{0xa1}, false, chainA)
+	tenantA2 := mkGrant([]byte{0xa2}, false, chainA)
+	tenantB1 := mkGrant([]byte{0xb1}, false, chainB)
+	infra := mkInfraGrant([]byte{0x0f}, []*identityv1.Grant{mkGrant(rootPub, false, nil)})
+
+	t.Run("infrastructure relays for any member", func(t *testing.T) {
+		require.True(t, identity.MayRelay(infra, tenantA1))
+		require.True(t, identity.MayRelay(infra, tenantB1))
+	})
+
+	t.Run("tenant relays within its workspace", func(t *testing.T) {
+		require.True(t, identity.MayRelay(tenantA1, tenantA2))
+	})
+
+	t.Run("tenant refuses a sibling workspace", func(t *testing.T) {
+		require.False(t, identity.MayRelay(tenantA1, tenantB1))
+	})
+
+	t.Run("tenant refuses an infrastructure upstream, blocking laundering", func(t *testing.T) {
+		require.False(t, identity.MayRelay(tenantA1, infra))
+	})
+
+	t.Run("relays along a workspace-less delegation line", func(t *testing.T) {
+		regional := mkGrant([]byte{0x21}, false, []*identityv1.Grant{mkGrant(rootPub, false, nil)})
+		child := mkGrant([]byte{0x22}, false, []*identityv1.Grant{
+			mkGrant([]byte{0x21}, false, nil),
+			mkGrant(rootPub, false, nil),
+		})
+		require.True(t, identity.MayRelay(regional, child))
+		require.True(t, identity.MayRelay(child, regional))
+	})
+
+	t.Run("relays for a chain ancestor across nested workspaces", func(t *testing.T) {
+		// outer founds a workspace; a nested workspace-admin sits beneath
+		// it; leaf is under the nested one. leaf's workspace is the nested
+		// one, but outer remains its delegation ancestor.
+		outer := mkGrant([]byte{0x31}, true, []*identityv1.Grant{mkGrant(rootPub, false, nil)})
+		leaf := mkGrant([]byte{0x33}, false, []*identityv1.Grant{
+			mkGrant([]byte{0x32}, true, nil),
+			mkGrant([]byte{0x31}, true, nil),
+			mkGrant(rootPub, false, nil),
+		})
+		require.True(t, identity.MayRelay(leaf, outer))
+		require.True(t, identity.MayRelay(outer, leaf))
+	})
+
+	t.Run("tenant refuses a nil upstream", func(t *testing.T) {
+		require.False(t, identity.MayRelay(tenantA1, nil))
+	})
+}

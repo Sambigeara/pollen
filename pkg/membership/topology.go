@@ -29,6 +29,7 @@ type PeerInfo struct {
 
 type Params struct {
 	CurrentOutbound map[types.PeerKey]struct{}
+	AnchorPermitted func(types.PeerKey) bool
 	LocalIPs        []string
 	InfraMax        int
 	NearestK        int
@@ -67,7 +68,7 @@ func ComputeTargetPeers(localKey types.PeerKey, localCoord coords.Coord, peers [
 
 	selected := make(map[types.PeerKey]struct{})
 
-	for _, pk := range selectInfra(localKey, peers, params.InfraMax) {
+	for _, pk := range selectInfra(localKey, peers, params.InfraMax, params.AnchorPermitted) {
 		selected[pk] = struct{}{}
 	}
 	for _, pk := range selectNearest(localKey, localCoord, peers, selected, params) {
@@ -125,15 +126,19 @@ func topByScore(candidates []scored, limit int) []types.PeerKey {
 	return result
 }
 
-func selectInfra(localKey types.PeerKey, peers []PeerInfo, limit int) []types.PeerKey {
+func selectInfra(localKey types.PeerKey, peers []PeerInfo, limit int, permitted func(types.PeerKey) bool) []types.PeerKey {
 	var candidates []scored
 	for _, p := range peers {
-		if p.PubliclyAccessible {
-			candidates = append(candidates, scored{
-				key:   p.Key,
-				score: hmacScore(localKey, []byte("infra"), p.Key.Bytes()),
-			})
+		if !p.PubliclyAccessible {
+			continue
 		}
+		if permitted != nil && !permitted(p.Key) {
+			continue
+		}
+		candidates = append(candidates, scored{
+			key:   p.Key,
+			score: hmacScore(localKey, []byte("infra"), p.Key.Bytes()),
+		})
 	}
 	return topByScore(candidates, limit)
 }

@@ -26,6 +26,13 @@ func grant(subject types.PeerKey, admin bool) *identityv1.Grant {
 	}}
 }
 
+func infraGrant(subject types.PeerKey) *identityv1.Grant {
+	return &identityv1.Grant{Claims: &identityv1.GrantClaims{
+		SubjectPub:   subject.Bytes(),
+		Capabilities: &identityv1.Capabilities{IsInfrastructure: true},
+	}}
+}
+
 // wsGrant builds a workspace-admin grant with the given subject and
 // chain. Chain entries are leaf-to-root: chain[0] is the immediate
 // parent.
@@ -155,8 +162,12 @@ func TestProjectScopesResourcesByAuthority(t *testing.T) {
 	tenant := key(1)
 	other := key(2)
 	snap := state.Snapshot{
+		// Holders of the tenant's resources are shared infrastructure, so
+		// they surface in the tenant's view (reduced).
 		Nodes: map[types.PeerKey]state.NodeView{
-			key(10): {}, key(11): {}, key(12): {},
+			key(10): {Grant: infraGrant(key(10))},
+			key(11): {Grant: infraGrant(key(11))},
+			key(12): {Grant: infraGrant(key(12))},
 		},
 		SpecsAll: []state.WorkloadSpecView{
 			{Spec: state.WorkloadSpec{Hash: "wmine", Name: "fnmine"}, Publisher: tenant},
@@ -255,6 +266,63 @@ func TestProjectSurfacesCollidingAuthorities(t *testing.T) {
 		require.Equal(t, hi, hiOwn.Workloads[0].Publisher)
 		require.Equal(t, "b", hiOwn.Workloads[0].Spec.Name)
 	}
+}
+
+// A sibling tenant's node that merely stores the same content hash must
+// not enter the view through the resource-host union.
+func TestProjectExcludesSiblingHashCollision(t *testing.T) {
+	tenant, sibling, siblingNode := key(1), key(2), key(20)
+	snap := state.Snapshot{
+		Nodes: map[types.PeerKey]state.NodeView{
+			siblingNode: {Grant: grant(siblingNode, false)}, // a plain tenant node, not infra
+		},
+		SpecsAll: []state.WorkloadSpecView{
+			{Spec: state.WorkloadSpec{Hash: "shared", Name: "mine"}, Publisher: tenant},
+			{Spec: state.WorkloadSpec{Hash: "shared", Name: "theirs"}, Publisher: sibling},
+		},
+		WorkloadStoringPeers: map[string]map[types.PeerKey]struct{}{
+			"shared": {siblingNode: {}},
+		},
+	}
+
+	sv := view.Project(snap, view.LensFor(grant(tenant, false)))
+	require.Len(t, sv.Workloads, 1, "tenant sees only its own publication of the shared hash")
+	require.NotContains(t, sv.Nodes, siblingNode,
+		"a sibling node storing the same content hash must not leak into the view")
+}
+
+// An infrastructure host of the tenant's resource is shown, but reduced
+// to identity and location: topology, load and the grant chain are gone.
+func TestProjectReducesInfraHost(t *testing.T) {
+	tenant, infraHost := key(1), key(20)
+	snap := state.Snapshot{
+		Nodes: map[types.PeerKey]state.NodeView{
+			infraHost: {
+				Grant:         infraGrant(infraHost),
+				Name:          "relay-eu",
+				LastAddr:      "198.51.100.7:9000",
+				ControlAddr:   "198.51.100.7:7000",
+				Reachable:     map[types.PeerKey]struct{}{key(99): {}},
+				MemTotalBytes: 1 << 30,
+				CPUPercent:    42,
+			},
+		},
+		SpecsAll: []state.WorkloadSpecView{
+			{Spec: state.WorkloadSpec{Hash: "h", Name: "mine"}, Publisher: tenant},
+		},
+		Claims: map[string]map[types.PeerKey]struct{}{"h": {infraHost: {}}},
+	}
+
+	sv := view.Project(snap, view.LensFor(grant(tenant, false)))
+	got, ok := sv.Nodes[infraHost]
+	require.True(t, ok, "tenant sees the infrastructure its workload runs on")
+	require.Equal(t, "relay-eu", got.Name)
+	require.Equal(t, "198.51.100.7:9000", got.LastAddr)
+	require.Zero(t, got.ControlAddr, "control endpoint stripped")
+	require.Nil(t, got.Reachable, "mesh adjacency stripped")
+	require.Zero(t, got.MemTotalBytes, "capacity stripped")
+	require.Zero(t, got.CPUPercent, "load stripped")
+	require.Nil(t, got.Grant, "delegation chain stripped")
 }
 
 func pluck[T any](xs []T, key func(T) string) []string {

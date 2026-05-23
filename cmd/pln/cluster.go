@@ -89,11 +89,13 @@ Prefix a target with ` + "`name=`" + ` to label the node, or pipe a list of targ
 on stdin via ` + "`-`" + `. The default tier is leaf; pass --publisher to allow
 the node to publish resources, or --admin to also delegate admit and
 grant authority so the cluster keeps working with the root offline.
+Pass --infra to mark a shared relay or compute node that may carry
+traffic for any tenant and appear as infrastructure in tenant views.
 Properties passed via --prop are baked into each node's membership cert.
 
 Pass --no-up to skip starting the local daemon after bootstrapping.`,
 		Example: `  pln bootstrap ssh user@host
-  pln bootstrap ssh relay-eu=root@10.0.0.5 relay-us=root@10.0.0.6 --admin
+  pln bootstrap ssh relay-eu=root@10.0.0.5 relay-us=root@10.0.0.6 --infra
   pln bootstrap ssh edge=root@10.0.0.7 --prop region=eu --prop tier=edge
   echo "media=alice@10.0.0.5" | pln bootstrap ssh -`,
 		Args: cobra.MinimumNArgs(1),
@@ -104,6 +106,7 @@ Pass --no-up to skip starting the local daemon after bootstrapping.`,
 	sshCmd.Flags().Bool("admin", false, "Issue with admin capabilities (delegate + admit + publish)")
 	sshCmd.Flags().Bool("workspace", false, workspaceFlagDesc)
 	sshCmd.Flags().Bool("publisher", false, "Issue with publisher capability")
+	sshCmd.Flags().Bool("infra", false, infraFlagDesc)
 	sshCmd.Flags().Bool("no-up", false, "Skip starting the local daemon after bootstrapping")
 	sshCmd.Flags().StringArray("prop", nil, "Cert properties: key=value, JSON, or - for stdin (applied to every target)")
 	sshCmd.Flags().String("wire", "", "Bind addr for the remote's TLS+mTLS control listener (e.g. :7443). The first publicly-reachable target with --wire set also becomes this context's wire fallback when none is configured yet.")
@@ -164,6 +167,7 @@ further grants.`,
 	inviteCmd.Flags().Bool("admin", false, "Issue with admin capabilities (delegate + admit + publish)")
 	inviteCmd.Flags().Bool("workspace", false, workspaceFlagDesc)
 	inviteCmd.Flags().Bool("publisher", false, "Issue with publisher capability")
+	inviteCmd.Flags().Bool("infra", false, infraFlagDesc)
 	inviteCmd.Flags().Uint32("max-functions", 0, "Max functions the grantee may publish (0 = unlimited)")
 	inviteCmd.Flags().Uint32("max-blobs", 0, "Max blobs the grantee may publish (0 = unlimited)")
 	inviteCmd.Flags().Uint32("max-sites", 0, "Max sites the grantee may publish (0 = unlimited)")
@@ -192,6 +196,7 @@ policy router.`,
 	grantCmd.Flags().Bool("admin", false, "Issue with admin capabilities (delegate + admit + publish)")
 	grantCmd.Flags().Bool("workspace", false, workspaceFlagDesc)
 	grantCmd.Flags().Bool("publisher", false, "Issue with publisher capability")
+	grantCmd.Flags().Bool("infra", false, infraFlagDesc)
 	grantCmd.Flags().StringArray("prop", nil, "Grant properties: key=value, JSON, or - for stdin")
 	grantCmd.Flags().Uint32("max-functions", 0, "Max functions the grantee may publish (0 = unlimited)")
 	grantCmd.Flags().Uint32("max-blobs", 0, "Max blobs the grantee may publish (0 = unlimited)")
@@ -942,8 +947,14 @@ const (
 
 const workspaceFlagDesc = "Issue as a workspace-admin: founds a workspace, may delegate within it, sees its chain ancestors and own subtree"
 
+const infraFlagDesc = "Mark as shared infrastructure: may relay for any tenant and appears as infrastructure in tenant views (requires an infrastructure issuer)"
+
 func capsTierLabel(caps *identityv1.Capabilities) string {
-	return tierLabel(caps.GetCanAdmit(), caps.GetIsWorkspaceAdmin(), capsCanPublish(caps))
+	label := tierLabel(caps.GetCanAdmit(), caps.GetIsWorkspaceAdmin(), capsCanPublish(caps))
+	if caps.GetIsInfrastructure() {
+		label += "+infra"
+	}
+	return label
 }
 
 func capsCanPublish(c *identityv1.Capabilities) bool {
@@ -1000,6 +1011,9 @@ func capsFromFlags(cmd *cobra.Command, attrs *structpb.Struct) (*identityv1.Capa
 		caps = identity.LeafCapabilities()
 	}
 	caps.Attributes = attrs
+	if infra, _ := cmd.Flags().GetBool("infra"); infra {
+		caps.IsInfrastructure = true
+	}
 	return caps, nil
 }
 
@@ -1025,6 +1039,9 @@ func validateCapsAgainstSigner(requested, signerCaps *identityv1.Capabilities) e
 	}
 	if requested.GetIsWorkspaceAdmin() && !signerCaps.GetIsWorkspaceAdmin() {
 		return errors.New("--workspace requires workspace-admin capability")
+	}
+	if requested.GetIsInfrastructure() && !signerCaps.GetIsInfrastructure() {
+		return errors.New("--infra requires infrastructure capability")
 	}
 	if capsCanPublish(requested) && !capsCanPublish(signerCaps) {
 		return errors.New("--publisher requires publish capability")

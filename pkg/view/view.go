@@ -44,11 +44,14 @@ type ScopedView struct {
 // Project filters snap through lens. Resource visibility is by the
 // cluster visibility rule (see Permits). Node visibility is the union
 // of two sets: nodes whose grant the lens sees structurally (chain,
-// subtree, workspace peers), plus nodes that store or run any
-// visible resource. The first set keeps every member of the lens's
-// workspace visible even before any deployment lands; the second
-// keeps any host of a visible workload in view even when that host
-// sits outside the workspace.
+// subtree, workspace peers), plus the hosts of any visible resource.
+// The first set keeps every member of the lens's workspace visible even
+// before any deployment lands. The second keeps a host of a visible
+// resource in view when it sits outside the workspace, but only when it
+// is shared infrastructure, and then as a reduced record: a sibling
+// tenant that merely stores the same content hash never leaks in, and a
+// tenant sees only identity and location of the infrastructure its
+// resources run on, not its topology, load or delegation chain.
 func Project(snap state.Snapshot, lens Lens) ScopedView {
 	sv := ScopedView{Lens: lens}
 	// Iterate the un-deduped per-(authority,name) publication sources,
@@ -92,10 +95,14 @@ func Project(snap state.Snapshot, lens Lens) ScopedView {
 	// but the static-claim register is per-authority.
 	addNode := func(pk types.PeerKey) {
 		if _, already := sv.Nodes[pk]; already {
+			return // already added in full via structural visibility
+		}
+		n, ok := snap.Nodes[pk]
+		if !ok {
 			return
 		}
-		if n, ok := snap.Nodes[pk]; ok {
-			sv.Nodes[pk] = n
+		if identity.IsInfrastructure(n.Grant) {
+			sv.Nodes[pk] = reduceInfraNode(n)
 		}
 	}
 	addPeers := func(set map[types.PeerKey]struct{}) {
@@ -116,4 +123,20 @@ func Project(snap state.Snapshot, lens Lens) ScopedView {
 		addPeers(snap.BlobStoringPeers[b.Spec.Digest])
 	}
 	return sv
+}
+
+// reduceInfraNode keeps only the identity and data-plane location fields of
+// a shared-infrastructure node (see Project for why). The keep-list is
+// explicit so any new NodeView field defaults to dropped.
+func reduceInfraNode(n state.NodeView) state.NodeView {
+	return state.NodeView{
+		PeerPub:            n.PeerPub,
+		Name:               n.Name,
+		LastAddr:           n.LastAddr,
+		ObservedExternalIP: n.ObservedExternalIP,
+		IPs:                n.IPs,
+		LocalPort:          n.LocalPort,
+		ExternalPort:       n.ExternalPort,
+		PubliclyAccessible: n.PubliclyAccessible,
+	}
 }

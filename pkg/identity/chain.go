@@ -38,3 +38,40 @@ func WorkspaceOf(grant *identityv1.Grant) types.PeerKey {
 	}
 	return types.PeerKey{}
 }
+
+// IsInfrastructure reports whether grant marks an operator-run shared
+// node: one that may relay for any mesh member and is visible as
+// infrastructure. Set explicitly at issuance, never inferred from admit
+// or delegate authority.
+func IsInfrastructure(grant *identityv1.Grant) bool {
+	return grant.GetClaims().GetCapabilities().GetIsInfrastructure()
+}
+
+// MayRelay reports whether a node holding self should forward relayed
+// traffic on behalf of its immediately-upstream peer holding upstream.
+// Infrastructure, cluster admins and nodes outside any workspace relay
+// for any member. A tenant-confined node (inside a workspace, without
+// admit or infrastructure authority) relays only within its own
+// workspace or delegation line, so a sibling tenant's traffic stays out
+// of its relay fabric even when laundered through infrastructure.
+// Enforced at every hop against the cryptographically-verified previous
+// hop, the per-hop check composes into transitive tenant isolation.
+func MayRelay(self, upstream *identityv1.Grant) bool {
+	if self == nil {
+		return false
+	}
+	sw := WorkspaceOf(self)
+	confined := sw != (types.PeerKey{}) && !self.GetClaims().GetCapabilities().GetCanAdmit() && !IsInfrastructure(self)
+	if !confined {
+		return true
+	}
+	if upstream == nil {
+		return false
+	}
+	if sw == WorkspaceOf(upstream) {
+		return true
+	}
+	selfKey := types.PeerKeyFromBytes(self.GetClaims().GetSubjectPub())
+	upKey := types.PeerKeyFromBytes(upstream.GetClaims().GetSubjectPub())
+	return AncestorIn(selfKey, upstream) || AncestorIn(upKey, self)
+}

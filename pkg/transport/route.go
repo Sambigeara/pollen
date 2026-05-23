@@ -25,14 +25,16 @@ func (m *QUICTransport) openRoutedStream(ctx context.Context, dest types.PeerKey
 		return Stream{}, err
 	}
 
-	var header [1 + routeHeaderSize]byte
-	header[0] = byte(StreamTypeRouted)
-	copy(header[1:33], dest[:])
-	copy(header[33:65], m.localKey[:])
-	header[65] = defaultRouteTTL
-	header[66] = byte(innerType)
+	frame := make([]byte, 1+routeHeaderSize)
+	frame[0] = byte(StreamTypeRouted)
+	header := frame[1:]
+	writeRouteHeader(header, dest, m.localKey, byte(innerType))
+	if err := m.routeAuth.seal(routeDomainStream, header, nil); err != nil {
+		cancelStream(stream)
+		return Stream{}, err
+	}
 
-	if _, err := stream.Write(header[:]); err != nil {
+	if _, err := stream.Write(frame); err != nil {
 		cancelStream(stream)
 		return Stream{}, err
 	}
@@ -47,19 +49,24 @@ func (m *QUICTransport) handleRoutedStream(ctx context.Context, stream *quic.Str
 	}
 
 	var dest, source types.PeerKey
-	copy(dest[:], header[0:32])
-	copy(source[:], header[32:64])
-	ttl := header[64]
-	innerType := StreamType(header[65])
+	copy(dest[:], header[roDest:roSource])
+	copy(source[:], header[roSource:roTTL])
+	ttl := header[roTTL]
+	innerType := StreamType(header[roInnerType])
 
 	if dest == m.localKey {
-		if innerType == StreamTypeTunnel || innerType == StreamTypeBlob || innerType == StreamTypeBlobPlaintext || innerType == StreamTypeWorkload || innerType == StreamTypeMembership {
+		if _, ok := m.routeAuth.verify(routeDomainStream, header[:], nil); !ok {
+			cancelStream(stream)
+			return
+		}
+		switch innerType {
+		case StreamTypeTunnel, StreamTypeBlob, StreamTypeBlobPlaintext, StreamTypeWorkload, StreamTypeMembership:
 			select {
 			case m.acceptCh <- acceptedStream{stream: Stream{stream}, stype: innerType, peerKey: source}:
 			case <-ctx.Done():
 				cancelStream(stream)
 			}
-		} else {
+		default:
 			cancelStream(stream)
 		}
 		return
@@ -70,10 +77,14 @@ func (m *QUICTransport) handleRoutedStream(ctx context.Context, stream *quic.Str
 		return
 	}
 
-	m.forwardRoutedStream(ctx, stream, dest, source, ttl-1, innerType, upstreamPeer)
+	m.forwardRoutedStream(ctx, stream, header[:], dest, source, ttl-1, upstreamPeer)
 }
 
-func (m *QUICTransport) forwardRoutedStream(ctx context.Context, inbound *quic.Stream, dest, source types.PeerKey, ttl byte, innerType StreamType, upstreamPeer types.PeerKey) {
+func (m *QUICTransport) forwardRoutedStream(ctx context.Context, inbound *quic.Stream, header []byte, dest, source types.PeerKey, ttl byte, upstreamPeer types.PeerKey) {
+	if m.relayPermit != nil && !m.relayPermit(upstreamPeer) {
+		cancelStream(inbound)
+		return
+	}
 	m.sessionsMu.RLock()
 	s, ok := m.sessions[dest]
 	m.sessionsMu.RUnlock()
@@ -104,14 +115,12 @@ func (m *QUICTransport) forwardRoutedStream(ctx context.Context, inbound *quic.S
 		return
 	}
 
-	var header [1 + routeHeaderSize]byte
-	header[0] = byte(StreamTypeRouted)
-	copy(header[1:33], dest[:])
-	copy(header[33:65], source[:])
-	header[65] = ttl
-	header[66] = byte(innerType)
+	frame := make([]byte, 1+routeHeaderSize)
+	frame[0] = byte(StreamTypeRouted)
+	copy(frame[1:], header)
+	frame[1+roTTL] = ttl
 
-	if _, err := outbound.Write(header[:]); err != nil {
+	if _, err := outbound.Write(frame); err != nil {
 		cancelStream(outbound)
 		cancelStream(inbound)
 		return
@@ -184,36 +193,39 @@ func WrapTrafficStream(stream io.ReadWriteCloser, recorder TrafficRecorder, peer
 	return &trafficCountedStream{inner: stream, recorder: recorder, peer: peer}
 }
 
-const datagramRouteHeaderSize = routeHeaderSize
-
 func (m *QUICTransport) sendRoutedDatagram(ctx context.Context, dest types.PeerKey, innerType DatagramType, data []byte, nextHop types.PeerKey) error {
-	hdr := make([]byte, 1+datagramRouteHeaderSize+len(data))
-	hdr[0] = byte(DatagramTypeRouted)
-	copy(hdr[1:33], dest[:])
-	copy(hdr[33:65], m.localKey[:])
-	hdr[65] = defaultRouteTTL
-	hdr[66] = byte(innerType)
-	copy(hdr[67:], data)
-	return m.sendRawDatagram(ctx, nextHop, hdr)
+	frame := make([]byte, 1+routeHeaderSize+len(data))
+	frame[0] = byte(DatagramTypeRouted)
+	header := frame[1 : 1+routeHeaderSize]
+	writeRouteHeader(header, dest, m.localKey, byte(innerType))
+	copy(frame[1+routeHeaderSize:], data)
+	if err := m.routeAuth.seal(routeDomainDatagram, header, data); err != nil {
+		return err
+	}
+	return m.sendRawDatagram(ctx, nextHop, frame)
 }
 
 func (m *QUICTransport) handleRoutedDatagram(ctx context.Context, payload []byte, upstreamPeer types.PeerKey) {
-	if len(payload) < datagramRouteHeaderSize {
+	if len(payload) < routeHeaderSize {
 		return
 	}
+	header := payload[:routeHeaderSize]
+	innerPayload := payload[routeHeaderSize:]
 
 	var dest, source types.PeerKey
-	copy(dest[:], payload[0:32])
-	copy(source[:], payload[32:64])
-	ttl := payload[64]
-	innerType := DatagramType(payload[65])
-	innerPayload := payload[datagramRouteHeaderSize:]
+	copy(dest[:], header[roDest:roSource])
+	copy(source[:], header[roSource:roTTL])
+	ttl := header[roTTL]
+	innerType := DatagramType(header[roInnerType])
 
 	if m.trafficTracker != nil {
 		m.trafficTracker.Record(upstreamPeer, uint64(len(payload)), 0)
 	}
 
 	if dest == m.localKey {
+		if _, ok := m.routeAuth.verify(routeDomainDatagram, header, innerPayload); !ok {
+			return
+		}
 		switch innerType {
 		case DatagramTypeTunnel:
 			select {
@@ -231,8 +243,12 @@ func (m *QUICTransport) handleRoutedDatagram(ctx context.Context, payload []byte
 		return
 	}
 
+	if m.relayPermit != nil && !m.relayPermit(upstreamPeer) {
+		return
+	}
+
 	m.sessionsMu.RLock()
-	s, ok := m.sessions[dest]
+	_, ok := m.sessions[dest]
 	m.sessionsMu.RUnlock()
 	nextHop := dest
 
@@ -251,15 +267,11 @@ func (m *QUICTransport) handleRoutedDatagram(ctx context.Context, payload []byte
 			return
 		}
 	}
-	_ = s // used only for the session existence check above
 
-	fwd := make([]byte, 1+datagramRouteHeaderSize+len(innerPayload))
+	fwd := make([]byte, 1+len(payload))
 	fwd[0] = byte(DatagramTypeRouted)
-	copy(fwd[1:33], dest[:])
-	copy(fwd[33:65], source[:])
-	fwd[65] = ttl - 1
-	fwd[66] = byte(innerType)
-	copy(fwd[67:], innerPayload)
+	copy(fwd[1:], payload)
+	fwd[1+roTTL] = ttl - 1
 
 	if m.trafficTracker != nil {
 		m.trafficTracker.Record(nextHop, 0, uint64(len(fwd)))

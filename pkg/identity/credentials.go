@@ -267,7 +267,7 @@ func EnsureLocalRootGrant(identityDir string, nodePub ed25519.PublicKey, attrs *
 		return existing, nil
 	}
 
-	caps := FullCapabilities()
+	caps := RootCapabilities()
 	caps.Attributes = attrs
 
 	grant, err := IssueGrant(adminPriv, nil, nodePub, caps, UnlimitedBudget(), now, time.Time{})
@@ -301,10 +301,11 @@ func rootGrantHealthy(existing *Credentials, nodePub, adminPub ed25519.PublicKey
 	if len(existing.grant.GetChain()) != 0 {
 		return false
 	}
-	want := FullCapabilities()
+	want := RootCapabilities()
 	got := claims.GetCapabilities()
 	return got.GetCanDelegate() == want.CanDelegate &&
 		got.GetCanAdmit() == want.CanAdmit &&
+		got.GetIsInfrastructure() == want.IsInfrastructure &&
 		got.GetMaxDepth() == want.MaxDepth &&
 		proto.Equal(got.GetPublish(), want.Publish)
 }

@@ -30,6 +30,12 @@ message Capabilities {
   // see their chain ancestors (operational context) and may delegate
   // further workspace-admins and publishers beneath them.
   bool is_workspace_admin = 6;
+  // is_infrastructure marks an operator-run shared node that may relay
+  // traffic for any mesh member and is visible, in reduced form, to
+  // tenants whose paths cross it. Set explicitly by the operator, never
+  // implied by admit or delegate authority, so a tenant grant can never
+  // carry it. Like the other capability bits it is monotone down-chain.
+  bool is_infrastructure = 7;
 }
 
 message Budget {

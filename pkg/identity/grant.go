@@ -64,6 +64,15 @@ func FullCapabilities() *identityv1.Capabilities {
 	}
 }
 
+// RootCapabilities is the cluster root's profile: full delegatable
+// authority plus the infrastructure marker, since the genesis node relays
+// for every member. Members and admins get FullCapabilities without it.
+func RootCapabilities() *identityv1.Capabilities {
+	caps := FullCapabilities()
+	caps.IsInfrastructure = true
+	return caps
+}
+
 // WorkspaceCapabilities is the cap profile for the --workspace role: a
 // scoped admin who founds a workspace boundary, may delegate within it
 // (CanDelegate + IsWorkspaceAdmin), and may publish any kind inside
@@ -237,6 +246,9 @@ func validateChildCapabilities(child, parent *identityv1.Capabilities) error {
 	}
 	if child.GetIsWorkspaceAdmin() && !parent.GetIsWorkspaceAdmin() {
 		return errors.New("child capabilities exceed parent: IsWorkspaceAdmin")
+	}
+	if child.GetIsInfrastructure() && !parent.GetIsInfrastructure() {
+		return errors.New("child capabilities exceed parent: IsInfrastructure")
 	}
 	cp, pp := child.GetPublish(), parent.GetPublish()
 	if cp.GetFunctions() && !pp.GetFunctions() {

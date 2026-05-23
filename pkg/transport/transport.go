@@ -147,7 +147,6 @@ const (
 	sessionReapInterval    = 5 * time.Minute
 	streamTypeTimeout      = 5 * time.Second
 	internalConnectTimeout = 2 * time.Second
-	routeHeaderSize        = 66
 	defaultRouteTTL        = 16
 )
 
@@ -176,6 +175,7 @@ type transportOptions struct {
 	tracerProvider   trace.TracerProvider
 	trafficTracker   TrafficRecorder
 	isDenied         func(types.PeerKey) bool
+	relayPermit      func(types.PeerKey) bool
 	metrics          *metrics.MeshMetrics
 	signPriv         ed25519.PrivateKey
 	tlsIdentityTTL   time.Duration
@@ -210,6 +210,14 @@ func WithInviteConsumer(c identity.InviteConsumer) Option {
 func WithIsDenied(fn func(types.PeerKey) bool) Option {
 	return func(o *transportOptions) { o.isDenied = fn }
 }
+
+// WithRelayPermit gates whether this node will forward a relayed message
+// for a given cryptographically-verified upstream peer. Returning false
+// drops the message, keeping a sibling tenant's traffic out of the
+// relay fabric. Unset means relay for anyone (tests).
+func WithRelayPermit(fn func(types.PeerKey) bool) Option {
+	return func(o *transportOptions) { o.relayPermit = fn }
+}
 func WithMetrics(m *metrics.MeshMetrics) Option { return func(o *transportOptions) { o.metrics = m } }
 func WithPacketConn(conn net.PacketConn) Option {
 	return func(o *transportOptions) { o.packetConn = conn }
@@ -235,6 +243,7 @@ type QUICTransport struct {
 	trafficTracker   TrafficRecorder
 	tracer           trace.Tracer
 	peers            *peerStore
+	routeAuth        *routeAuth
 	listener         *quic.Listener
 	inviteForwarder  InviteForwarder
 	recvCh           chan Packet
@@ -244,6 +253,7 @@ type QUICTransport struct {
 	metrics          *metrics.MeshMetrics
 	log              *zap.SugaredLogger
 	isDenied         func(types.PeerKey) bool
+	relayPermit      func(types.PeerKey) bool
 	socks            *sockStoreImpl
 	meshCert         atomic.Pointer[tls.Certificate]
 	curSession       atomic.Pointer[identityv1.Session]
@@ -323,6 +333,7 @@ func New(self types.PeerKey, creds *identity.Credentials, listenAddr string, opt
 		rootPub:          []byte(creds.RootPub()),
 		inviteConsumer:   o.inviteConsumer,
 		isDenied:         o.isDenied,
+		relayPermit:      o.relayPermit,
 		localKey:         self,
 		port:             port,
 		membershipTTL:    o.membershipTTL,
@@ -344,6 +355,10 @@ func New(self types.PeerKey, creds *identity.Credentials, listenAddr string, opt
 		metrics:          o.metrics,
 	}
 	m.peers = newPeerStore(m)
+	m.routeAuth, err = newRouteAuth(o.signPriv)
+	if err != nil {
+		return nil, fmt.Errorf("route auth: %w", err)
+	}
 	m.curSession.Store(session)
 	m.meshCert.Store(&meshCert)
 	return m, nil

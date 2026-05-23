@@ -6,6 +6,7 @@ package supervisor
 import (
 	"testing"
 
+	identityv1 "github.com/sambigeara/pollen/api/genpb/pollen/identity/v1"
 	"github.com/sambigeara/pollen/pkg/nat"
 	"github.com/sambigeara/pollen/pkg/state"
 	"github.com/sambigeara/pollen/pkg/types"
@@ -18,6 +19,26 @@ func reachableTo(targets ...types.PeerKey) map[types.PeerKey]struct{} {
 		m[t] = struct{}{}
 	}
 	return m
+}
+
+// fillBareGrants gives every node an unscoped grant so the relay-permit
+// filter admits it; production peers always carry a gossiped grant.
+func fillBareGrants(nodes map[types.PeerKey]state.NodeView) {
+	for k, nv := range nodes {
+		nv.Grant = &identityv1.Grant{Claims: &identityv1.GrantClaims{SubjectPub: k.Bytes()}}
+		nodes[k] = nv
+	}
+}
+
+// wsGrant builds a tenant grant whose workspace is wsAdmin.
+func wsGrant(subject, wsAdmin types.PeerKey) *identityv1.Grant {
+	return &identityv1.Grant{
+		Claims: &identityv1.GrantClaims{SubjectPub: subject.Bytes()},
+		Chain: []*identityv1.Grant{{Claims: &identityv1.GrantClaims{
+			SubjectPub:   wsAdmin.Bytes(),
+			Capabilities: &identityv1.Capabilities{IsWorkspaceAdmin: true},
+		}}},
+	}
 }
 
 func TestRankCoordinatorsCrossNATPrefersPublicRelay(t *testing.T) {
@@ -51,6 +72,8 @@ func TestRankCoordinatorsCrossNATPrefersPublicRelay(t *testing.T) {
 		},
 	}
 
+	fillBareGrants(snap.Nodes)
+
 	got := rankCoordinators(snap.Nodes[local].IPs, snap.Nodes[target].IPs, target,
 		[]types.PeerKey{publicRelay, sameSubnetPeer, sameEgressPeer}, snap)
 
@@ -75,6 +98,8 @@ func TestRankCoordinatorsSharedEgressFallsBackToPublicRelay(t *testing.T) {
 			},
 		},
 	}
+
+	fillBareGrants(snap.Nodes)
 
 	got := rankCoordinators(snap.Nodes[local].IPs, snap.Nodes[target].IPs, target,
 		[]types.PeerKey{publicRelay}, snap)
@@ -106,6 +131,8 @@ func TestRankCoordinatorsSharedEgressLANBeatsPublicFallback(t *testing.T) {
 			},
 		},
 	}
+
+	fillBareGrants(snap.Nodes)
 
 	got := rankCoordinators(snap.Nodes[local].IPs, snap.Nodes[target].IPs, target,
 		[]types.PeerKey{publicRelay, lanCoord}, snap)
@@ -141,6 +168,8 @@ func TestRankCoordinatorsPrefersEasyNATOverUnknown(t *testing.T) {
 		},
 	}
 
+	fillBareGrants(snap.Nodes)
+
 	got := rankCoordinators(snap.Nodes[local].IPs, snap.Nodes[target].IPs, target,
 		[]types.PeerKey{unknownPeer, easyNATPeer}, snap)
 
@@ -175,6 +204,8 @@ func TestRankCoordinatorsAdminPublicBeatsEasyNAT(t *testing.T) {
 		},
 	}
 
+	fillBareGrants(snap.Nodes)
+
 	got := rankCoordinators(snap.Nodes[local].IPs, snap.Nodes[target].IPs, target,
 		[]types.PeerKey{easyNATPeer, publicRelay}, snap)
 
@@ -197,8 +228,40 @@ func TestRankCoordinatorsExcludesUnreachableCandidate(t *testing.T) {
 		},
 	}
 
+	fillBareGrants(snap.Nodes)
+
 	got := rankCoordinators(snap.Nodes[local].IPs, snap.Nodes[target].IPs, target,
 		[]types.PeerKey{publicRelayUnreachable, publicRelayOK}, snap)
 
 	require.Equal(t, []types.PeerKey{publicRelayOK}, got)
+}
+
+// A publicly-accessible node in a different tenant workspace must not be
+// chosen to broker a punch, even though it would otherwise rank top-tier.
+func TestRankCoordinatorsExcludesSiblingTenant(t *testing.T) {
+	local := testPeerKey(1)
+	target := testPeerKey(2)
+	sibling := testPeerKey(3)
+	wsA := testPeerKey(10)
+	wsB := testPeerKey(11)
+
+	snap := state.Snapshot{
+		LocalID: local,
+		Nodes: map[types.PeerKey]state.NodeView{
+			local:  {IPs: []string{"203.0.113.1"}, ObservedExternalIP: "203.0.113.1", Grant: wsGrant(local, wsA)},
+			target: {IPs: []string{"198.51.100.7"}, ObservedExternalIP: "198.51.100.7", Grant: wsGrant(target, wsA)},
+			sibling: {
+				IPs:                []string{"198.51.100.50"},
+				ObservedExternalIP: "198.51.100.50",
+				PubliclyAccessible: true,
+				Reachable:          reachableTo(target, local),
+				Grant:              wsGrant(sibling, wsB),
+			},
+		},
+	}
+
+	got := rankCoordinators(snap.Nodes[local].IPs, snap.Nodes[target].IPs, target,
+		[]types.PeerKey{sibling}, snap)
+
+	require.Empty(t, got, "a sibling-tenant node must not be selected as a coordinator")
 }

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	meshv1 "github.com/sambigeara/pollen/api/genpb/pollen/mesh/v1"
+	"github.com/sambigeara/pollen/pkg/identity"
 	"github.com/sambigeara/pollen/pkg/membership"
 	"github.com/sambigeara/pollen/pkg/nat"
 	"github.com/sambigeara/pollen/pkg/state"
@@ -35,6 +36,7 @@ func (n *Supervisor) coordinatorPeers(target types.PeerKey) []types.PeerKey {
 func rankCoordinators(localIPs, targetIPs []string, target types.PeerKey, connectedPeers []types.PeerKey, snap state.Snapshot) []types.PeerKey {
 	localNV := snap.Nodes[snap.LocalID]
 	targetNV := snap.Nodes[target]
+	localGrant := snap.GrantFor(snap.LocalID[:])
 	// Shared egress (same WAN IP) means a public relay would produce a
 	// hairpin candidate that residential routers usually can't handle.
 	// Prefer a LAN-adjacent coordinator; fall back to public relay.
@@ -51,6 +53,11 @@ func rankCoordinators(localIPs, targetIPs []string, target types.PeerKey, connec
 			continue
 		}
 		if _, connected := nv.Reachable[target]; !connected {
+			continue
+		}
+		// A coordinator brokers the punch and sees both endpoints'
+		// addresses, so a sibling tenant must never be chosen.
+		if !identity.MayRelay(snap.GrantFor(key[:]), localGrant) {
 			continue
 		}
 		targetLAN := membership.InferPrivatelyRoutable(targetIPs, nv.IPs)
@@ -111,6 +118,9 @@ func (n *Supervisor) requestPunchCoordination(target types.PeerKey) {
 }
 
 func (n *Supervisor) handlePunchCoordRequest(ctx context.Context, from types.PeerKey, req *meshv1.PunchCoordRequest) {
+	// No tenant gate here: this only relays NAT addresses already in every
+	// daemon's gossiped snapshot, and the resulting session is transport-
+	// authenticated. Isolation lives in view.Project and the relay checks.
 	targetKey := types.PeerKeyFromBytes(req.PeerPub)
 
 	fromAddr, fromOk := n.mesh.GetActivePeerAddress(from)
