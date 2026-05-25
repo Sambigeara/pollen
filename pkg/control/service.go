@@ -1172,11 +1172,7 @@ func (s *Service) UpgradePeer(ctx context.Context, req *controlv1.UpgradePeerReq
 		return nil, err
 	}
 	target := types.PeerKeyFromBytes(req.GetPeerPub())
-	// Hijack guard: a non-admin caller (workspace-admin and below) may
-	// only upgrade peers already in its subtree. Without this, W1 could
-	// re-issue T2's grant under W1's chain and silently move T2 from W2
-	// to W1 on accept.
-	if err := s.requireAuthorityOverPeer(ctx, target); err != nil {
+	if err := s.requireAdoptAuthority(ctx, target); err != nil {
 		return nil, err
 	}
 	grant, err := s.membership.IssueGrant(ctx, target, caps, req.GetBudget())
@@ -1891,13 +1887,14 @@ func (s *Service) requireCallerCap(ctx context.Context, want capabilityCheck, fr
 	return nil
 }
 
-// requireAuthorityOverPeer gates verbs that act on another peer: the
-// caller must be a delegation ancestor of target's current grant,
-// mirroring recomputeDeniedLocked's deny-authorisation rule. The cluster
-// root reaches every peer (every chain roots at it); a delegated
-// cluster-admin reaches only its own subtree, since can_admit is not a
-// lateral bypass. Self-target is refused and an unknown target fails
-// closed so a missed gossip cannot default-allow.
+// requireAuthorityOverPeer gates peer revocation (DenyPeer): the caller
+// must be a delegation ancestor of target's current grant, mirroring
+// recomputeDeniedLocked's deny-authorisation rule. The cluster root
+// reaches every peer (every chain roots at it); a delegated cluster-admin
+// reaches only its own subtree, since can_admit is not a lateral bypass.
+// Self-target is refused and an unknown target fails closed so a missed
+// gossip cannot default-allow. Adoption (UpgradePeer) is looser; see
+// requireAdoptAuthority.
 func (s *Service) requireAuthorityOverPeer(ctx context.Context, target types.PeerKey) error {
 	caller, ok := auth.CallerFromContext(ctx)
 	if !ok || !caller.Valid() {
@@ -1914,6 +1911,21 @@ func (s *Service) requireAuthorityOverPeer(ctx context.Context, target types.Pee
 		return status.Error(codes.PermissionDenied, "target peer is outside caller's authority")
 	}
 	return nil
+}
+
+// requireAdoptAuthority gates UpgradePeer. Adoption uses the same subtree
+// authority as revocation (requireAuthorityOverPeer), with one addition: an
+// admit-capable caller may push a grant to a peer this node has no grant for,
+// letting an offline target fall back to a subject-pinned invite. A non-admit
+// caller cannot, since the peer may merely be missing from this node's gossip
+// and must not be default-allowed into its subtree.
+func (s *Service) requireAdoptAuthority(ctx context.Context, target types.PeerKey) error {
+	caller, ok := auth.CallerFromContext(ctx)
+	if ok && caller.Valid() && caller.Admin() && target != caller.Subject() &&
+		s.state.Snapshot().GrantFor(target.Bytes()) == nil {
+		return nil
+	}
+	return s.requireAuthorityOverPeer(ctx, target)
 }
 
 // requireDaemonSelf restricts an RPC to callers whose cert subject pub

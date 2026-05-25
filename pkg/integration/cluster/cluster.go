@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	identityv1 "github.com/sambigeara/pollen/api/genpb/pollen/identity/v1"
 	"github.com/sambigeara/pollen/pkg/types"
 )
 
@@ -24,6 +25,8 @@ const (
 type pendingNode struct {
 	name           string
 	role           NodeRole
+	parent         string
+	caps           *identityv1.Capabilities
 	enableNATPunch bool
 	isRoot         bool
 	addr           *net.UDPAddr
@@ -62,6 +65,14 @@ func New(t testing.TB) *Builder { //nolint:thelper
 
 func (b *Builder) AddNode(name string, role NodeRole) *Builder {
 	b.pending = append(b.pending, pendingNode{name: name, role: role})
+	return b
+}
+
+// AddMember adds a node born beneath parent (a node name) carrying caps.
+// AddNode, by contrast, issues a root-direct full-capability node. The parent
+// must be added before the member so its grant exists at construction.
+func (b *Builder) AddMember(name string, role NodeRole, parent string, caps *identityv1.Capabilities) *Builder {
+	b.pending = append(b.pending, pendingNode{name: name, role: role, parent: parent, caps: caps})
 	return b
 }
 
@@ -158,6 +169,8 @@ func (b *Builder) Start(ctx context.Context) *Cluster {
 			Role:           pn.role,
 			Context:        ctx,
 			Name:           pn.name,
+			Parent:         pn.parent,
+			Caps:           pn.caps,
 			EnableNATPunch: pn.enableNATPunch,
 			IsRoot:         pn.isRoot,
 		})

@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	identityv1 "github.com/sambigeara/pollen/api/genpb/pollen/identity/v1"
 	"github.com/sambigeara/pollen/pkg/identity"
 	"github.com/sambigeara/pollen/pkg/state"
 	"github.com/sambigeara/pollen/pkg/supervisor"
@@ -28,6 +29,8 @@ type TestNodeConfig struct {
 	Addr           *net.UDPAddr
 	Name           string
 	Role           NodeRole
+	Parent         string
+	Caps           *identityv1.Capabilities
 	EnableNATPunch bool
 	IsRoot         bool
 }
@@ -47,12 +50,12 @@ func NewTestNode(t testing.TB, cfg TestNodeConfig) *TestNode { //nolint:thelper
 	var creds *identity.Credentials
 	if cfg.IsRoot {
 		priv = cfg.Auth.RootKey()
-		creds = cfg.Auth.RootCredentials()
+		creds = cfg.Auth.RootCredentials(cfg.Name)
 	} else {
 		_, p, err := ed25519.GenerateKey(rand.Reader)
 		require.NoError(t, err)
 		priv = p
-		creds = cfg.Auth.NodeCredentials(priv)
+		creds = cfg.Auth.MemberCredentials(cfg.Name, priv, cfg.Parent, cfg.Caps)
 	}
 	pub := priv.Public().(ed25519.PublicKey) //nolint:forcetypeassert
 	peerKey := types.PeerKeyFromBytes(pub)

@@ -131,16 +131,12 @@ func TestPublicMesh_WorkspaceIsolation(t *testing.T) {
 }
 
 // TestPublicMesh_WorkspacePeerVisibility proves the brief's headline
-// use-case end-to-end: two publishers delegated by the same
-// workspace-admin see each other's workloads over the real mesh, while
-// a sibling tenant in a different workspace remains opaque to them.
-// The shape is admin → foo (--workspace) → alice (--publisher), bob
-// (--publisher); admin → bar (--workspace) which itself publishes a
-// workload that stands in for any sibling-workspace resource. The
-// admin first demotes foo and bar to workspace-admins, then foo
-// demotes alice and bob to publishers under itself; the daemon-side
-// adoption funnels through the same AdoptGrant the upgrade story
-// shipped, so the chain ends up rooted under foo for alice and bob.
+// use-case end-to-end: two publishers in the same workspace see each
+// other's workloads over the real mesh, while a sibling tenant in a
+// different workspace remains opaque to them. The shape is admin (root)
+// with two workspace-admins, foo and bar, born beneath it; alice and bob
+// are publishers born beneath foo, as a real invite would place them, and
+// bar publishes a workload standing in for any sibling-workspace resource.
 func TestPublicMesh_WorkspacePeerVisibility(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second) //nolint:mnd
 	t.Cleanup(cancel)
@@ -149,11 +145,11 @@ func TestPublicMesh_WorkspacePeerVisibility(t *testing.T) {
 		SetDefaultLatency(5 * time.Millisecond). //nolint:mnd
 		SetDefaultJitter(0.15)                   //nolint:mnd
 	b.AddNode("admin", Public)
-	b.AddNode("foo", Public)
-	b.AddNode("bar", Public)
-	b.AddNode("alice", Public)
-	b.AddNode("bob", Public)
 	b.MakeRoot("admin")
+	b.AddMember("foo", Public, "admin", identity.WorkspaceCapabilities())
+	b.AddMember("bar", Public, "admin", identity.WorkspaceCapabilities())
+	b.AddMember("alice", Public, "foo", identity.PublisherCapabilities())
+	b.AddMember("bob", Public, "foo", identity.PublisherCapabilities())
 	b.Introduce("admin", "foo")
 	b.Introduce("admin", "bar")
 	b.Introduce("admin", "alice")
@@ -164,44 +160,10 @@ func TestPublicMesh_WorkspacePeerVisibility(t *testing.T) {
 	c.RequireConverged(t)
 	c.RequireHealthy(t)
 
-	admin := c.Node("admin")
 	foo := c.Node("foo")
 	bar := c.Node("bar")
 	alice := c.Node("alice")
 	bob := c.Node("bob")
-
-	adminCtx := auth.WithCaller(ctx, identity.PrincipalFromGrant(admin.Node().Credentials().Grant()))
-	for _, n := range []*TestNode{foo, bar} {
-		resp, err := admin.Node().ControlService().UpgradePeer(adminCtx, &controlv1.UpgradePeerRequest{
-			PeerPub:      n.PeerKey().Bytes(),
-			Capabilities: identity.WorkspaceCapabilities(),
-		})
-		require.NoError(t, err)
-		require.True(t, resp.GetDelivered(), "admin must reach %s over the mesh", n.Name())
-	}
-
-	c.RequireEventually(t, func() bool {
-		fc := foo.Node().Credentials().Grant().GetClaims().GetCapabilities()
-		bc := bar.Node().Credentials().Grant().GetClaims().GetCapabilities()
-		return fc.GetIsWorkspaceAdmin() && !fc.GetCanAdmit() && bc.GetIsWorkspaceAdmin() && !bc.GetCanAdmit()
-	}, assertTimeout, "foo and bar must adopt their workspace-admin grants")
-
-	fooCtx := auth.WithCaller(ctx, identity.PrincipalFromGrant(foo.Node().Credentials().Grant()))
-	for _, n := range []*TestNode{alice, bob} {
-		resp, err := foo.Node().ControlService().UpgradePeer(fooCtx, &controlv1.UpgradePeerRequest{
-			PeerPub:      n.PeerKey().Bytes(),
-			Capabilities: identity.PublisherCapabilities(),
-		})
-		require.NoError(t, err)
-		require.True(t, resp.GetDelivered(), "foo must reach %s over the mesh", n.Name())
-	}
-
-	c.RequireEventually(t, func() bool {
-		ac := alice.Node().Credentials().Grant().GetClaims().GetCapabilities()
-		bc := bob.Node().Credentials().Grant().GetClaims().GetCapabilities()
-		return !ac.GetCanAdmit() && !ac.GetIsWorkspaceAdmin() && ac.GetPublish().GetFunctions() &&
-			!bc.GetCanAdmit() && !bc.GetIsWorkspaceAdmin() && bc.GetPublish().GetFunctions()
-	}, assertTimeout, "alice and bob must adopt their foo-issued publisher grants")
 
 	const aliceWorkload = "a11ce0000000000000000000000000000000000000000000000000000000000a"
 	const bobWorkload = "b0b0000000000000000000000000000000000000000000000000000000000b0b"

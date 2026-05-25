@@ -21,9 +21,11 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-// TestUpgradePeer_AuthorityScope pins that the hijack guard applies the
-// same authority rule as DenyPeer: a workspace-admin may upgrade peers
-// inside its subtree but not steal a peer rooted under a sibling.
+// TestUpgradePeer_AuthorityScope pins the adoption rule: a workspace-admin
+// may upgrade peers in its own subtree, but may not reach across into a
+// sibling workspace, absorb a sibling workspace-admin, or capture the root.
+// An admit-capable caller may invite a peer with no known grant; a non-admit
+// caller fails closed.
 func TestUpgradePeer_AuthorityScope(t *testing.T) {
 	rootPub, rootPriv := ed25519Pair(t)
 	rootGrant := issuePrincipalGrant(t, rootPriv, nil, rootPub, identity.FullCapabilities())
@@ -37,13 +39,18 @@ func TestUpgradePeer_AuthorityScope(t *testing.T) {
 
 	otherWSPub, otherWSPriv := ed25519Pair(t)
 	otherWSGrant := issuePrincipalGrant(t, rootPriv, rootGrant, otherWSPub, identity.WorkspaceCapabilities())
+	otherWSKey := types.PeerKeyFromBytes(otherWSPub)
 	otherPub, _ := ed25519Pair(t)
 	otherGrant := issuePrincipalGrant(t, otherWSPriv, otherWSGrant, otherPub, identity.LeafCapabilities())
 	otherKey := types.PeerKeyFromBytes(otherPub)
 
+	rootKey := types.PeerKeyFromBytes(rootPub)
+
 	snap := &stubState{grants: map[types.PeerKey]*identityv1.Grant{
-		tenantKey: tenantGrant,
-		otherKey:  otherGrant,
+		tenantKey:  tenantGrant,
+		otherKey:   otherGrant,
+		otherWSKey: otherWSGrant,
+		rootKey:    rootGrant,
 	}}
 
 	t.Run("workspace-admin upgrades peer in own subtree", func(t *testing.T) {
@@ -71,6 +78,57 @@ func TestUpgradePeer_AuthorityScope(t *testing.T) {
 		require.Contains(t, status.Convert(err).Message(), "outside caller's authority",
 			"the hijack guard must fire, not the ceiling check")
 		require.False(t, delivery.called, "must reject before minting or dispatching")
+	})
+
+	t.Run("workspace-admin cannot absorb a sibling workspace-admin", func(t *testing.T) {
+		delivery := &stubDelivery{resp: &meshv1.GrantOfferResponse{Accepted: true}}
+		svc := newAuthorityService(t, &stubMembership{rootPriv: rootPriv}, snap, delivery)
+		_, err := svc.UpgradePeer(callerCtx(wsGrant), &controlv1.UpgradePeerRequest{
+			PeerPub:      otherWSPub,
+			Capabilities: identity.PublisherCapabilities(),
+		})
+		require.Error(t, err)
+		require.Equal(t, codes.PermissionDenied, status.Code(err))
+		require.False(t, delivery.called)
+	})
+
+	t.Run("workspace-admin cannot capture the root", func(t *testing.T) {
+		delivery := &stubDelivery{resp: &meshv1.GrantOfferResponse{Accepted: true}}
+		svc := newAuthorityService(t, &stubMembership{rootPriv: rootPriv}, snap, delivery)
+		_, err := svc.UpgradePeer(callerCtx(wsGrant), &controlv1.UpgradePeerRequest{
+			PeerPub:      rootPub,
+			Capabilities: identity.LeafCapabilities(),
+		})
+		require.Error(t, err)
+		require.Equal(t, codes.PermissionDenied, status.Code(err))
+		require.False(t, delivery.called)
+	})
+
+	t.Run("admit-capable caller may invite a peer with no known grant", func(t *testing.T) {
+		strangerPub, _ := ed25519Pair(t)
+		delivery := &stubDelivery{err: transport.ErrPeerOffline}
+		svc := newAuthorityService(t, &stubMembership{rootPriv: rootPriv}, snap, delivery)
+		_, err := svc.UpgradePeer(callerCtx(rootGrant), &controlv1.UpgradePeerRequest{
+			PeerPub:      strangerPub,
+			Capabilities: identity.LeafCapabilities(),
+		})
+		require.Error(t, err)
+		require.Equal(t, codes.Unavailable, status.Code(err),
+			"an unknown target must reach delivery and surface the offline fallback signal")
+		require.True(t, delivery.called, "guard must let an admit-capable caller through to dispatch")
+	})
+
+	t.Run("non-admit caller targeting an unknown peer fails closed", func(t *testing.T) {
+		strangerPub, _ := ed25519Pair(t)
+		delivery := &stubDelivery{resp: &meshv1.GrantOfferResponse{Accepted: true}}
+		svc := newAuthorityService(t, &stubMembership{rootPriv: rootPriv}, snap, delivery)
+		_, err := svc.UpgradePeer(callerCtx(wsGrant), &controlv1.UpgradePeerRequest{
+			PeerPub:      strangerPub,
+			Capabilities: identity.PublisherCapabilities(),
+		})
+		require.Error(t, err)
+		require.Equal(t, codes.FailedPrecondition, status.Code(err))
+		require.False(t, delivery.called, "a missed-gossip target must not default-allow")
 	})
 }
 
