@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"net"
 	"net/http"
 	"strconv"
@@ -244,7 +245,7 @@ func (h *gatewayHandler) handleNamedFetch(w http.ResponseWriter, r *http.Request
 		http.NotFound(w, r)
 		return
 	}
-	h.streamBlobBytes(w, r, hash)
+	h.streamBlobBytes(w, r, hash, name)
 }
 
 func (h *gatewayHandler) handleNamedInvoke(w http.ResponseWriter, r *http.Request, slug, rest string) {
@@ -343,7 +344,7 @@ func (h *gatewayHandler) handleFetch(w http.ResponseWriter, r *http.Request, tok
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
-	h.streamBlobBytes(w, r, hash)
+	h.streamBlobBytes(w, r, hash, blobClaim.GetName())
 }
 
 func (h *gatewayHandler) handleInvoke(w http.ResponseWriter, r *http.Request, token *admissionv1.AccessToken) {
@@ -367,7 +368,7 @@ func (h *gatewayHandler) handleInvoke(w http.ResponseWriter, r *http.Request, to
 	h.callWorkload(w, r, hash, fn)
 }
 
-func (h *gatewayHandler) streamBlobBytes(w http.ResponseWriter, r *http.Request, hash string) {
+func (h *gatewayHandler) streamBlobBytes(w http.ResponseWriter, r *http.Request, hash, filename string) {
 	rc, err := h.blobs.FetchPlaintext(r.Context(), hash)
 	if err != nil {
 		h.log.Warnw("gateway fetch failed", "hash", hash, "err", err)
@@ -377,6 +378,9 @@ func (h *gatewayHandler) streamBlobBytes(w http.ResponseWriter, r *http.Request,
 	defer rc.Close()
 	w.Header().Set("Content-Type", "application/octet-stream")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
+	if disp := mime.FormatMediaType("attachment", map[string]string{"filename": filename}); disp != "" {
+		w.Header().Set("Content-Disposition", disp)
+	}
 	if _, err := io.Copy(w, rc); err != nil {
 		h.log.Warnw("gateway stream error", "hash", hash, "err", err)
 	}
