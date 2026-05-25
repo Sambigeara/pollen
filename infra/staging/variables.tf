@@ -15,3 +15,15 @@ variable "tenant_wildcard_proxied" {
   type        = bool
   default     = false
 }
+
+variable "zone_name" {
+  description = "Apex Cloudflare zone fronting the cluster."
+  type        = string
+  default     = "pln.sh"
+}
+
+variable "staging_subdomain" {
+  description = "Subdomain under zone_name fronting the staging cluster."
+  type        = string
+  default     = "staging"
+}

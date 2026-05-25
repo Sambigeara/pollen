@@ -5,74 +5,9 @@ ssh_args   := "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o Lo
 repo_root  := justfile_directory() / ".."
 prod_tf    := justfile_directory() / "prod"
 staging_tf := justfile_directory() / "staging"
-shared_tf  := justfile_directory() / "shared"
 
 default:
     @just --list
-
-# ── Shared zone state (Cloudflare ruleset + zone settings) ────────────
-#
-# Cloudflare permits exactly one custom ruleset per zone per phase, and
-# zone settings (SSL mode, min TLS, etc) apply globally. Lifting these
-# out of any single cluster keeps `just prod-down` or `just staging-down`
-# from collaterally destroying state the other cluster depends on.
-#
-# Bring up: `just shared-plan && just shared-apply`. Apply this first;
-# both `staging-apply` and `prod-apply` fail fast without it.
-
-# Preview shared zone-state changes. Writes shared.tfplan; nothing
-# is applied. Run `just shared-apply` to execute the saved plan after
-# reviewing it.
-#
-# Plan shared zone state (CF ruleset + zone settings) into shared.tfplan.
-shared-plan:
-    cd {{ shared_tf }} && terraform init -input=false && terraform plan -out=shared.tfplan
-
-# Apply the saved plan from `shared-plan`. Refuses to run if the plan
-# is missing or older than the most-recent edit to the .tf sources.
-#
-# Apply shared.tfplan to the Cloudflare zone.
-shared-apply:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    cd {{ shared_tf }}
-    if [ ! -f shared.tfplan ]; then
-      echo "no shared.tfplan; run \`just shared-plan\` first" >&2
-      exit 1
-    fi
-    plan_mtime=$(date -r shared.tfplan +%s)
-    for src in *.tf; do
-      src_mtime=$(date -r "$src" +%s)
-      if [ "$src_mtime" -gt "$plan_mtime" ]; then
-        echo "shared.tfplan is older than $src; re-run \`just shared-plan\`" >&2
-        exit 1
-      fi
-    done
-    terraform apply shared.tfplan
-    rm shared.tfplan
-
-# Destroy shared zone state. WARNING: removes the origin-port ruleset
-# and zone settings; both prod and staging depend on this. Refuses to
-# run while either cluster's state still has resources.
-#
-# Destroy shared zone state (typed confirmation; refuses if clusters still up).
-shared-down:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    # Filter out `data.*` entries; a stray `terraform plan` or `refresh`
-    # re-caches data sources into state long after the managed resources
-    # are gone, and we only refuse here when managed resources remain.
-    if [ -f {{ prod_tf }}/terraform.tfstate ] && [ "$(terraform -chdir={{ prod_tf }} state list 2>/dev/null | grep -cv '^data\.' || true)" -gt 0 ]; then
-      echo "refusing: {{ prod_tf }}/terraform.tfstate still has managed resources; run \`just prod-down\` first" >&2
-      exit 1
-    fi
-    if [ -f {{ staging_tf }}/terraform.tfstate ] && [ "$(terraform -chdir={{ staging_tf }} state list 2>/dev/null | grep -cv '^data\.' || true)" -gt 0 ]; then
-      echo "refusing: {{ staging_tf }}/terraform.tfstate still has managed resources; run \`just staging-down\` first" >&2
-      exit 1
-    fi
-    read -r -p "Type 'destroy pln-shared' to confirm: " confirm
-    [ "$confirm" = "destroy pln-shared" ] || { echo "aborted"; exit 1; }
-    cd {{ shared_tf }} && terraform destroy
 
 # ── Prod (pln.sh) ─────────────────────────────────────────────────────
 #
@@ -95,11 +30,8 @@ shared-down:
 # is applied. Run `just prod-apply` to execute the saved plan after
 # reviewing it.
 #
-# Plan prod infra into prod.tfplan (refuses if shared state missing).
+# Plan prod infra into prod.tfplan.
 prod-plan:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    just _require-shared-state
     cd {{ prod_tf }} && terraform init -input=false && terraform plan -out=prod.tfplan
 
 # Apply the saved plan from `prod-plan`. Refuses to run if prod.tfplan
@@ -126,16 +58,15 @@ prod-apply:
     terraform apply prod.tfplan
     rm prod.tfplan
 
-# Destroy prod infrastructure. WARNING: terminates nodes, removes DNS.
-# Prod reads shared state via `terraform_remote_state`, so `shared-down`
-# must run AFTER both clusters have been torn down. Refuse if the
-# shared state file is missing.
+# Destroy prod infrastructure. WARNING: terminates nodes and removes DNS.
+# The zone-singleton ruleset, zone settings, and staging cert pack live
+# in prod state; staging's HTTP routing and HTTPS ride on them, so tear
+# staging down too if you are decommissioning the whole zone.
 #
 # Destroy prod cluster (typed confirmation; no auto-approve).
 prod-down:
     #!/usr/bin/env bash
     set -euo pipefail
-    just _require-shared-state
     read -r -p "Type 'destroy pln-prod' to confirm: " confirm
     [ "$confirm" = "destroy pln-prod" ] || { echo "aborted"; exit 1; }
     cd {{ prod_tf }} && terraform destroy
@@ -230,11 +161,8 @@ prod-ssh name="eu":
 # is applied. Run `just staging-apply` to execute the saved plan after
 # reviewing it.
 #
-# Plan staging infra into staging.tfplan (refuses if shared state missing).
+# Plan staging infra into staging.tfplan.
 staging-plan:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    just _require-shared-state
     cd {{ staging_tf }} && terraform init -input=false && terraform plan -out=staging.tfplan
 
 # Apply the saved plan from `staging-plan`. Refuses to run if the plan
@@ -260,16 +188,14 @@ staging-apply:
     terraform apply staging.tfplan
     rm staging.tfplan
 
-# Destroy staging infrastructure. WARNING: terminates nodes, removes DNS.
-# Staging reads shared state via `terraform_remote_state`, so `shared-down`
-# must run AFTER both clusters have been torn down. Refuse if the shared
-# state file is missing.
+# Destroy staging infrastructure. WARNING: terminates nodes and removes
+# DNS. The zone-singleton ruleset and staging cert pack live in prod
+# state, so they survive staging-down and tenant HTTPS keeps working.
 #
 # Destroy staging cluster (typed confirmation; no auto-approve).
 staging-down:
     #!/usr/bin/env bash
     set -euo pipefail
-    just _require-shared-state
     read -r -p "Type 'destroy pln-staging' to confirm: " confirm
     [ "$confirm" = "destroy pln-staging" ] || { echo "aborted"; exit 1; }
     cd {{ staging_tf }} && terraform destroy
@@ -407,22 +333,3 @@ _verify-mesh ctx expected:
     done
     echo "mesh failed to form: only $actual/$expected peers reachable" >&2
     exit 1
-
-# Refuse to plan, apply, or destroy a cluster module while shared
-# state is missing or empty. Prod and staging both read shared via
-# `terraform_remote_state`, so without a valid shared state the
-# cluster module cannot resolve its zone IDs. A non-empty zone_id
-# output is the strongest signal that shared has been applied.
-#
-# Assert shared state exists and exposes a zone_id output.
-_require-shared-state:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    if [ ! -s {{ shared_tf }}/terraform.tfstate ]; then
-      echo "shared state missing or empty; run \`just shared-plan && just shared-apply\` first" >&2
-      exit 1
-    fi
-    if ! (cd {{ shared_tf }} && terraform output -raw zone_id >/dev/null 2>&1); then
-      echo "shared state has no zone_id output; re-run \`just shared-plan && just shared-apply\`" >&2
-      exit 1
-    fi

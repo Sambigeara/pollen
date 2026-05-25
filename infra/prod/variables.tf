@@ -9,3 +9,15 @@ variable "ssh_source_ips" {
   type        = list(string)
   default     = ["0.0.0.0/0", "::/0"]
 }
+
+variable "zone_name" {
+  description = "Apex Cloudflare zone fronting the cluster."
+  type        = string
+  default     = "pln.sh"
+}
+
+variable "staging_subdomain" {
+  description = "Subdomain under zone_name fronting the staging cluster. Used in the origin-port ruleset expressions that route staging hosts."
+  type        = string
+  default     = "staging"
+}

@@ -22,14 +22,8 @@ provider "cloudflare" {}
 data "http" "cf_ipv4" { url = "https://www.cloudflare.com/ips-v4" }
 data "http" "cf_ipv6" { url = "https://www.cloudflare.com/ips-v6" }
 
-# Zone-singleton state (origin-port ruleset, zone settings) lives in
-# `infra/shared/`. Reading its state here makes the dependency explicit:
-# `terraform plan` fails fast if `just shared-apply` has not run.
-data "terraform_remote_state" "shared" {
-  backend = "local"
-  config = {
-    path = "${path.module}/../shared/terraform.tfstate"
-  }
+data "cloudflare_zone" "pln" {
+  filter = { name = var.zone_name }
 }
 
 locals {
@@ -46,8 +40,17 @@ locals {
     split("\n", trimspace(data.http.cf_ipv6.response_body)),
   )
 
-  zone_id   = data.terraform_remote_state.shared.outputs.zone_id
-  zone_name = data.terraform_remote_state.shared.outputs.zone_name
+  zone_id      = data.cloudflare_zone.pln.id
+  zone_name    = var.zone_name
+  staging_host = "${var.staging_subdomain}.${var.zone_name}"
+
+  # Hosts the gateway listener (:8088) serves for anonymous share URLs;
+  # named once so the explicit rule and the catch-all exclusion below
+  # cannot drift.
+  staging_gateway_hosts = [
+    "blob.${local.staging_host}",
+    "fn.${local.staging_host}",
+  ]
 }
 
 data "hcloud_ssh_key" "pln" {
@@ -171,51 +174,103 @@ resource "cloudflare_dns_record" "node" {
   comment  = "direct hostname for pln-prod-${each.key}"
 }
 
-# The origin-port ruleset, zone settings, and the staging ACM cert pack
-# all moved out of this module. The ruleset and zone settings live in
-# `infra/shared/`; the staging wildcard pack lives in `infra/staging/`.
-# `removed {}` blocks (terraform 1.7+) tell this module "stop tracking
-# these resources, do not destroy them". The migration runbook in
-# `infra/README.md` walks the `terraform import` into shared/staging
-# state. The `removed` blocks can be deleted once the migration is done.
-removed {
-  from = cloudflare_ruleset.origin_port
-  lifecycle {
-    destroy = false
-  }
+# Zone-singleton Cloudflare state: Cloudflare permits one custom ruleset
+# per `http_request_origin` phase per zone and zone settings are
+# zone-wide, so prod owns them and routes both prod and staging hosts.
+# The staging wildcard cert pack is zone-scoped and lives here too.
+
+# Route CF → origin on :8080 for static traffic and :8088 for the
+# anonymous share gateway. The pln daemons run as the unprivileged
+# `pln` user without CAP_NET_BIND_SERVICE, so all listeners sit above
+# :1024.
+resource "cloudflare_ruleset" "origin_port" {
+  zone_id = local.zone_id
+  name    = "origin port override"
+  kind    = "zone"
+  phase   = "http_request_origin"
+
+  rules = [
+    {
+      description = "Static sites listen on :8080"
+      expression  = "(http.host in {\"${var.zone_name}\" \"docs.${var.zone_name}\"})"
+      action      = "route"
+      enabled     = true
+      action_parameters = {
+        origin = {
+          port = 8080
+        }
+      }
+    },
+    {
+      description = "Staging static apex → :8080"
+      expression  = "(http.host eq \"${local.staging_host}\")"
+      action      = "route"
+      enabled     = true
+      action_parameters = {
+        origin = {
+          port = 8080
+        }
+      }
+    },
+    {
+      description = "Staging blob/fn gateway → :8088"
+      expression  = "(http.host in {${join(" ", [for h in local.staging_gateway_hosts : "\"${h}\""])}})"
+      action      = "route"
+      enabled     = true
+      action_parameters = {
+        origin = {
+          port = 8088
+        }
+      }
+    },
+    {
+      description = "Staging tenant sites (catch-all under *.${var.staging_subdomain}, excluding gateway hosts) → :8080"
+      expression  = "(ends_with(http.host, \".${local.staging_host}\") and not (http.host in {${join(" ", [for h in local.staging_gateway_hosts : "\"${h}\""])}}))"
+      action      = "route"
+      enabled     = true
+      action_parameters = {
+        origin = {
+          port = 8080
+        }
+      }
+    },
+  ]
 }
 
-removed {
-  from = cloudflare_zone_setting.always_use_https
-  lifecycle {
-    destroy = false
-  }
+resource "cloudflare_zone_setting" "always_use_https" {
+  zone_id    = local.zone_id
+  setting_id = "always_use_https"
+  value      = "on"
 }
 
-removed {
-  from = cloudflare_zone_setting.automatic_https_rewrites
-  lifecycle {
-    destroy = false
-  }
+resource "cloudflare_zone_setting" "automatic_https_rewrites" {
+  zone_id    = local.zone_id
+  setting_id = "automatic_https_rewrites"
+  value      = "on"
 }
 
-removed {
-  from = cloudflare_zone_setting.min_tls_version
-  lifecycle {
-    destroy = false
-  }
+resource "cloudflare_zone_setting" "min_tls_version" {
+  zone_id    = local.zone_id
+  setting_id = "min_tls_version"
+  value      = "1.2"
 }
 
-removed {
-  from = cloudflare_zone_setting.tls_1_3
-  lifecycle {
-    destroy = false
-  }
+resource "cloudflare_zone_setting" "tls_1_3" {
+  zone_id    = local.zone_id
+  setting_id = "tls_1_3"
+  value      = "on"
 }
 
-removed {
-  from = cloudflare_certificate_pack.staging_wildcard
-  lifecycle {
-    destroy = false
-  }
+# Advanced cert pack covering the two-level staging subdomains; Universal
+# SSL only reaches one level under the apex, so blob/fn and the
+# tenant-static wildcard need it. Requires ACM on the zone (billable).
+# Validation TXT records are managed by CF in-zone and do not appear in
+# tf state.
+resource "cloudflare_certificate_pack" "staging_wildcard" {
+  zone_id               = local.zone_id
+  type                  = "advanced"
+  hosts                 = ["*.${local.staging_host}", local.staging_host]
+  validation_method     = "txt"
+  validity_days         = 90
+  certificate_authority = "lets_encrypt"
 }

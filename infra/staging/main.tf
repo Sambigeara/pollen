@@ -22,15 +22,8 @@ provider "cloudflare" {}
 data "http" "cf_ipv4" { url = "https://www.cloudflare.com/ips-v4" }
 data "http" "cf_ipv6" { url = "https://www.cloudflare.com/ips-v6" }
 
-# Zone-singleton state (origin-port ruleset, zone settings) lives in
-# `infra/shared/`. Reading its state here makes the dependency explicit
-# and lets staging compose its hostnames against the same subdomain the
-# ruleset matches on.
-data "terraform_remote_state" "shared" {
-  backend = "local"
-  config = {
-    path = "${path.module}/../shared/terraform.tfstate"
-  }
+data "cloudflare_zone" "pln" {
+  filter = { name = var.zone_name }
 }
 
 locals {
@@ -45,9 +38,9 @@ locals {
     split("\n", trimspace(data.http.cf_ipv6.response_body)),
   )
 
-  zone_id      = data.terraform_remote_state.shared.outputs.zone_id
-  zone_name    = data.terraform_remote_state.shared.outputs.zone_name
-  subdomain    = data.terraform_remote_state.shared.outputs.staging_subdomain
+  zone_id      = data.cloudflare_zone.pln.id
+  zone_name    = var.zone_name
+  subdomain    = var.staging_subdomain
   staging_host = "${local.subdomain}.${local.zone_name}"
 }
 
@@ -205,23 +198,8 @@ resource "cloudflare_dns_record" "edge" {
   comment  = "wire-mode endpoint → pln-staging-${each.key}"
 }
 
-# Advanced cert pack covering the two-level staging subdomains.
-# Universal SSL only reaches one level under the apex, so blob/fn and
-# the tenant-static wildcard need a custom cert. Requires Advanced
-# Certificate Manager on the zone (billable; enable via the CF
-# dashboard before applying). Validation TXT records are managed by
-# CF inside the zone; they do not appear in tf state.
-resource "cloudflare_certificate_pack" "staging_wildcard" {
-  zone_id               = local.zone_id
-  type                  = "advanced"
-  hosts                 = [local.staging_host, "*.${local.staging_host}"]
-  validation_method     = "txt"
-  validity_days         = 90
-  certificate_authority = "lets_encrypt"
-}
-
-# Origin-port routing for staging hostnames lives in
-# `infra/shared/cloudflare_ruleset.origin_port` (the zone permits only
-# one custom ruleset per `http_request_origin` phase). Staging brings
-# up the nodes, DNS, and the wildcard cert pack; the route rules live
-# in the shared module because rulesets are zone-singletons.
+# Staging brings up only its nodes and DNS records. The origin-port
+# routing ruleset, zone settings, and the staging wildcard cert pack are
+# zone-singletons and live in `infra/prod/`: Cloudflare permits one
+# custom ruleset per `http_request_origin` phase per zone, and the cert
+# pack is zone-scoped.
