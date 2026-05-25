@@ -385,10 +385,11 @@ wire fallback configured: pln://198.51.100.7:7443</span>
       <dt>--include-offline</dt><dd>Include offline peers, services, and orphaned blobs.</dd>
     </dl>
     <p>The header shows two chips: cluster <em>health</em> (HEALTHY / DEGRADED / UNHEALTHY) and the local node's <em>capability tier</em> (ADMIN / WORKSPACE / PUBLISHER / LEAF). The tier reflects what this node can do; commands that require a higher tier (e.g. <a href="#grant"><code>pln grant</code></a>) fail with a clear error when invoked from below it.</p>
+    <p>The context line below names the active context and how the command reached the daemon: <code>local</code> for the on-machine socket, <code>wire pln://host:port</code> for the remote fallback, or <code>ssh user@host</code> for an SSH bridge. A context configured with both a local dir and a wire fallback uses the local daemon when its socket is up and the wire endpoint when it is not, so this line tells you which one answered.</p>
     <div class="terminal">
       <span class="cmd">pln status</span>
       <span class="out">HEALTHY  PUBLISHER</span>
-      <span class="out">context: home</span>
+      <span class="out">context: home (local)</span>
       <span class="out"></span>
       <span class="out">PEERS</span>
       <span class="out">NODE             STATUS           ADDR                CPUs  CPU  MEM  TUNNELS  LATENCY  IN  OUT</span>

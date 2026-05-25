@@ -866,19 +866,23 @@ func tierRank(t string) int {
 	return -1
 }
 
+// statusContextLabel names the active context and the transport this
+// command resolved to at runtime. That is not always the ctx's
+// configured target: a ctx with both a local dir and a wire fallback
+// runs local when its socket is up and wire otherwise.
 func statusContextLabel(name, dir string, t transportSelection) string {
 	if name == "" {
 		return ""
 	}
 	switch {
 	case t.IsWire():
-		return name + " (" + plnTargetScheme + t.WireAddr() + ")"
+		return name + " (wire " + plnTargetScheme + t.WireAddr() + ")"
 	case t.IsSSHBridge():
-		return name + " (" + t.SSHHost() + ")"
+		return name + " (ssh " + t.SSHHost() + ")"
 	case name != defaultContextName:
-		return name + " (" + dir + ")"
+		return name + " (local " + dir + ")"
 	default:
-		return name
+		return name + " (local)"
 	}
 }
 

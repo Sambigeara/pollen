@@ -421,7 +421,7 @@ caps:     delegate=false admit=false publish=true max_depth=0</span>
         <div class="terminal">
           <span class="cmd">PLN_CONTEXT=alice pln status nodes</span>
           <span class="out">HEALTHY  PUBLISHER</span>
-          <span class="out">context: alice</span>
+          <span class="out">context: alice (local)</span>
           <span class="out"></span>
           <span class="out">PEERS</span>
           <span class="out">NODE             STATUS           ADDR                CPUs  CPU  MEM  TUNNELS  LATENCY  IN  OUT</span>
@@ -430,7 +430,7 @@ caps:     delegate=false admit=false publish=true max_depth=0</span>
           <span class="out">b0b1b2b3         direct (public)  198.51.100.20:60611 -     -    -    -        14ms     0   0</span>
           <span class="cmd">PLN_CONTEXT=tenant-a pln status</span>
           <span class="out">HEALTHY  WORKSPACE</span>
-          <span class="out">context: tenant-a</span>
+          <span class="out">context: tenant-a (local)</span>
           <span class="cmd">PLN_CONTEXT=admin pln status nodes | grep -c "^[0-9a-f]"</span>
           <span class="out">5</span>
         </div>

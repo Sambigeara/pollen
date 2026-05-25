@@ -32,11 +32,11 @@ func TestStatusContextLabel(t *testing.T) {
 		want      string
 	}{
 		{"", "/x", transportSelection{kind: transportLocal}, ""},
-		{"default", "/x", transportSelection{kind: transportLocal}, "default"},
-		{"default", "/x", transportSelection{kind: transportWire, wireAddr: "edge:7443"}, "default (pln://edge:7443)"},
-		{"cloud", "/x", transportSelection{kind: transportWire, wireAddr: "edge:7443"}, "cloud (pln://edge:7443)"},
-		{"cloud", "/x", transportSelection{kind: transportLocal}, "cloud (/x)"},
-		{"prod", "/x", transportSelection{kind: transportSSHBridge, sshHost: "root@prod"}, "prod (root@prod)"},
+		{"default", "/x", transportSelection{kind: transportLocal}, "default (local)"},
+		{"default", "/x", transportSelection{kind: transportWire, wireAddr: "edge:7443"}, "default (wire pln://edge:7443)"},
+		{"cloud", "/x", transportSelection{kind: transportWire, wireAddr: "edge:7443"}, "cloud (wire pln://edge:7443)"},
+		{"cloud", "/x", transportSelection{kind: transportLocal}, "cloud (local /x)"},
+		{"prod", "/x", transportSelection{kind: transportSSHBridge, sshHost: "root@prod"}, "prod (ssh root@prod)"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.want, func(t *testing.T) {
