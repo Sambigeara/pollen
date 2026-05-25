@@ -11,9 +11,9 @@ variable "ssh_source_ips" {
 }
 
 variable "tenant_wildcard_proxied" {
-  description = "Whether *.<subdomain>.<zone_name> is orange-cloud (proxied via Cloudflare) or grey-cloud (direct to origin). HTTPS for two-level subdomains needs Advanced Certificate Manager on the zone (billable; enable via the CF dashboard before flipping this to true). Until then, the wildcard answers grey-cloud and tenant sites are reachable over plain HTTP via the origin :8080."
+  description = "Whether *.<subdomain>.<zone_name> is orange-cloud (proxied via Cloudflare, HTTPS) or grey-cloud (direct to origin, plain HTTP on :8080). Proxied HTTPS for these two-level subdomains needs Advanced Certificate Manager on the zone (billable), which is enabled on pln.sh. Set false for a fresh bring-up on a zone without ACM."
   type        = bool
-  default     = false
+  default     = true
 }
 
 variable "zone_name" {

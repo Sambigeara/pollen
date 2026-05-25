@@ -136,20 +136,19 @@ pln share photo.png                             # prints https://blob.staging.pl
 ### Tenant HTTPS and ACM
 
 Tenant static-site HTTPS (`<name>-<short-pub>.staging.pln.sh`) needs the
-Advanced Certificate Manager cert pack from the pre-flight step. Until ACM
-is enabled the tenant wildcard answers grey-cloud over plain HTTP at the
-origin:
+Advanced Certificate Manager cert pack, which is enabled on the zone. The
+tenant wildcard is proxied by default, so these sites are served over HTTPS
+through Cloudflare:
 
 ```bash
-curl -H 'Host: mysite-<pub>.staging.pln.sh' http://<edge-ip>:8080/
+curl -I https://mysite-<pub>.staging.pln.sh/
 ```
 
-Once ACM is enabled on the CF dashboard, switch the wildcard to proxied:
+For a fresh bring-up on a zone without ACM, keep the wildcard grey-cloud so it
+still answers over plain HTTP at the origin:
 
 ```bash
-just staging-plan && just staging-apply  # default is unproxied
-# or, with the toggle flipped:
-cd staging && terraform apply -var tenant_wildcard_proxied=true
+cd staging && terraform apply -var tenant_wildcard_proxied=false
 ```
 
 `blob.staging.pln.sh` and `fn.staging.pln.sh` are one level deep and Universal
