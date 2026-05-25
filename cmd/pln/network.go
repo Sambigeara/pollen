@@ -1009,7 +1009,7 @@ func formatWorkloadStatus(s controlv1.WorkloadStatus) string {
 	if s == controlv1.WorkloadStatus_WORKLOAD_STATUS_RUNNING {
 		return "running"
 	}
-	return "unknown"
+	return unknownValue
 }
 
 func humanDuration(d time.Duration) string {

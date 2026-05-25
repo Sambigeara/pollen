@@ -15,6 +15,7 @@ import (
 	"os/user"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"strings"
 	"syscall"
 	"time"
@@ -39,13 +40,52 @@ const (
 	osLinux             = "linux"
 	osDarwin            = "darwin"
 	installScriptURL    = "https://pln.sh/install.sh"
+	unknownValue        = "unknown"
+	shortSHALen         = 7
 )
 
 var (
 	version = "dev"
-	commit  = "unknown"
-	date    = "unknown"
+	commit  = ""
+	date    = ""
 )
+
+// buildInfo prefers ldflag-injected values and falls back to debug.BuildInfo
+// VCS metadata so plain `go build` shows the HEAD commit plus a "-dirty"
+// suffix when the working tree differs.
+func buildInfo() (string, string, string) {
+	v, c, d := version, commit, date
+	var dirty bool
+	if info, ok := debug.ReadBuildInfo(); ok {
+		for _, s := range info.Settings {
+			switch s.Key {
+			case "vcs.revision":
+				if c == "" {
+					c = s.Value
+				}
+			case "vcs.time":
+				if d == "" {
+					d = s.Value
+				}
+			case "vcs.modified":
+				dirty = s.Value == "true"
+			}
+		}
+	}
+	if len(c) >= shortSHALen {
+		c = c[:shortSHALen]
+	}
+	if dirty && c != "" {
+		c += "-dirty"
+	}
+	if c == "" {
+		c = unknownValue
+	}
+	if d == "" {
+		d = unknownValue
+	}
+	return v, c, d
+}
 
 type cliEnv struct {
 	client    controlv1connect.ControlServiceClient
@@ -243,15 +283,16 @@ func newVersionCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "version",
 		Short:   "Show Pollen version information",
-		Long:    "Prints the binary version, commit hash, and build date. Use --short for just the version, suitable for scripting.",
+		Long:    "Prints the binary version, commit, and date. Use --short for just the version, suitable for scripting.",
 		Example: "  pln version --short",
 		Args:    cobra.NoArgs,
 		Run: func(cmd *cobra.Command, _ []string) {
+			v, c, d := buildInfo()
 			if short, _ := cmd.Flags().GetBool("short"); short {
-				fmt.Fprintln(cmd.OutOrStdout(), version)
+				fmt.Fprintln(cmd.OutOrStdout(), v)
 				return
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "version: %s\ncommit: %s\ndate: %s\n", version, commit, date)
+			fmt.Fprintf(cmd.OutOrStdout(), "version: %s\ncommit:  %s\ndate:    %s\n", v, c, d)
 		},
 	}
 	cmd.Flags().Bool("short", false, "Print version only")

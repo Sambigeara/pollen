@@ -53,7 +53,7 @@ func (k seedKind) String() string {
 	case kindBlob:
 		return "blob"
 	default:
-		return "unknown"
+		return unknownValue
 	}
 }
 
