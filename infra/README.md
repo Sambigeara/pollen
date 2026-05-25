@@ -110,7 +110,7 @@ cd infra
 
 just staging-plan                       # terraform plan → staging.tfplan
 just staging-apply                      # apply the saved plan
-pln ctx add staging-admin root@$(cd staging && terraform output -json node_ips | jq -r .eu)
+pln ctx add staging-root root@$(cd staging && terraform output -json node_ips | jq -r .eu)
 just staging-bootstrap                  # installs via install.sh + systemd unit
 just staging-deploy-dev                 # overlay locally-built binary + Phase 7 listener config
 just staging-status
@@ -128,7 +128,7 @@ Wire-mode tenant flow from any machine:
 ```bash
 pln ctx add staging pln://edge.staging.pln.sh:7443
 pln ctx use staging
-pln join <token>                                # mint token with `PLN_CONTEXT=staging-admin pln invite`
+pln join <token>                                # mint token with `PLN_CONTEXT=staging-root pln invite`
 pln seed ./photo.png
 pln share photo.png                             # prints https://blob.staging.pln.sh/<token>
 ```

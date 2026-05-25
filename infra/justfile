@@ -154,8 +154,8 @@ prod-ssh name="eu":
 # staging.pln.sh resolves to tenant sites) so the full Pollen Cloud
 # substrate can be exercised without touching prod.
 #
-# All recipes run under PLN_CONTEXT=staging-admin. Set up the admin ctx
-# once with `pln ctx add staging-admin root@<eu-ip>` after `staging-apply`.
+# All recipes run under PLN_CONTEXT=staging-root. Set up the admin ctx
+# once with `pln ctx add staging-root root@<eu-ip>` after `staging-apply`.
 
 # Preview staging infrastructure changes. Writes staging.tfplan; nothing
 # is applied. Run `just staging-apply` to execute the saved plan after
@@ -210,10 +210,10 @@ staging-bootstrap:
     set -euo pipefail
     cd {{ staging_tf }}
     echo "forming mesh via pln bootstrap ssh..."
-    terraform output -raw bootstrap_targets | PLN_CONTEXT=staging-admin pln bootstrap ssh --admin -
+    terraform output -raw bootstrap_targets | PLN_CONTEXT=staging-root pln bootstrap ssh --admin -
 
     expected=$(terraform output -json node_ips | jq 'length')
-    just _verify-mesh staging-admin "$expected"
+    just _verify-mesh staging-root "$expected"
 
 # Overlay a locally-built linux/amd64 binary on every staging node and
 # apply the wire-mode / static-domain / gateway listener config. Run
@@ -272,7 +272,7 @@ staging-deploy-dev:
       done
 
     expected=$(terraform output -json node_ips | jq 'length')
-    just _verify-mesh staging-admin "$expected"
+    just _verify-mesh staging-root "$expected"
 
 # Upgrade pln on every staging node to the latest tagged release. Only
 # useful when staging is tracking a release; if you've been running
@@ -291,7 +291,7 @@ staging-upgrade:
 
 # Mesh status via the staging admin ctx.
 staging-status:
-    PLN_CONTEXT=staging-admin pln status
+    PLN_CONTEXT=staging-root pln status
 
 # SSH into a staging node by name (eu or us).
 staging-ssh name="eu":
