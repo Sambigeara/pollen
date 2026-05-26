@@ -24,8 +24,10 @@ func TestDenyOneDoesNotAffectOther(t *testing.T) {
 	// The observer is the cluster root: only an authoritative (root or
 	// admin) deny poisons a subtree, so the denier must hold root.
 	obs := validatedStore(t, types.PeerKeyFromBytes(rootPub), rootPub)
-	require.NoError(t, obs.LoadGossipState(aStore.EncodeFull()))
-	require.NoError(t, obs.LoadGossipState(bStore.EncodeFull()))
+	_, _, err := obs.ApplyDelta(aStore.EncodeFull())
+	require.NoError(t, err)
+	_, _, err = obs.ApplyDelta(bStore.EncodeFull())
+	require.NoError(t, err)
 
 	snap := obs.Snapshot()
 	_, _, okA := snap.SpecByName("echo", pA)
@@ -60,14 +62,17 @@ func TestSharedBytesLifetimeFollowsLastOwner(t *testing.T) {
 	// Any observer suffices here: replaying tombstones needs no
 	// authority, unlike the deny test which must observe from root.
 	obs := validatedStore(t, types.PeerKeyFromBytes([]byte{0x09}), rootPub)
-	require.NoError(t, obs.LoadGossipState(aStore.EncodeFull()))
-	require.NoError(t, obs.LoadGossipState(bStore.EncodeFull()))
+	_, _, err := obs.ApplyDelta(aStore.EncodeFull())
+	require.NoError(t, err)
+	_, _, err = obs.ApplyDelta(bStore.EncodeFull())
+	require.NoError(t, err)
 
 	require.Contains(t, blobs.KeepSet(obs.Snapshot()), hash, "both owners pin the shared bytes")
 
-	_, err := aStore.DeleteWorkloadSpec(hash)
+	_, err = aStore.DeleteWorkloadSpec(hash)
 	require.NoError(t, err)
-	require.NoError(t, obs.LoadGossipState(aStore.EncodeFull()))
+	_, _, err = obs.ApplyDelta(aStore.EncodeFull())
+	require.NoError(t, err)
 
 	snap := obs.Snapshot()
 	_, _, okA := snap.SpecByName("echo", pA)
@@ -76,7 +81,8 @@ func TestSharedBytesLifetimeFollowsLastOwner(t *testing.T) {
 
 	_, err = bStore.DeleteWorkloadSpec(hash)
 	require.NoError(t, err)
-	require.NoError(t, obs.LoadGossipState(bStore.EncodeFull()))
+	_, _, err = obs.ApplyDelta(bStore.EncodeFull())
+	require.NoError(t, err)
 
 	require.NotContains(t, blobs.KeepSet(obs.Snapshot()), hash, "bytes unpinned only after the last owner unseeds")
 }

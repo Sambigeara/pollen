@@ -74,7 +74,7 @@ var _ MembershipAPI = (*Service)(nil)
 
 type ClusterState interface {
 	Snapshot() state.Snapshot
-	ApplyDelta(from types.PeerKey, data []byte) ([]state.Event, []byte, error)
+	ApplyDelta(data []byte) ([]state.Event, []byte, error)
 	EncodeDelta(since state.Digest) []byte
 	EncodeFull() []byte
 	PendingNotify() <-chan struct{}

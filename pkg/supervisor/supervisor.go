@@ -148,7 +148,7 @@ func New(opts Options, creds *identity.Credentials, inviteConsumer identity.Invi
 	}
 	if rs := opts.RuntimeState; rs != nil {
 		if gs := rs.GetGossipState(); len(gs) > 0 {
-			if err := stateStore.LoadGossipState(gs); err != nil {
+			if err := stateStore.RestoreFromDisk(gs); err != nil {
 				log.Warnw("failed to restore gossip state from disk", zap.Error(err))
 			}
 		}

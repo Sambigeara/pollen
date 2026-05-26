@@ -126,15 +126,14 @@ type StateReader interface {
 // Fetch, Connect) against a single store.
 //
 // Trust contract: runtime decisions trust Facts pulled from the store
-// without re-verifying their signatures. This is sound iff every write
-// path into the CRDT log either runs Admit or is locally signed by the
-// configured LocalSigner. Today the state package satisfies both
-// halves: applyBatchLocked invokes the validator on inbound gossip;
-// handleSelfConflictLocked invokes acceptableSelfEventLocked on live
-// self-conflict events; signedSpecChangeLocked invokes the validator on
-// local self-signed mutations. Any new log-writing path must satisfy
-// one of those invariants, otherwise runtime decisions can be poisoned
-// with attacker-supplied policy.
+// without re-verifying their signatures. This is sound because every
+// write into the CRDT log first passes the integrity check for its
+// kind: spec changes through this Admit pipeline (gossip, presigned,
+// local self-signed), grants through the chain + subject-PoP verify,
+// blob wrappings through their authority's grant-bound signature, or
+// own-disk replay for the restore path. Any new write path must
+// satisfy the kind's check, otherwise runtime decisions can be
+// poisoned with attacker-supplied policy.
 type Pipeline struct {
 	store     StateReader
 	manifests state.ManifestPaths

@@ -55,7 +55,7 @@ type MutationValidator func(*statev1.SpecChange) error
 
 type StateStore interface {
 	Snapshot() Snapshot
-	ApplyDelta(from types.PeerKey, data []byte) ([]Event, []byte, error)
+	ApplyDelta(data []byte) ([]Event, []byte, error)
 	EncodeDelta(since Digest) []byte
 	EncodeFull() []byte
 	PendingNotify() <-chan struct{}
@@ -100,7 +100,7 @@ type StateStore interface {
 	SetLocalTraffic(peer types.PeerKey, in, out uint64) []Event
 
 	EmitHeartbeatIfNeeded() []Event
-	LoadGossipState(data []byte) error
+	RestoreFromDisk(data []byte) error
 
 	SetPeerLastAddr(pk types.PeerKey, addr string)
 	SetPublic()
@@ -207,7 +207,9 @@ func (s *store) EmitHeartbeatIfNeeded() []Event {
 	})
 }
 
-func (s *store) LoadGossipState(data []byte) error {
+// RestoreFromDisk reloads state.pb written by this same node on its
+// last shutdown. See restoreFromDiskLocked for the contract.
+func (s *store) RestoreFromDisk(data []byte) error {
 	var batch statev1.GossipEventBatch
 	if err := batch.UnmarshalVT(data); err != nil {
 		return err
@@ -216,10 +218,7 @@ func (s *store) LoadGossipState(data []byte) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// applyBatchLocked owns the deny recompute for the restore path and
-	// admits spec events against the restored grant and deny graph;
-	// publish the resulting snapshot once it returns.
-	s.applyBatchLocked(batch.Events, false)
+	s.restoreFromDiskLocked(batch.Events)
 	s.updateSnapshotLocked()
 	return nil
 }

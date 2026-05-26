@@ -32,8 +32,10 @@ func TestMultiTenantSpecIsolation(t *testing.T) {
 	require.NotEqual(t, pkA, pkB)
 
 	b := validatedStore(t, types.PeerKeyFromBytes([]byte{0x09}), rootPub)
-	require.NoError(t, b.LoadGossipState(dataA))
-	require.NoError(t, b.LoadGossipState(dataB))
+	_, _, err := b.ApplyDelta(dataA)
+	require.NoError(t, err)
+	_, _, err = b.ApplyDelta(dataB)
+	require.NoError(t, err)
 	snap := b.Snapshot()
 
 	// Both publications coexist in the per-(authority,name) source: the
@@ -156,7 +158,8 @@ func TestRevokeOwnSpecsIgnoresDedupeWinner(t *testing.T) {
 
 	_, err = b.PublishWorkload(state.WorkloadSpec{Hash: hash, Name: "echo", MinReplicas: 1}, nil)
 	require.NoError(t, err)
-	require.NoError(t, b.LoadGossipState(remoteData))
+	_, _, err = b.ApplyDelta(remoteData)
+	require.NoError(t, err)
 
 	// Precondition: identical bytes+name collapse to one shared runtime
 	// entry, and by the forced ordering the remote tenant owns it. A
@@ -182,7 +185,7 @@ func TestRevokeOwnSpecsIgnoresDedupeWinner(t *testing.T) {
 // TestCapShrinkConvergesOnRemotePeer pins the end-to-end convergence
 // shape an admin-initiated cap-shrink upgrade depends on: the recipient
 // queues tombstones for the kinds they have lost, then gossips the new
-// (shrunken) grant in the same batch. applyBatchLocked admits the new
+// (shrunken) grant in the same batch. The apply path admits the new
 // grant in the first pass before the second-pass spec tombstones, so a
 // remote peer's authorise stage sees the recipient's NEW caps when
 // admitting the tombstones. The tombstone exemption in authorise lets
@@ -212,7 +215,8 @@ func TestCapShrinkConvergesOnRemotePeer(t *testing.T) {
 	bPub, _ := keyPair(t)
 	bKey := types.PeerKeyFromBytes(bPub)
 	b := validatedStore(t, bKey, rootPub)
-	require.NoError(t, b.LoadGossipState(a.EncodeFull()))
+	_, _, err = b.ApplyDelta(a.EncodeFull())
+	require.NoError(t, err)
 	require.Contains(t, b.Snapshot().Specs, hash, "B observes A's workload before the upgrade")
 
 	// A receives an admin-initiated cap-shrink: drops publish:functions.
@@ -234,7 +238,7 @@ func TestCapShrinkConvergesOnRemotePeer(t *testing.T) {
 
 	// Send A's full state to B (the FlushPendingGossip equivalent for
 	// the test: a single delivery covering tombstone + new grant).
-	_, _, err = b.ApplyDelta(aKey, a.EncodeFull())
+	_, _, err = b.ApplyDelta(a.EncodeFull())
 	require.NoError(t, err)
 
 	snap := b.Snapshot()
@@ -288,8 +292,10 @@ func TestSpecByNameResolvesWithinAuthority(t *testing.T) {
 	require.NotEqual(t, pkA, pkB)
 
 	b := validatedStore(t, types.PeerKeyFromBytes([]byte{0x09}), rootPub)
-	require.NoError(t, b.LoadGossipState(dataA))
-	require.NoError(t, b.LoadGossipState(dataB))
+	_, _, err := b.ApplyDelta(dataA)
+	require.NoError(t, err)
+	_, _, err = b.ApplyDelta(dataB)
+	require.NoError(t, err)
 	snap := b.Snapshot()
 
 	hA, svA, okA := snap.SpecByName("echo", pkA)
@@ -319,7 +325,8 @@ func TestSpecByNameResolvesWithinAuthority(t *testing.T) {
 	c.SetLocalGrant(cGrant, cSig)
 	_, err = c.PublishWorkload(state.WorkloadSpec{Hash: validHash(t), Name: "ping", MinReplicas: 1}, nil)
 	require.NoError(t, err)
-	require.NoError(t, b.LoadGossipState(c.EncodeFull()))
+	_, _, err = b.ApplyDelta(c.EncodeFull())
+	require.NoError(t, err)
 	snap = b.Snapshot()
 
 	_, _, okPing := snap.SpecByName("ping", pkC)

@@ -760,13 +760,24 @@ func (s *Service) localCertificates(snap state.Snapshot) []*controlv1.CertInfo {
 	}}
 }
 
-func (s *Service) buildSelfSummary(snap state.Snapshot, lens view.Lens, operator bool, connections []tunneling.ConnectionInfo) *controlv1.NodeSummary {
+// selfNodeKey is the peer rendered as Self, and so dropped from the peer
+// list: the serving node for an operator, the caller's own identity for
+// a wire tenant. A tenant's serving node differs from its Self and stays
+// in the list as the holder of the tenant's fact.
+func selfNodeKey(snap state.Snapshot, lens view.Lens, operator bool) types.PeerKey {
 	if operator {
-		localID := snap.LocalID
-		localNode := snap.Nodes[localID]
+		return snap.LocalID
+	}
+	return lens.Subject()
+}
+
+func (s *Service) buildSelfSummary(snap state.Snapshot, lens view.Lens, operator bool, connections []tunneling.ConnectionInfo) *controlv1.NodeSummary {
+	selfKey := selfNodeKey(snap, lens, operator)
+	if operator {
+		localNode := snap.Nodes[selfKey]
 		in, out := sumTraffic(localNode.TrafficRates)
 		return &controlv1.NodeSummary{
-			Node:               &controlv1.NodeRef{PeerPub: localID.Bytes()},
+			Node:               &controlv1.NodeRef{PeerPub: selfKey.Bytes()},
 			Name:               localNode.Name,
 			Status:             controlv1.NodeStatus_NODE_STATUS_ONLINE,
 			Addr:               nodeViewAddr(localNode),
@@ -782,7 +793,7 @@ func (s *Service) buildSelfSummary(snap state.Snapshot, lens view.Lens, operator
 	// A wire tenant is not a mesh node; surface its own identity so the
 	// status header is the caller, never the serving daemon.
 	return &controlv1.NodeSummary{
-		Node:   &controlv1.NodeRef{PeerPub: lens.Subject().Bytes()},
+		Node:   &controlv1.NodeRef{PeerPub: selfKey.Bytes()},
 		Status: controlv1.NodeStatus_NODE_STATUS_OFFLINE,
 	}
 }
@@ -798,14 +809,11 @@ func (s *Service) buildNodeSummaries(snap state.Snapshot, scoped view.ScopedView
 		tunnelCounts[c.PeerID]++
 	}
 
-	// The serving node is rendered as Self only on the operator/daemon
-	// path. A tenant has no Self node, so the serving node (when it
-	// holds the tenant's fact) belongs in the node list like any other
-	// holder.
-	skipSelf := operator
+	// Drop the node rendered as Self so it never appears twice.
+	selfKey := selfNodeKey(snap, lens, operator)
 	out := make([]*controlv1.NodeSummary, 0, len(scoped.Nodes))
 	for key, node := range scoped.Nodes {
-		if skipSelf && key == snap.LocalID {
+		if key == selfKey {
 			continue
 		}
 		_, isLive := liveSet[key]
@@ -1943,7 +1951,7 @@ func (s *Service) requireDaemonSelf(ctx context.Context, friendly string) error 
 }
 
 func (s *Service) fail(err error, msg string, kv ...any) error {
-	if errors.Is(err, state.ErrTombstoneNoLiveSpec) {
+	if errors.Is(err, state.ErrTombstoneNoLiveSpec) || errors.Is(err, state.ErrUnseedNotAuthored) {
 		return status.Error(codes.NotFound, "no live spec by this publisher matches; nothing to unseed")
 	}
 	// An admission authorise/account verdict is an operator-actionable

@@ -66,6 +66,44 @@ func TestBuildSelfSummary(t *testing.T) {
 	})
 }
 
+// The node shown as Self must never also appear as a peer: a wire
+// tenant drops its own identity (the duplicate would force the CLI to
+// render its full hash), while keeping the serving node it borrows.
+func TestBuildNodeSummariesDropsSelf(t *testing.T) {
+	local := pk(1)
+	tenant := pk(2)
+	other := pk(3)
+	snap := state.Snapshot{LocalID: local}
+	scoped := view.ScopedView{Nodes: map[types.PeerKey]state.NodeView{
+		local:  {Name: "host"},
+		tenant: {Name: "tenant"},
+		other:  {Name: "other"},
+	}}
+	s := &Service{}
+
+	keys := func(out []*controlv1.NodeSummary) []types.PeerKey {
+		ks := make([]types.PeerKey, 0, len(out))
+		for _, ns := range out {
+			ks = append(ks, types.PeerKeyFromBytes(ns.GetNode().GetPeerPub()))
+		}
+		return ks
+	}
+
+	t.Run("wire tenant drops itself, keeps the serving node", func(t *testing.T) {
+		ks := keys(s.buildNodeSummaries(snap, scoped, lensFor(tenant, false), false, nil))
+		require.NotContains(t, ks, tenant)
+		require.Contains(t, ks, local)
+		require.Contains(t, ks, other)
+	})
+
+	t.Run("operator drops the serving node", func(t *testing.T) {
+		ks := keys(s.buildNodeSummaries(snap, scoped, lensFor(pk(9), true), true, nil))
+		require.NotContains(t, ks, local)
+		require.Contains(t, ks, tenant)
+		require.Contains(t, ks, other)
+	})
+}
+
 func TestRedactNodeTelemetry(t *testing.T) {
 	ns := &controlv1.NodeSummary{
 		Node:               &controlv1.NodeRef{PeerPub: pk(3).Bytes()},

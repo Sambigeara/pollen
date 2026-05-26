@@ -79,7 +79,7 @@ func (s *Service) sendDigestViaStream(ctx context.Context, peerID types.PeerKey,
 		return nil, fmt.Errorf("digest response from %s exceeded size limit (%d bytes)", peerID.Short(), len(resp))
 	}
 
-	events, _, err := s.store.ApplyDelta(peerID, resp)
+	events, _, err := s.store.ApplyDelta(resp)
 	if err != nil {
 		return nil, fmt.Errorf("apply digest response from %s: %w", peerID.Short(), err)
 	}
@@ -143,7 +143,7 @@ func (s *Service) handleDatagram(ctx context.Context, from types.PeerKey, data [
 			return
 		}
 
-		events, rebroadcast, err := s.store.ApplyDelta(from, batchData)
+		events, rebroadcast, err := s.store.ApplyDelta(batchData)
 		if err != nil {
 			s.log.Debugw("apply delta from datagram failed", "peer", from.Short(), "err", err)
 			return

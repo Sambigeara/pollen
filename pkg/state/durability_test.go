@@ -95,7 +95,7 @@ func TestRestoreAdmitsFactWhoseGrantSharesTheBatch(t *testing.T) {
 	pKey, pPub, hash, data := publisherFullState(t, rootPriv, rootPub)
 
 	b := validatedStore(t, types.PeerKeyFromBytes([]byte{0x09}), rootPub)
-	require.NoError(t, b.LoadGossipState(data))
+	require.NoError(t, b.RestoreFromDisk(data))
 
 	snap := b.Snapshot()
 	require.NotNil(t, snap.GrantFor(pPub), "authority grant restored")
@@ -113,10 +113,10 @@ func TestRestoreAdmitsFactWhoseGrantSharesTheBatch(t *testing.T) {
 // gets.
 func TestLiveDeltaAdmitsGrantAndFactOnFirstDelivery(t *testing.T) {
 	rootPub, rootPriv := keyPair(t)
-	pKey, _, hash, data := publisherFullState(t, rootPriv, rootPub)
+	_, _, hash, data := publisherFullState(t, rootPriv, rootPub)
 
 	b := validatedStore(t, types.PeerKeyFromBytes([]byte{0x09}), rootPub)
-	_, _, err := b.ApplyDelta(pKey, data)
+	_, _, err := b.ApplyDelta(data)
 	require.NoError(t, err)
 
 	_, ok := b.Snapshot().Specs[hash]
@@ -148,7 +148,7 @@ func TestRestoreStillRejectsFactWithNoAuthorityGrant(t *testing.T) {
 	require.NoError(t, err)
 
 	b := validatedStore(t, types.PeerKeyFromBytes([]byte{0x09}), rootPub)
-	require.NoError(t, b.LoadGossipState(orphan))
+	require.NoError(t, b.RestoreFromDisk(orphan))
 	_, ok := b.Snapshot().Specs[hash]
 	require.False(t, ok, "fact with an unresolvable authority is still rejected")
 }

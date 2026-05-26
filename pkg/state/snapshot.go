@@ -432,29 +432,58 @@ func (s Snapshot) Services() []ServiceInfo {
 	return out
 }
 
-// tombstoneBodyHashLen is the fixed width of a Fact's body hash (sha256
-// today). The width is part of the tombstoneKey struct so the key
-// stays comparable as a map key; if a future Fact swaps in a
-// different digest algorithm this size needs to grow with it.
-const tombstoneBodyHashLen = 32
+// bodyHashLen is the fixed width of a Fact's body hash (sha256 today),
+// fixed as an array width so a specRank stays comparable; widen it if a
+// future Fact swaps in a different digest.
+const bodyHashLen = 32
 
-// tombstoneKey identifies the (kind, identifier, publisher, body_hash)
-// tuple whose presence in any peer's log suppresses live specs that
-// match exactly across the cluster. publisher carries cross-slot
-// suppression (Phase 3f); body_hash discriminates so a tombstone for
-// an older revision of a name doesn't permanently kill future
-// re-publishes under different content.
-type tombstoneKey struct {
+// specIdent is a publication identity: one (kind, logical name,
+// publisher) register, the granularity at which a seed and its later
+// unseed compete across every gossip slot.
+type specIdent struct {
 	name      string
 	publisher types.PeerKey
 	kind      attrKind
-	bodyHash  [tombstoneBodyHashLen]byte
 }
 
-func newTombstoneKey(kind attrKind, name string, pub types.PeerKey, bodyHash []byte) tombstoneKey {
-	k := tombstoneKey{kind: kind, name: name, publisher: pub}
-	copy(k.bodyHash[:], bodyHash)
-	return k
+// specRank orders the events seen for a specIdent. The highest
+// per-publisher Fact.seq wins, and the winner's deleted flag decides
+// whether the publication is live: a later unseed beats an earlier
+// seed, and a later re-seed beats an earlier unseed even when the bytes
+// are identical. seq, not body_hash, is the discriminator, so
+// unseed-then-reseed of the same content republishes. This assumes the
+// publisher's seq stays durable across restarts (it is persisted beside
+// the signing key); losing it while keeping the key would let a re-seed
+// fall below an old tombstone and stay suppressed.
+type specRank struct {
+	seq      uint64
+	bodyHash [bodyHashLen]byte
+	deleted  bool
+}
+
+// supersedes reports whether r outranks cur. Higher Fact.seq wins.
+// The equal-seq branch keeps this a total order: only a misbehaving
+// publisher can mint two facts at one seq, and a deterministic winner
+// then keeps every node converged on that publisher's own publication.
+// A tombstone outranks a live event, then the larger body_hash breaks
+// the tie.
+func (r specRank) supersedes(cur specRank) bool {
+	if r.seq != cur.seq {
+		return r.seq > cur.seq
+	}
+	if r.deleted != cur.deleted {
+		return r.deleted
+	}
+	return slices.Compare(r.bodyHash[:], cur.bodyHash[:]) > 0
+}
+
+// specRankOf derives a spec event's publication identity and its rank.
+func specRankOf(key attrKey, ev *statev1.GossipEvent) (specIdent, specRank) {
+	auth := ev.GetSpecChange().GetFact()
+	id := specIdent{kind: key.kind, name: key.name, publisher: types.PeerKeyFromBytes(auth.GetAuthorityPub())}
+	r := specRank{seq: auth.GetSeq(), deleted: ev.Deleted}
+	copy(r.bodyHash[:], auth.GetBodyHash())
+	return id, r
 }
 
 func (s *store) buildSnapshot() Snapshot {
@@ -509,20 +538,20 @@ func (s *store) buildSnapshot() Snapshot {
 	blobStoring := make(map[string]map[types.PeerKey]struct{})
 	wrappings := make(map[string]map[types.PeerKey]*factv1.BlobWrapping)
 	wrapperBy := make(map[string]map[types.PeerKey]types.PeerKey)
-	// Pre-pass: collect every publisher-signed tombstone keyed by
-	// (kind, name, publisher). A tombstone in any peer's slot kills
-	// every live spec by the same publisher with the same (kind, name)
-	// across the cluster; this is what makes wire-mode unseeds work
-	// from an edge node that didn't originally accept the seed.
-	tombstones := make(map[tombstoneKey]struct{})
+	// Pre-pass: pick each publication's winning event per specIdent (see
+	// specRank). Scanning every slot, not just the publisher's own, is
+	// what lets a wire-mode unseed land on an edge node that never held
+	// the seed and still suppress the publication cluster-wide.
+	winners := make(map[specIdent]specRank)
 	for _, rec := range valid {
 		for key, ev := range rec.log {
-			if !ev.Deleted || !isSpecKind(key.kind) {
+			if !isSpecKind(key.kind) {
 				continue
 			}
-			auth := ev.GetSpecChange().GetFact()
-			pub := types.PeerKeyFromBytes(auth.GetAuthorityPub())
-			tombstones[newTombstoneKey(key.kind, key.name, pub, auth.GetBodyHash())] = struct{}{}
+			id, r := specRankOf(key, ev)
+			if cur, ok := winners[id]; !ok || r.supersedes(cur) {
+				winners[id] = r
+			}
 		}
 	}
 	// Iterating valid (not s.nodes) means specs published only by a
@@ -540,9 +569,12 @@ func (s *store) buildSnapshot() Snapshot {
 			}
 			var publisher types.PeerKey
 			if isSpecKind(key.kind) {
-				auth := ev.GetSpecChange().GetFact()
-				publisher = types.PeerKeyFromBytes(auth.GetAuthorityPub())
-				if _, killed := tombstones[newTombstoneKey(key.kind, key.name, publisher, auth.GetBodyHash())]; killed {
+				id, r := specRankOf(key, ev)
+				publisher = id.publisher
+				// Surface only the live winner: drop a stale lower-seq
+				// duplicate, and drop everything when the winner is a
+				// tombstone.
+				if won := winners[id]; won.deleted || r.seq != won.seq || r.bodyHash != won.bodyHash {
 					continue
 				}
 			}

@@ -56,7 +56,7 @@ func TestGossipConvergesGrantAndFact(t *testing.T) {
 	require.NoError(t, err)
 
 	b := New(types.PeerKeyFromBytes([]byte{0x09}), rootPub)
-	_, _, err = b.ApplyDelta(pKey, a.EncodeFull())
+	_, _, err = b.ApplyDelta(a.EncodeFull())
 	require.NoError(t, err)
 
 	snap := b.Snapshot()
@@ -108,9 +108,9 @@ func TestRootDenyPoisonsSubtree(t *testing.T) {
 	require.NoError(t, err)
 
 	root := New(rootKey, rootPub)
-	_, _, err = root.ApplyDelta(iKey, iStore.EncodeFull())
+	_, _, err = root.ApplyDelta(iStore.EncodeFull())
 	require.NoError(t, err)
-	_, _, err = root.ApplyDelta(pKey, pStore.EncodeFull())
+	_, _, err = root.ApplyDelta(pStore.EncodeFull())
 	require.NoError(t, err)
 
 	pre := root.Snapshot()
@@ -155,7 +155,7 @@ func TestWireTombstoneReplayRejected(t *testing.T) {
 
 	// Control: the untampered delta admits the spec.
 	clean := New(types.PeerKeyFromBytes([]byte{0x08}), rootPub)
-	_, _, err = clean.ApplyDelta(pKey, data)
+	_, _, err = clean.ApplyDelta(data)
 	require.NoError(t, err)
 	_, ok := clean.Snapshot().Specs[spec.Hash]
 	require.True(t, ok, "control: clean delta admits the spec")
@@ -176,7 +176,7 @@ func TestWireTombstoneReplayRejected(t *testing.T) {
 	require.NoError(t, err)
 
 	b := New(types.PeerKeyFromBytes([]byte{0x09}), rootPub)
-	_, _, err = b.ApplyDelta(pKey, tampered)
+	_, _, err = b.ApplyDelta(tampered)
 	require.NoError(t, err)
 	_, ok = b.Snapshot().Specs[spec.Hash]
 	require.False(t, ok, "tombstone-replay of a published fact is rejected on the wire")
@@ -223,7 +223,7 @@ func TestDenyBeforeGrantBecomesEffectiveOnArrival(t *testing.T) {
 	require.False(t, admin.Snapshot().IsDenied(xKey),
 		"deny stays pending while X's grant (and so the admin's authority over X) is unknown")
 
-	_, _, err = admin.ApplyDelta(xKey, xStore.EncodeFull())
+	_, _, err = admin.ApplyDelta(xStore.EncodeFull())
 	require.NoError(t, err)
 
 	post := admin.Snapshot()
@@ -309,7 +309,7 @@ func TestRegisterPeerGrantAdmitsDaemonlessPublisher(t *testing.T) {
 		srv.RegisterPeerGrant(pKey, grantP, sigP)
 
 		b := New(types.PeerKeyFromBytes([]byte{0x09}), rootPub)
-		_, _, err := b.ApplyDelta(srvKey, srv.EncodeFull())
+		_, _, err := b.ApplyDelta(srv.EncodeFull())
 		require.NoError(t, err)
 		require.NotNil(t, b.Snapshot().GrantFor(pPub),
 			"relayed grant reaches a node that never saw the publisher's session")

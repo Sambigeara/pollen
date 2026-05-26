@@ -66,7 +66,29 @@ func newNodeRecord() nodeRecord {
 	return nodeRecord{log: make(map[attrKey]*statev1.GossipEvent)}
 }
 
-func (s *store) ApplyDelta(from types.PeerKey, data []byte) ([]Event, []byte, error) {
+// put writes ev into the log under key and lifts maxCounter to
+// ev.Counter if higher. The lone chokepoint for log writes; callers
+// that need a fresh counter bump it on the record themselves before
+// stamping ev.Counter and calling put.
+func (r *nodeRecord) put(key attrKey, ev *statev1.GossipEvent) {
+	r.log[key] = ev
+	if ev.Counter > r.maxCounter {
+		r.maxCounter = ev.Counter
+	}
+}
+
+// liftCounter raises maxCounter to c if higher, without touching the
+// log. Used when a stale incoming event is rejected by counter-LWW but
+// the slot's bookkeeping still needs to advance so digests stay aligned.
+func (r *nodeRecord) liftCounter(c uint64) {
+	if c > r.maxCounter {
+		r.maxCounter = c
+	}
+}
+
+// ApplyDelta admits gossip arrived from a peer. See applyDeltaLocked
+// for the contract.
+func (s *store) ApplyDelta(data []byte) ([]Event, []byte, error) {
 	var batch statev1.GossipEventBatch
 	if err := batch.UnmarshalVT(data); err != nil {
 		return nil, nil, err
@@ -75,7 +97,7 @@ func (s *store) ApplyDelta(from types.PeerKey, data []byte) ([]Event, []byte, er
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	events, rebroadcast := s.applyBatchLocked(batch.Events, true)
+	events, rebroadcast := s.applyDeltaLocked(batch.Events)
 	s.updateSnapshotLocked()
 
 	var rbData []byte
@@ -87,174 +109,172 @@ func (s *store) ApplyDelta(from types.PeerKey, data []byte) ([]Event, []byte, er
 	return events, rbData, nil
 }
 
-// applyBatchLocked is the shared core for ApplyDelta and LoadGossipState.
-// When live is true (normal gossip), it stamps lastEventAt, generates domain
-// events, and collects rebroadcast entries. When false (disk restore), it
-// inserts events without liveness stamps and produces no domain events.
-//
-// Spec events are admitted in a second pass, after every other event in
-// the batch has been applied and the denylist and snapshot refreshed.
-// Spec admission resolves the authority Grant and the denylist from the
-// snapshot, so a Grant and a Fact delivered together (the canonical
-// EncodeFull restore blob, which is delivered exactly once) must admit on
-// the first delivery rather than being dropped until anti-entropy
-// redelivers them, which never happens on the restore path. CRDT
-// registers are counter-keyed LWW, so the two-pass ordering changes no
-// converged value, and it is skipped when the batch carries no specs.
-// This function owns the batch's deny recompute for both paths.
-//
-// Deleted spec events are admitted iff the Fact carries `deleted=true`
-// signed by the publisher and validate accepts the signature; otherwise a
-// peer could unseed any spec by replaying a published Fact wrapped in a
-// tombstone envelope.
-func (s *store) applyBatchLocked(events []*statev1.GossipEvent, live bool) ([]Event, []*statev1.GossipEvent) {
-	var domainEvents []Event
+// applyDeltaLocked applies a peer-supplied event batch: every event
+// runs the admission gates, the slot is stamped, accepted writes are
+// queued for rebroadcast, and domain events fire. Spec events are
+// admitted in a second pass against a snapshot refreshed with the new
+// grants and deny graph, so a Fact and its authority's Grant arriving
+// together admit on first delivery (anti-entropy is not guaranteed to
+// redeliver the pair). The two-pass ordering changes no converged
+// register value because CRDT registers are counter-keyed LWW.
+func (s *store) applyDeltaLocked(events []*statev1.GossipEvent) ([]Event, []*statev1.GossipEvent) {
+	var domain []Event
 	var rebroadcast []*statev1.GossipEvent
 	denyOrGrantChanged := false
+	now := s.nowFunc()
 
-	applyOne := func(ev *statev1.GossipEvent) {
+	apply := func(ev *statev1.GossipEvent) {
 		pk, err := types.PeerKeyFromString(ev.PeerId)
 		if err != nil {
 			return
 		}
-
 		if pk == s.localID {
-			bumped := s.handleSelfConflictLocked(ev, live)
-			if live {
-				rebroadcast = append(rebroadcast, bumped...)
-			}
+			rebroadcast = append(rebroadcast, s.handleSelfConflictLocked(ev)...)
 			return
 		}
-
 		key, ok := getAttrKey(ev)
 		if !ok {
 			return
 		}
-
-		// Drop structurally invalid or impostor grants at apply time. The
-		// grant chain is signed end-to-end so this is a free integrity
-		// check; without it any admitted peer could spoof another's chain
-		// and bypass deny scoping. Grant tombstones are always rejected:
-		// no legitimate code path produces one (re-mint overwrites the
-		// live event, revocation goes through deny), so admitting them
-		// would let any peer wipe another's grant by replaying a captured
-		// grant event with the Deleted bit flipped.
-		if key.kind == attrGrant {
-			if ev.Deleted || !s.isAcceptableGrantEvent(pk, ev) {
-				return
-			}
+		written, peerWasNew := s.admitPeerEventLocked(pk, key, ev)
+		if peerWasNew {
+			domain = append(domain, PeerJoined{Key: pk})
 		}
-		if isSpecKind(key.kind) && !s.acceptableSpecEventLocked(ev) {
+		if !written {
 			return
 		}
-		// Wrapping tombstones never travel over the wire: revocation is a
-		// local action (Service.Remove evicts the on-disk envelope and
-		// drops the cached DEK), and the wrapping signature alone cannot
-		// authenticate the deletion bit because the bit lives on the
-		// gossip envelope, not in the signed payload. Allowing tombstones
-		// would let any cluster member replay a captured live wrapping
-		// with the bit flipped and erase the recipient's only path back
-		// to the DEK.
-		if key.kind == attrBlobWrapping {
-			if ev.Deleted || !s.isAcceptableWrappingEvent(pk, ev) {
-				return
-			}
-		}
-
-		rec, exists := s.nodes[pk]
-		if !exists {
-			rec = newNodeRecord()
-			if live {
-				domainEvents = append(domainEvents, PeerJoined{Key: pk})
-			}
-		}
-
-		if old, ok := rec.log[key]; ok && ev.Counter <= old.Counter {
-			if ev.Counter > rec.maxCounter {
-				rec.maxCounter = ev.Counter
-				s.nodes[pk] = rec
-			}
-			return
-		}
-
-		rec.log[key] = ev
-		if ev.Counter > rec.maxCounter {
-			rec.maxCounter = ev.Counter
-		}
-		if live {
-			rec.lastEventAt = s.nowFunc()
-			rebroadcast = append(rebroadcast, ev)
-		}
+		rec := s.nodes[pk]
+		rec.lastEventAt = now
 		s.nodes[pk] = rec
-
-		if !live {
-			return
-		}
+		rebroadcast = append(rebroadcast, ev)
 
 		if key.kind == attrDeny || key.kind == attrGrant {
 			denyOrGrantChanged = true
 		}
-		if key.kind == attrGrant {
-			domainEvents = append(domainEvents, GrantChanged{Peer: pk})
-		}
-		if key.kind == attrService {
-			domainEvents = append(domainEvents, ServiceChanged{Peer: pk, Name: key.name})
-		}
-		if key.kind == attrReachability || key.kind == attrVivaldi || key.kind == attrNetwork || key.kind == attrObservedAddress {
-			domainEvents = append(domainEvents, TopologyChanged{Peer: pk})
-		}
-		if key.kind == attrNetwork || key.kind == attrObservedAddress {
-			domainEvents = append(domainEvents, AddressesChanged{Peer: pk})
-		}
-		if key.kind == attrWorkloadClaim {
-			domainEvents = append(domainEvents, WorkloadChanged{Hash: key.name})
-		}
-		if key.kind == attrWorkloadSpec {
-			domainEvents = append(domainEvents, WorkloadChanged{Hash: ev.GetSpecChange().GetWorkload().GetHash()})
-		}
-		if key.kind == attrStaticSpec || key.kind == attrStaticClaim {
-			domainEvents = append(domainEvents, StaticChanged{Name: key.name})
+		switch key.kind { //nolint:exhaustive
+		case attrGrant:
+			domain = append(domain, GrantChanged{Peer: pk})
+		case attrService:
+			domain = append(domain, ServiceChanged{Peer: pk, Name: key.name})
+		case attrWorkloadClaim:
+			domain = append(domain, WorkloadChanged{Hash: key.name})
+		case attrWorkloadSpec:
+			domain = append(domain, WorkloadChanged{Hash: ev.GetSpecChange().GetWorkload().GetHash()})
+		case attrStaticSpec, attrStaticClaim:
+			domain = append(domain, StaticChanged{Name: key.name})
+		case attrNetwork, attrObservedAddress:
+			domain = append(domain, TopologyChanged{Peer: pk}, AddressesChanged{Peer: pk})
+		case attrReachability, attrVivaldi:
+			domain = append(domain, TopologyChanged{Peer: pk})
 		}
 	}
 
-	var specs []*statev1.GossipEvent
+	nonSpecs, specs := partitionSpecs(events)
+	for _, ev := range nonSpecs {
+		apply(ev)
+	}
+	if denyOrGrantChanged {
+		domain = append(domain, s.recomputeDeniedLocked()...)
+	}
+	if len(specs) > 0 {
+		s.updateSnapshotLocked()
+		for _, ev := range specs {
+			apply(ev)
+		}
+	}
+	return domain, rebroadcast
+}
+
+// restoreFromDiskLocked replays the state.pb blob written by this same
+// node on its last shutdown. Self-slot events are trusted on the same
+// basis as the bytes that produced them: they were admitted or locally
+// signed before they were written. Peer-slot events still pass through
+// the admission gates as defence in depth against tampered state.pb.
+// No domain events fire and nothing rebroadcasts: this is rehydration,
+// not new observation. Wiring this entry to peer-supplied bytes would
+// let foreign self-slot events through the admission bypass; use
+// applyDeltaLocked / ApplyDelta for peer-sourced batches.
+func (s *store) restoreFromDiskLocked(events []*statev1.GossipEvent) {
+	apply := func(ev *statev1.GossipEvent) {
+		pk, err := types.PeerKeyFromString(ev.PeerId)
+		if err != nil {
+			return
+		}
+		if pk == s.localID {
+			s.restoreSelfEventLocked(ev)
+			return
+		}
+		key, ok := getAttrKey(ev)
+		if !ok {
+			return
+		}
+		s.admitPeerEventLocked(pk, key, ev)
+	}
+
+	nonSpecs, specs := partitionSpecs(events)
+	for _, ev := range nonSpecs {
+		apply(ev)
+	}
+	s.recomputeDeniedLocked()
+	if len(specs) > 0 {
+		s.updateSnapshotLocked()
+		for _, ev := range specs {
+			apply(ev)
+		}
+	}
+}
+
+// admitPeerEventLocked runs the integrity gates on a peer-slot event
+// and writes it into the slot under counter-LWW. Returns (a) whether
+// the log was actually written (false on rejected admission or a
+// counter-stale event) and (b) whether the slot was newly created this
+// call, which the live caller turns into PeerJoined. The kind-specific
+// tombstone rejections (grant, wrapping) close replay-as-deletion
+// attacks: the deletion bit lives on the envelope, not in the signed
+// payload.
+func (s *store) admitPeerEventLocked(pk types.PeerKey, key attrKey, ev *statev1.GossipEvent) (written, peerWasNew bool) {
+	switch key.kind { //nolint:exhaustive
+	case attrGrant:
+		if ev.Deleted || !s.isAcceptableGrantEvent(pk, ev) {
+			return false, false
+		}
+	case attrBlobWrapping:
+		if ev.Deleted || !s.isAcceptableWrappingEvent(ev) {
+			return false, false
+		}
+	}
+	if isSpecKind(key.kind) && !s.acceptableSpecEventLocked(ev) {
+		return false, false
+	}
+
+	rec, exists := s.nodes[pk]
+	if !exists {
+		rec = newNodeRecord()
+		peerWasNew = true
+	}
+	if old, ok := rec.log[key]; ok && ev.Counter <= old.Counter {
+		rec.liftCounter(ev.Counter)
+		s.nodes[pk] = rec
+		return false, peerWasNew
+	}
+	rec.put(key, ev)
+	s.nodes[pk] = rec
+	return true, peerWasNew
+}
+
+// partitionSpecs splits a batch into non-spec and spec events so callers
+// can apply them in the two-pass order both apply paths share. The
+// split is on the proto oneof variant so callers don't have to re-derive
+// an attrKey here only to consult its kind.
+func partitionSpecs(events []*statev1.GossipEvent) (nonSpecs, specs []*statev1.GossipEvent) {
 	for _, ev := range events {
-		if key, ok := getAttrKey(ev); ok && isSpecKind(key.kind) {
+		if _, isSpec := ev.Change.(*statev1.GossipEvent_SpecChange); isSpec {
 			specs = append(specs, ev)
 			continue
 		}
-		applyOne(ev)
+		nonSpecs = append(nonSpecs, ev)
 	}
-
-	recompute := func() {
-		if !live || denyOrGrantChanged {
-			deny := s.recomputeDeniedLocked()
-			if live {
-				domainEvents = append(domainEvents, deny...)
-			}
-		}
-	}
-
-	if len(specs) == 0 {
-		recompute()
-		return domainEvents, rebroadcast
-	}
-
-	recompute()
-	s.updateSnapshotLocked()
-	// Spec admission counts budget against the snapshot refreshed once
-	// here, not per spec, so a batch carrying several of one authority's
-	// facts admits them all against the pre-loop usage. This is
-	// intentional and convergent: the publisher's own per-spec publish
-	// path enforces the budget at origin, gossip and restore only
-	// replay already-admitted facts, and every node applies the same
-	// batch to the same count, so no node can be driven to an
-	// authority-controlled over-count here.
-	for _, ev := range specs {
-		applyOne(ev)
-	}
-
-	return domainEvents, rebroadcast
+	return nonSpecs, specs
 }
 
 // isAcceptableGrantEvent enforces three invariants on incoming grant
@@ -262,8 +282,8 @@ func (s *store) applyBatchLocked(events []*statev1.GossipEvent, live bool) ([]Ev
 //   - The grant's subject_pub matches the gossip event's peer_id (basic
 //     shape check).
 //   - The chain is structurally and cryptographically valid (signatures
-//   - root anchor). The grant deadline is not enforced here; a past
-//     grant stays authoritative for chain-scoped decisions.
+//     plus the root anchor). The grant deadline is not enforced here;
+//     a past grant stays authoritative for chain-scoped decisions.
 //   - The subject_signature is valid under grant.subject_pub. This is
 //     the proof-of-possession that prevents a delegated admin from
 //     forging a grant for someone else's pub and re-parenting them into
@@ -290,7 +310,7 @@ func (s *store) isAcceptableGrantEvent(pk types.PeerKey, ev *statev1.GossipEvent
 // authority's grant resolved from gossiped state, holding it to the
 // durable-authority rule. Tombstones are rejected upstream: callers
 // must guard with `ev.Deleted` before invoking this.
-func (s *store) isAcceptableWrappingEvent(_ types.PeerKey, ev *statev1.GossipEvent) bool {
+func (s *store) isAcceptableWrappingEvent(ev *statev1.GossipEvent) bool {
 	wrapping := ev.GetBlobWrapping()
 	if wrapping == nil {
 		return false
@@ -329,15 +349,12 @@ func (s *store) deniedCheckerLocked() identity.DenyChecker {
 }
 
 // acceptableSpecEventLocked admits a spec event from any peer slot.
-// Under the signed-event relay model, the gossip-source peer is the
-// storing peer for the spec; the Fact signer is the authoritative
-// Publisher. They may differ: a daemon storing and gossipping a
-// tenant's signed spec is the canonical case.
-//
-// The signed deleted bit must match the gossip envelope's Deleted flag
-// (so a published Fact cannot be replayed as a tombstone), and the
-// validate hook must accept the change (which in production runs the
-// admission pipeline and verifies the Fact signature).
+// The gossip-source peer is the storing peer; the Fact signer is the
+// authoritative Publisher; they may differ (a daemon storing a
+// tenant's signed spec is the canonical case). The signed deleted bit
+// must match the envelope's Deleted flag (so a published Fact cannot
+// be replayed as a tombstone) and the validate hook (the admission
+// pipeline in production) must accept the change.
 func (s *store) acceptableSpecEventLocked(ev *statev1.GossipEvent) bool {
 	sc := ev.GetSpecChange()
 	if sc.GetFact().GetDeleted() != ev.Deleted {
@@ -355,13 +372,10 @@ func (s *store) acceptableSpecEventLocked(ev *statev1.GossipEvent) bool {
 // gossip events that claim to be from us as we apply to events from
 // any other peer. Without these, any peer could plant a SpecChange or
 // Grant under our peer-id and have us adopt it as our own
-// authoritative state.
-//
-// The default branch fails closed: any attr not explicitly listed
-// here cannot be adopted via self-conflict. attrDeny in particular
-// must never be adopted from a peer's claim. Legitimate self-deny
-// goes through DenyPeer; recovery of a lost self-deny is handled by
-// re-issuing the deny rather than trusting a peer's recollection.
+// authoritative state. Unlisted kinds (including the deny attr) fall
+// through to the final `return false`: a legitimate self-deny goes
+// through DenyPeer; recovery of a lost self-deny re-issues the deny
+// rather than trusting a peer's recollection.
 func (s *store) acceptableSelfEventLocked(kind attrKind, ev *statev1.GossipEvent) bool {
 	switch kind { //nolint:exhaustive
 	case attrGrant:
@@ -376,7 +390,7 @@ func (s *store) acceptableSelfEventLocked(kind attrKind, ev *statev1.GossipEvent
 		}
 		return s.acceptableSpecEventLocked(ev)
 	case attrBlobWrapping:
-		return s.isAcceptableWrappingEvent(s.localID, ev)
+		return s.isAcceptableWrappingEvent(ev)
 	case attrNetwork, attrNodeName, attrControlAddr,
 		attrWorkloadClaim, attrReachability, attrHeartbeat, attrBlobAvailability,
 		attrStaticClaim, attrBackoffTTL, attrPerSeedCallCounts:
@@ -453,10 +467,6 @@ func (s *store) recomputeDeniedLocked() []Event {
 		}
 	}
 
-	return s.commitDeniedLocked(effective)
-}
-
-func (s *store) commitDeniedLocked(effective map[types.PeerKey]struct{}) []Event {
 	var events []Event
 	for pk := range effective {
 		if _, was := s.denied[pk]; !was {
@@ -467,36 +477,50 @@ func (s *store) commitDeniedLocked(effective map[types.PeerKey]struct{}) []Event
 	return events
 }
 
-func (s *store) handleSelfConflictLocked(ev *statev1.GossipEvent, live bool) []*statev1.GossipEvent {
-	rec := s.nodes[s.localID]
-
-	// Adopt persistent attrs we don't have locally. Ephemeral attrs (claims,
-	// reachability) that we don't have locally are tombstoned so the deletion
-	// propagates to peers still holding stale state. All adopted/tombstoned
-	// entries get a counter immediately so they're visible to EncodeDelta.
-	//
-	// live=false means we're loading our own previously-persisted state
-	// from disk; the admission filter is for live gossip where a peer
-	// could plant events under our peer-id.
+// restoreSelfEventLocked replays a self-slot event from state.pb at
+// its persisted counter and Deleted bit under the contract documented
+// on restoreFromDiskLocked.
+func (s *store) restoreSelfEventLocked(ev *statev1.GossipEvent) {
 	key, ok := getAttrKey(ev)
-	if ok && !ev.Deleted && (!live || s.acceptableSelfEventLocked(key.kind, ev)) {
+	if !ok {
+		return
+	}
+	rec := s.nodes[s.localID]
+	rec.put(key, ev)
+	s.nodes[s.localID] = rec
+}
+
+// handleSelfConflictLocked answers a peer-stamped event claiming our
+// peer-id: a peer cannot plant a tombstone or a foreign-signed spec
+// under our slot via gossip impersonation. The !ev.Deleted gate is
+// load-bearing for that; the restore path enters via
+// restoreSelfEventLocked instead, where own-disk bytes are trusted.
+// We adopt persistent attrs we don't have locally; ephemeral attrs
+// (claims, reachability) we don't have locally are tombstoned so the
+// deletion propagates to peers still holding stale state. If the peer
+// outran our counter we then rebroadcast every entry at a fresh
+// counter so the cluster converges on our slot, not theirs.
+func (s *store) handleSelfConflictLocked(ev *statev1.GossipEvent) []*statev1.GossipEvent {
+	rec := s.nodes[s.localID]
+	key, ok := getAttrKey(ev)
+	if ok && !ev.Deleted && s.acceptableSelfEventLocked(key.kind, ev) {
 		if _, exists := rec.log[key]; !exists {
 			switch key.kind { //nolint:exhaustive
-			case attrWorkloadSpec, attrService, attrNetwork, attrDeny, attrNodeName, attrControlAddr, attrStaticSpec, attrBlobSpec, attrGrant, attrBlobWrapping:
+			case attrWorkloadSpec, attrService, attrNetwork, attrNodeName, attrControlAddr, attrStaticSpec, attrBlobSpec, attrGrant, attrBlobWrapping:
 				rec.maxCounter++
-				rec.log[key] = &statev1.GossipEvent{
+				rec.put(key, &statev1.GossipEvent{
 					PeerId:  s.localID.String(),
 					Counter: rec.maxCounter,
 					Change:  ev.Change,
-				}
+				})
 			case attrWorkloadClaim, attrReachability, attrHeartbeat, attrBlobAvailability, attrStaticClaim, attrBackoffTTL, attrPerSeedCallCounts:
 				rec.maxCounter++
-				rec.log[key] = &statev1.GossipEvent{
+				rec.put(key, &statev1.GossipEvent{
 					PeerId:  s.localID.String(),
 					Counter: rec.maxCounter,
 					Deleted: true,
 					Change:  ev.Change,
-				}
+				})
 			}
 		}
 	}
@@ -509,7 +533,7 @@ func (s *store) handleSelfConflictLocked(ev *statev1.GossipEvent, live bool) []*
 	// Reject counters that would overflow during the rebroadcast bump.
 	// A malicious peer can send ev.Counter near MaxUint64 to push us
 	// into wraparound; legitimate peers stay within event-rate-bounded
-	// distance. Drop the event and keep our existing counter.
+	// distance.
 	if uint64(len(rec.log))+1 > math.MaxUint64-ev.Counter {
 		s.nodes[s.localID] = rec
 		return nil
@@ -525,7 +549,7 @@ func (s *store) handleSelfConflictLocked(ev *statev1.GossipEvent, live bool) []*
 			Deleted: stored.Deleted,
 			Change:  stored.Change,
 		}
-		rec.log[key] = clone
+		rec.put(key, clone)
 		evs = append(evs, clone)
 	}
 	s.nodes[s.localID] = rec
@@ -594,13 +618,13 @@ func (s *store) tombstoneStaleAttrsLocked(rec *nodeRecord) {
 		ev.Counter = rec.maxCounter
 		ev.Deleted = true
 		key, _ := getAttrKey(ev)
-		rec.log[key] = ev
+		rec.put(key, ev)
 	}
 	for key := range rec.log {
 		if key.kind == attrReachability {
 			rec.maxCounter++
 			ev := &statev1.GossipEvent{PeerId: s.localID.String(), Counter: rec.maxCounter, Deleted: true, Change: &statev1.GossipEvent_Reachability{Reachability: &statev1.ReachabilityChange{PeerId: key.peer.String()}}}
-			rec.log[key] = ev
+			rec.put(key, ev)
 		}
 	}
 }
