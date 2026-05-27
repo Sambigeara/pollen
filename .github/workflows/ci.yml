@@ -52,4 +52,4 @@ jobs:
       - name: Check for breaking proto changes
         run: |
           git fetch --depth=1 origin main
-          just lint-proto-breaking against='.git#ref=FETCH_HEAD'
+          just lint-proto-breaking '.git#ref=FETCH_HEAD'
