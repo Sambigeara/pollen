@@ -269,9 +269,10 @@ func TestCollectStaticSection_ReplicasDisplay(t *testing.T) {
 		capacity  uint32
 		want      string
 	}{
-		{"no capable peers", 0, 0, "0/0"},
+		{"no capable peers", 0, 0, noVisibility},
 		{"partial coverage", 1, 3, "1/3"},
 		{"full coverage", 3, 3, "3/3"},
+		{"zero claimants but capacity visible", 0, 2, "0/2"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -322,4 +323,19 @@ func TestCollectBlobsSection_OrphanLabelling(t *testing.T) {
 		require.Equal(t, "config", sec.rows[2][0])
 		require.Empty(t, sec.footer)
 	})
+}
+
+func TestCollectBlobsSection_ReplicasDisplay(t *testing.T) {
+	resp := &controlv1.GetStatusResponse{
+		Blobs: []*controlv1.BlobSummary{
+			{Hash: "aaaa", Name: "held", Publisher: nodeRef("a"), Local: true, Replicas: 1},
+			{Hash: "bbbb", Name: "visible", Publisher: nodeRef("a"), Local: false, Replicas: 2},
+			{Hash: "cccc", Name: "blind", Publisher: nodeRef("a"), Local: false, Replicas: 0},
+		},
+	}
+	sec := collectBlobsSection(resp, statusViewOpts{})
+	require.Len(t, sec.rows, 3)
+	require.Equal(t, "1", sec.rows[0][2], "locally held blob shows real count")
+	require.Equal(t, "2", sec.rows[1][2], "remote replicas visible in scope show real count")
+	require.Equal(t, noVisibility, sec.rows[2][2], "no holder in scope and not local renders honest placeholder")
 }

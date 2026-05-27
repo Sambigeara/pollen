@@ -302,6 +302,7 @@ func TestProjectReducesInfraHost(t *testing.T) {
 				Name:          "relay-eu",
 				LastAddr:      "198.51.100.7:9000",
 				ControlAddr:   "198.51.100.7:7000",
+				GatewayDomain: ".staging.pln.sh",
 				Reachable:     map[types.PeerKey]struct{}{key(99): {}},
 				MemTotalBytes: 1 << 30,
 				CPUPercent:    42,
@@ -319,6 +320,7 @@ func TestProjectReducesInfraHost(t *testing.T) {
 	require.Equal(t, "relay-eu", got.Name)
 	require.Equal(t, "198.51.100.7:9000", got.LastAddr)
 	require.Zero(t, got.ControlAddr, "control endpoint stripped")
+	require.Zero(t, got.GatewayDomain, "gateway domain stripped")
 	require.Nil(t, got.Reachable, "mesh adjacency stripped")
 	require.Zero(t, got.MemTotalBytes, "capacity stripped")
 	require.Zero(t, got.CPUPercent, "load stripped")

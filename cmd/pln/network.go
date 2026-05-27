@@ -53,6 +53,8 @@ const (
 	tablePadding     = 2
 	minDisambigPeers = 2
 	shortHexLen      = 8
+	// noVisibility: REPLICAS when nothing in scope is countable.
+	noVisibility = "-"
 )
 
 func newNetworkCmds() []*cobra.Command {
@@ -611,7 +613,10 @@ func collectStaticSection(st *controlv1.GetStatusResponse, opts statusViewOpts) 
 		if !opts.wide && len(digest) > shortHexLen {
 			digest = digest[:shortHexLen]
 		}
-		replicas := fmt.Sprintf("%d/%d", len(site.GetClaimants()), site.GetServingCapacity())
+		replicas := noVisibility
+		if site.GetServingCapacity() > 0 {
+			replicas = fmt.Sprintf("%d/%d", len(site.GetClaimants()), site.GetServingCapacity())
+		}
 		local := ""
 		if site.GetLocal() {
 			local = "*"
@@ -681,7 +686,11 @@ func collectBlobsSection(st *controlv1.GetStatusResponse, opts statusViewOpts) s
 				name += "-" + sfx
 			}
 		}
-		sec.rows = append(sec.rows, []string{name, hash, fmt.Sprintf("%d", b.GetReplicas()), local})
+		replicas := fmt.Sprintf("%d", b.GetReplicas())
+		if b.GetReplicas() == 0 && !b.GetLocal() {
+			replicas = noVisibility
+		}
+		sec.rows = append(sec.rows, []string{name, hash, replicas, local})
 	}
 	switch {
 	case len(blobs) > limit:

@@ -1223,3 +1223,11 @@ func (s *store) SetControlAddr(addr string) {
 			return &statev1.GossipEvent{Change: &statev1.GossipEvent_ControlAddr{ControlAddr: &statev1.ControlAddrChange{Addr: v}}}
 		})
 }
+
+func (s *store) SetGatewayDomain(domain string) {
+	s.setLocalStringAttr(attrGatewayDomain, domain,
+		func(ev *statev1.GossipEvent) string { return ev.GetGatewayDomain().GetDomain() },
+		func(v string) *statev1.GossipEvent {
+			return &statev1.GossipEvent{Change: &statev1.GossipEvent_GatewayDomain{GatewayDomain: &statev1.GatewayDomainChange{Domain: v}}}
+		})
+}

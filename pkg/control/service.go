@@ -150,22 +150,21 @@ var _ controlv1.ControlServiceServer = (*Service)(nil)
 
 type Service struct {
 	controlv1.UnimplementedControlServiceServer
-	state        StateReader
-	metrics      MetricsSource
-	tunneling    TunnelingControl
-	blobs        BlobsControl
-	static       StaticControl
-	membership   MembershipControl
-	gate         OperatorGate
-	connector    MeshConnector
-	placement    PlacementControl
-	transport    TransportInfo
-	delivery     PeerDelivery
-	creds        *identity.Credentials
-	shutdown     func()
-	log          *zap.SugaredLogger
-	staticDomain string
-	signPriv     ed25519.PrivateKey
+	state      StateReader
+	metrics    MetricsSource
+	tunneling  TunnelingControl
+	blobs      BlobsControl
+	static     StaticControl
+	membership MembershipControl
+	gate       OperatorGate
+	connector  MeshConnector
+	placement  PlacementControl
+	transport  TransportInfo
+	delivery   PeerDelivery
+	creds      *identity.Credentials
+	shutdown   func()
+	log        *zap.SugaredLogger
+	signPriv   ed25519.PrivateKey
 }
 
 // grantCanPublish reports whether a grant permits publishing any
@@ -198,14 +197,6 @@ func WithMetricsSource(m MetricsSource) Option       { return func(s *Service) {
 func WithMeshConnector(c MeshConnector) Option       { return func(s *Service) { s.connector = c } }
 func WithOperatorGate(g OperatorGate) Option         { return func(s *Service) { s.gate = g } }
 func WithSignPriv(priv ed25519.PrivateKey) Option    { return func(s *Service) { s.signPriv = priv } }
-func WithStaticDomain(d string) Option {
-	return func(s *Service) {
-		if d != "" && d[0] != '.' {
-			d = "." + d
-		}
-		s.staticDomain = strings.ToLower(d)
-	}
-}
 
 func NewService(membership MembershipControl, placement PlacementControl, tunneling TunnelingControl, blobs BlobsControl, sc StaticControl, state StateReader, opts ...Option) *Service {
 	s := &Service{
@@ -437,7 +428,7 @@ func (s *Service) GetStatus(ctx context.Context, _ *controlv1.GetStatusRequest) 
 		Workloads:     s.buildWorkloadSummaries(snap, scoped, lens),
 		Sites:         s.buildStaticSummaries(snap, scoped, operator),
 		Blobs:         s.buildBlobSummaries(snap, scoped, lens, operator),
-		GatewayDomain: strings.TrimPrefix(s.staticDomain, "."),
+		GatewayDomain: strings.TrimPrefix(clusterGatewayDomain(snap), "."),
 	}
 
 	sortStatusResponse(out)
@@ -1400,7 +1391,8 @@ func (s *Service) SeedWorkload(stream grpc.ClientStreamingServer[controlv1.SeedW
 			return err
 		}
 		publisher := types.PeerKeyFromBytes(presigned.GetAuthorityPub())
-		return stream.SendAndClose(&controlv1.SeedWorkloadResponse{Hash: hash, Name: name, PublicUrl: s.pathBasedURL("fn", name, publisher, presigned.GetPolicy().GetPublic())})
+		domain := clusterGatewayDomain(s.state.Snapshot())
+		return stream.SendAndClose(&controlv1.SeedWorkloadResponse{Hash: hash, Name: name, PublicUrl: pathBasedURL(domain, "fn", name, publisher, presigned.GetPolicy().GetPublic())})
 	}
 
 	if caller, ok := auth.CallerFromContext(stream.Context()); ok && caller.Subject() != s.localPeerKey() {
@@ -1420,7 +1412,8 @@ func (s *Service) SeedWorkload(stream grpc.ClientStreamingServer[controlv1.SeedW
 		}
 	}
 
-	return stream.SendAndClose(&controlv1.SeedWorkloadResponse{Hash: hash, Name: name, PublicUrl: s.pathBasedURL("fn", name, s.localPeerKey(), header.GetPolicy().GetPublic())})
+	domain := clusterGatewayDomain(s.state.Snapshot())
+	return stream.SendAndClose(&controlv1.SeedWorkloadResponse{Hash: hash, Name: name, PublicUrl: pathBasedURL(domain, "fn", name, s.localPeerKey(), header.GetPolicy().GetPublic())})
 }
 
 func (s *Service) seedWorkloadPresigned(ctx context.Context, wasmBytes []byte, spec state.WorkloadSpec, presigned *factv1.Fact) error {
@@ -1530,7 +1523,8 @@ func (s *Service) UploadBlob(stream grpc.ClientStreamingServer[controlv1.UploadB
 			publisher = s.localPeerKey()
 		}
 	}
-	return stream.SendAndClose(&controlv1.UploadBlobResponse{Hash: hash, PublicUrl: s.pathBasedURL("blob", name, publisher, header.GetPolicy().GetPublic())})
+	domain := clusterGatewayDomain(s.state.Snapshot())
+	return stream.SendAndClose(&controlv1.UploadBlobResponse{Hash: hash, PublicUrl: pathBasedURL(domain, "blob", name, publisher, header.GetPolicy().GetPublic())})
 }
 
 func (s *Service) publishUploadedBlob(hash, name string, header *controlv1.UploadBlobHeader) error {
@@ -1609,7 +1603,8 @@ func (s *Service) SeedStatic(ctx context.Context, req *controlv1.SeedStaticReque
 	if err := s.static.SeedStatic(req.GetName(), req.GetManifestDigest(), req.GetPolicy()); err != nil {
 		return nil, s.fail(err, "seed static")
 	}
-	return &controlv1.SeedStaticResponse{PublicUrl: s.hostBasedURL(req.GetName(), s.localPeerKey())}, nil
+	domain := clusterGatewayDomain(s.state.Snapshot())
+	return &controlv1.SeedStaticResponse{PublicUrl: hostBasedURL(domain, req.GetName(), s.localPeerKey())}, nil
 }
 
 func (s *Service) seedStaticPresigned(ctx context.Context, req *controlv1.SeedStaticRequest, presigned *factv1.Fact) (*controlv1.SeedStaticResponse, error) {
@@ -1619,7 +1614,8 @@ func (s *Service) seedStaticPresigned(ctx context.Context, req *controlv1.SeedSt
 	if err := s.static.SeedStaticPresigned(req.GetName(), req.GetManifestDigest(), presigned); err != nil {
 		return nil, s.fail(err, "seed static")
 	}
-	return &controlv1.SeedStaticResponse{PublicUrl: s.hostBasedURL(req.GetName(), types.PeerKeyFromBytes(presigned.GetAuthorityPub()))}, nil
+	domain := clusterGatewayDomain(s.state.Snapshot())
+	return &controlv1.SeedStaticResponse{PublicUrl: hostBasedURL(domain, req.GetName(), types.PeerKeyFromBytes(presigned.GetAuthorityPub()))}, nil
 }
 
 func (s *Service) UnseedStatic(ctx context.Context, req *controlv1.UnseedStaticRequest) (*controlv1.UnseedStaticResponse, error) {
@@ -1654,6 +1650,7 @@ func (s *Service) buildStaticSummaries(snap state.Snapshot, scoped view.ScopedVi
 			capacity++
 		}
 	}
+	domain := clusterGatewayDomain(snap)
 	out := make([]*controlv1.StaticSummary, 0, len(scoped.Statics))
 	for _, spec := range scoped.Statics {
 		name := spec.Spec.Name
@@ -1666,7 +1663,7 @@ func (s *Service) buildStaticSummaries(snap state.Snapshot, scoped view.ScopedVi
 			Publisher:       &controlv1.NodeRef{PeerPub: spec.Publisher.Bytes()},
 			Local:           local && operator,
 			ServingCapacity: capacity,
-			PublicUrl:       s.hostBasedURL(name, spec.Publisher),
+			PublicUrl:       hostBasedURL(domain, name, spec.Publisher),
 		}
 		for pk := range claimants {
 			if _, ok := scoped.Nodes[pk]; !ok {
@@ -1679,24 +1676,40 @@ func (s *Service) buildStaticSummaries(snap state.Snapshot, scoped view.ScopedVi
 	return out
 }
 
+// clusterGatewayDomain returns the cluster's gateway domain (e.g.
+// ".staging.pln.sh") by picking the lex-min non-empty announcement
+// across all known nodes. Returns "" if no node has advertised a
+// domain. The supervisor canonicalises before writing, so the wire
+// form is already canonical.
+func clusterGatewayDomain(snap state.Snapshot) string {
+	var winner string
+	for _, nv := range snap.Nodes {
+		if nv.GatewayDomain == "" {
+			continue
+		}
+		if winner == "" || nv.GatewayDomain < winner {
+			winner = nv.GatewayDomain
+		}
+	}
+	return winner
+}
+
 // hostBasedURL renders a static-style URL: `https://<name>-<slug>.<domain>`.
-// Returns "" when no gateway domain is configured.
-func (s *Service) hostBasedURL(name string, publisher types.PeerKey) string {
-	if s.staticDomain == "" || name == "" {
+func hostBasedURL(domain, name string, publisher types.PeerKey) string {
+	if domain == "" || name == "" {
 		return ""
 	}
-	return "https://" + name + "-" + publisher.Slug() + s.staticDomain
+	return "https://" + name + "-" + publisher.Slug() + domain
 }
 
 // pathBasedURL renders a canonical fn/blob URL:
-// `https://<subdomain>.<domain>/<slug>/<name>`. Anonymous callers reach
-// it only when the spec's policy is public; the URL is suppressed for
-// non-public specs to keep the CLI output truthful.
-func (s *Service) pathBasedURL(subdomain, name string, publisher types.PeerKey, public bool) string {
-	if !public || s.staticDomain == "" || name == "" {
+// `https://<subdomain>.<domain>/<slug>/<name>`. Non-public specs return
+// "" so CLI output doesn't promise a URL anonymous callers can't reach.
+func pathBasedURL(domain, subdomain, name string, publisher types.PeerKey, public bool) string {
+	if !public || domain == "" || name == "" {
 		return ""
 	}
-	return "https://" + subdomain + s.staticDomain + "/" + publisher.Slug() + "/" + name
+	return "https://" + subdomain + domain + "/" + publisher.Slug() + "/" + name
 }
 
 // buildBlobSummaries restricts holders to live peers; stale

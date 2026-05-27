@@ -14,6 +14,7 @@ import (
 	"net/netip"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -106,7 +107,22 @@ type Supervisor struct {
 	useHMACNearest   bool
 }
 
+// canonicalGatewayDomain normalises a configured gateway domain to the
+// leading-dot, lower-case wire form used by both the static HTTP
+// listener (for Host-suffix matching) and the gossiped node attribute
+// (for cluster-wide URL composition). Empty stays empty.
+func canonicalGatewayDomain(d string) string {
+	if d == "" {
+		return ""
+	}
+	if d[0] != '.' {
+		d = "." + d
+	}
+	return strings.ToLower(d)
+}
+
 func New(opts Options, creds *identity.Credentials, inviteConsumer identity.InviteConsumer) (*Supervisor, error) {
+	staticDomain := canonicalGatewayDomain(opts.StaticDomain)
 	log := zap.S().Named("supervisor")
 	privKey := opts.SigningKey
 	pubKey := privKey.Public().(ed25519.PublicKey) //nolint:forcetypeassert
@@ -175,6 +191,9 @@ func New(opts Options, creds *identity.Credentials, inviteConsumer identity.Invi
 	}
 	if opts.ControlTLSAddr != "" {
 		stateStore.SetControlAddr(opts.ControlTLSAddr)
+	}
+	if staticDomain != "" {
+		stateStore.SetGatewayDomain(staticDomain)
 	}
 
 	if err := initLocalAddresses(stateStore, opts); err != nil {
@@ -379,7 +398,7 @@ func New(opts Options, creds *identity.Credentials, inviteConsumer identity.Invi
 	n.gate = runtimeGate
 
 	staticSvc := static.New(self, stateStore, blobsSvc, opts.StaticAddr != "", log.Named("static"))
-	staticSvc.SetDomain(opts.StaticDomain)
+	staticSvc.SetDomain(staticDomain)
 	n.static = staticSvc
 	n.staticSvc = staticSvc
 	n.staticAddr = opts.StaticAddr
@@ -392,7 +411,6 @@ func New(opts Options, creds *identity.Credentials, inviteConsumer identity.Invi
 		control.WithMetricsSource(n),
 		control.WithMeshConnector(n),
 		control.WithOperatorGate(runtimeGate),
-		control.WithStaticDomain(opts.StaticDomain),
 	}
 	if opts.ShutdownFunc != nil {
 		controlOpts = append(controlOpts, control.WithShutdown(opts.ShutdownFunc))

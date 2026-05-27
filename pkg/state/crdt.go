@@ -47,6 +47,7 @@ const (
 	attrGrant
 	attrBlobWrapping
 	attrControlAddr
+	attrGatewayDomain
 )
 
 type attrKey struct {
@@ -391,7 +392,7 @@ func (s *store) acceptableSelfEventLocked(kind attrKind, ev *statev1.GossipEvent
 		return s.acceptableSpecEventLocked(ev)
 	case attrBlobWrapping:
 		return s.isAcceptableWrappingEvent(ev)
-	case attrNetwork, attrNodeName, attrControlAddr,
+	case attrNetwork, attrNodeName, attrControlAddr, attrGatewayDomain,
 		attrWorkloadClaim, attrReachability, attrHeartbeat, attrBlobAvailability,
 		attrStaticClaim, attrBackoffTTL, attrPerSeedCallCounts:
 		return true
@@ -506,7 +507,7 @@ func (s *store) handleSelfConflictLocked(ev *statev1.GossipEvent) []*statev1.Gos
 	if ok && !ev.Deleted && s.acceptableSelfEventLocked(key.kind, ev) {
 		if _, exists := rec.log[key]; !exists {
 			switch key.kind { //nolint:exhaustive
-			case attrWorkloadSpec, attrService, attrNetwork, attrNodeName, attrControlAddr, attrStaticSpec, attrBlobSpec, attrGrant, attrBlobWrapping:
+			case attrWorkloadSpec, attrService, attrNetwork, attrNodeName, attrControlAddr, attrGatewayDomain, attrStaticSpec, attrBlobSpec, attrGrant, attrBlobWrapping:
 				rec.maxCounter++
 				rec.put(key, &statev1.GossipEvent{
 					PeerId:  s.localID.String(),
@@ -712,6 +713,8 @@ func getAttrKey(ev *statev1.GossipEvent) (attrKey, bool) {
 		return attrKey{kind: attrNodeName}, true
 	case *statev1.GossipEvent_ControlAddr:
 		return attrKey{kind: attrControlAddr}, true
+	case *statev1.GossipEvent_GatewayDomain:
+		return attrKey{kind: attrGatewayDomain}, true
 	case *statev1.GossipEvent_BlobAvailability:
 		return attrKey{kind: attrBlobAvailability}, true
 	case *statev1.GossipEvent_StaticClaim:

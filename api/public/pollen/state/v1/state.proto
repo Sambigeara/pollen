@@ -190,6 +190,16 @@ message ControlAddrChange {
   string addr = 1;
 }
 
+// GatewayDomainChange gossips the node's configured static HTTP
+// gateway domain (e.g. ".staging.pln.sh"). Readers cluster-wide
+// aggregate every announcement, so any peer can render the correct
+// public URL for a static spec, blob, or workload even when the
+// rendering node isn't itself a gateway. Empty domain means the
+// node isn't configured as a gateway.
+message GatewayDomainChange {
+  string domain = 1;
+}
+
 message BackoffTTLChange {
   int64 expires_at_unix_ms = 1;
 }
@@ -231,6 +241,7 @@ message GossipEvent {
     GrantChange grant = 35;
     SpecChange spec_change = 36;
     ControlAddrChange control_addr = 38;
+    GatewayDomainChange gateway_domain = 39;
     // blob_wrapping gossips a sealed DEK addressed to one entitled
     // host. Wrappings are append-only on the wire: the admission
     // filter rejects any event with GossipEvent.deleted set, because

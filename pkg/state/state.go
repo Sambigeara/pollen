@@ -109,6 +109,7 @@ type StateStore interface {
 	SetStaticCapable()
 	SetNodeName(name string)
 	SetControlAddr(addr string)
+	SetGatewayDomain(domain string)
 	SetLocalGrant(grant *identityv1.Grant, subjectSig []byte) []Event
 	RegisterPeerGrant(peer types.PeerKey, grant *identityv1.Grant, subjectSig []byte) []Event
 	SetLocalSigner(signer LocalSigner)

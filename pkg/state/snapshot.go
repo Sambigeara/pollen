@@ -84,6 +84,7 @@ type NodeView struct {
 	VivaldiCoord       *coords.Coord
 	ObservedExternalIP string
 	ControlAddr        string
+	GatewayDomain      string
 	LastAddr           string
 	Name               string
 	PeerPub            []byte
@@ -802,6 +803,8 @@ func buildNodeView(pk types.PeerKey, rec nodeRecord) (NodeView, map[string]bool,
 			nv.Name = v.NodeName.Name
 		case *statev1.GossipEvent_ControlAddr:
 			nv.ControlAddr = v.ControlAddr.Addr
+		case *statev1.GossipEvent_GatewayDomain:
+			nv.GatewayDomain = v.GatewayDomain.Domain
 		case *statev1.GossipEvent_StaticClaim:
 			staticClaims[StaticClaimKey{Authority: key.peer, Name: key.name}] = struct{}{}
 		case *statev1.GossipEvent_Grant:
