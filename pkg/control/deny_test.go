@@ -46,7 +46,7 @@ func ed25519Pair(t *testing.T) (ed25519.PublicKey, ed25519.PrivateKey) {
 func issuePrincipalGrant(t *testing.T, signerPriv ed25519.PrivateKey, parent *identityv1.Grant, subjectPub ed25519.PublicKey, caps *identityv1.Capabilities) *identityv1.Grant {
 	t.Helper()
 	g, err := identity.IssueGrant(signerPriv, parent, subjectPub, caps, identity.UnlimitedBudget(),
-		time.Now().Add(-time.Hour), time.Time{})
+		time.Now().Add(-time.Hour), time.Time{}, false)
 	require.NoError(t, err)
 	return g
 }

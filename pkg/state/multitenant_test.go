@@ -89,7 +89,7 @@ func TestRevokeOwnSpecsRetainsAuthorisedKinds(t *testing.T) {
 		st := validatedStore(t, pKey, rootPub)
 		grant, err := identity.IssueGrant(rootPriv, nil, pPub,
 			identity.PublisherCapabilities(), &identityv1.Budget{},
-			now.Add(-time.Hour), now.Add(30*24*time.Hour))
+			now.Add(-time.Hour), now.Add(30*24*time.Hour), false)
 		require.NoError(t, err)
 		sig, err := identity.SignGrantSubject(grant, pPriv)
 		require.NoError(t, err)
@@ -149,7 +149,7 @@ func TestRevokeOwnSpecsIgnoresDedupeWinner(t *testing.T) {
 	now := time.Now()
 	bGrant, err := identity.IssueGrant(rootPriv, nil, bPub,
 		identity.PublisherCapabilities(), &identityv1.Budget{},
-		now.Add(-time.Hour), now.Add(30*24*time.Hour))
+		now.Add(-time.Hour), now.Add(30*24*time.Hour), false)
 	require.NoError(t, err)
 	bSig, err := identity.SignGrantSubject(bGrant, bPriv)
 	require.NoError(t, err)
@@ -202,7 +202,7 @@ func TestCapShrinkConvergesOnRemotePeer(t *testing.T) {
 	a := validatedStore(t, aKey, rootPub)
 	aGrant, err := identity.IssueGrant(rootPriv, nil, aPub,
 		identity.PublisherCapabilities(), &identityv1.Budget{},
-		now.Add(-time.Hour), now.Add(30*24*time.Hour))
+		now.Add(-time.Hour), now.Add(30*24*time.Hour), false)
 	require.NoError(t, err)
 	aSig, err := identity.SignGrantSubject(aGrant, aPriv)
 	require.NoError(t, err)
@@ -230,7 +230,7 @@ func TestCapShrinkConvergesOnRemotePeer(t *testing.T) {
 	require.NoError(t, err)
 	newGrant, err := identity.IssueGrant(rootPriv, nil, aPub,
 		shrunken, &identityv1.Budget{},
-		now.Add(-time.Hour), now.Add(30*24*time.Hour))
+		now.Add(-time.Hour), now.Add(30*24*time.Hour), false)
 	require.NoError(t, err)
 	newSig, err := identity.SignGrantSubject(newGrant, aPriv)
 	require.NoError(t, err)
@@ -316,7 +316,7 @@ func TestSpecByNameResolvesWithinAuthority(t *testing.T) {
 	now := time.Now()
 	cGrant, err := identity.IssueGrant(rootPriv, nil, cPub,
 		identity.PublisherCapabilities(), &identityv1.Budget{},
-		now.Add(-time.Hour), now.Add(30*24*time.Hour))
+		now.Add(-time.Hour), now.Add(30*24*time.Hour), false)
 	require.NoError(t, err)
 	cSig, err := identity.SignGrantSubject(cGrant, cPriv)
 	require.NoError(t, err)
@@ -347,7 +347,7 @@ func TestStaticClaimAuthorityIsolation(t *testing.T) {
 	now := time.Now()
 	g, err := identity.IssueGrant(rootPriv, nil, localPub,
 		identity.PublisherCapabilities(), &identityv1.Budget{},
-		now.Add(-time.Hour), now.Add(30*24*time.Hour))
+		now.Add(-time.Hour), now.Add(30*24*time.Hour), false)
 	require.NoError(t, err)
 	sig, err := identity.SignGrantSubject(g, localPriv)
 	require.NoError(t, err)

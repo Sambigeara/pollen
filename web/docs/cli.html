@@ -298,7 +298,7 @@ credentials enrolled; starting daemon</span>
     <dl class="flags">
       <dt>--subject &lt;hex&gt;</dt><dd>Bind to a specific node public key. Without it, the token admits any node.</dd>
       <dt>--ttl &lt;dur&gt;</dt><dd>Token validity (default 5m).</dd>
-      <dt>--expire-after &lt;dur&gt;</dt><dd>Override the deadline on the issued grant (the point past which the node cannot rejoin on its own). Delegated grants default to a 30-day deadline.</dd>
+      <dt>--expire-after &lt;dur&gt;</dt><dd>Hard, non-renewable deadline on the issued grant: the daemon will not renew past it and the cluster will refuse any renewal attempt. Use for time-boxed delegation (<code>--expire-after 1h</code> gives an hour of access, full stop). Without this flag, delegated grants default to a 30-day deadline that the daemon renews automatically.</dd>
       <dt>--publisher</dt><dd>Mint the joiner's grant with publisher capability so it can publish workloads, blobs, services, and static sites.</dd>
       <dt>--workspace</dt><dd>Mint the joiner's grant as a workspace-admin: founds a workspace, may delegate within it, sees its chain ancestors and its own subtree. Mutually exclusive with <code>--publisher</code> and <code>--admin</code>.</dd>
       <dt>--admin</dt><dd>Mint the joiner's grant with admin capabilities (delegate, admit, publish, cluster-wide visibility). The issuer must itself be admin-capable. Mutually exclusive with <code>--publisher</code> and <code>--workspace</code>.</dd>
@@ -359,7 +359,7 @@ pln invite --admin --subject $(ssh relay pln id)</code></pre>
       <dt>--admin</dt><dd>Delegate admin authority to every enrolled node. Mutually exclusive with <code>--publisher</code> and <code>--workspace</code>.</dd>
       <dt>--prop key=val</dt><dd>Properties baked into every enrolled node's grant. Repeatable; accepts <code>key=value</code>, a JSON object, or <code>-</code> to read JSON from stdin.</dd>
       <dt>--relay-port &lt;n&gt;</dt><dd>Relay UDP port to advertise (default 60611).</dd>
-      <dt>--expire-after &lt;dur&gt;</dt><dd>Override the deadline on every issued grant. Delegated grants default to a 30-day deadline.</dd>
+      <dt>--expire-after &lt;dur&gt;</dt><dd>Hard, non-renewable deadline on every issued grant: the daemon will not renew past it. Without this flag, delegated grants default to a 30-day deadline that the daemon renews automatically.</dd>
       <dt>--no-up</dt><dd>Skip starting the local daemon after bootstrapping.</dd>
       <dt>--wire &lt;addr&gt;</dt><dd>Enable the joining node's TLS+mTLS control listener at <code>addr</code> (e.g. <code>:7443</code>). The first publicly-reachable target whose bootstrap succeeds also becomes this context's <code>wire</code> fallback when none is configured yet, so the local CLI keeps working when the local daemon is down. Inbound TCP on the chosen port must be open at the cloud or host firewall; the pln binary cannot configure that.</dd>
     </dl>

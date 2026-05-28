@@ -42,6 +42,7 @@ func NewClusterAuth(t testing.TB) *ClusterAuth { //nolint:thelper
 		identity.UnlimitedBudget(),
 		now.Add(-time.Minute),
 		time.Time{}, // root carries no horizon
+		false,
 	)
 	require.NoError(t, err)
 	return &ClusterAuth{rootPub: pub, rootKey: priv, rootGrant: rootGrant, t: t, idents: map[string]nodeIdent{}}
@@ -79,6 +80,7 @@ func (ca *ClusterAuth) MemberCredentials(name string, nodePriv ed25519.PrivateKe
 		identity.UnlimitedBudget(),
 		now.Add(-time.Minute),
 		now.Add(24*time.Hour), //nolint:mnd
+		false,
 	)
 	require.NoError(ca.t, err)
 

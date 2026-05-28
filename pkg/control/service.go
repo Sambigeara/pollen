@@ -64,7 +64,7 @@ type Metrics struct {
 
 type MembershipControl interface {
 	DenyPeer(key types.PeerKey) error
-	IssueGrant(ctx context.Context, peerKey types.PeerKey, caps *identityv1.Capabilities, budget *identityv1.Budget) (*identityv1.Grant, error)
+	IssueGrant(ctx context.Context, peerKey types.PeerKey, caps *identityv1.Capabilities, budget *identityv1.Budget, nonRenewable bool) (*identityv1.Grant, error)
 	RegisterPeerGrant(peer types.PeerKey, grant *identityv1.Grant, subjectSig []byte)
 	RenewalFailing() bool
 }
@@ -422,7 +422,7 @@ func (s *Service) GetStatus(ctx context.Context, _ *controlv1.GetStatusRequest) 
 		Degraded:      s.isDegraded(),
 		Certificates:  s.buildCertificates(ctx, snap, lens),
 		Self:          s.buildSelfSummary(snap, lens, operator, connections),
-		Nodes:         s.buildNodeSummaries(snap, scoped, lens, operator, connections),
+		Nodes:         s.buildNodeSummaries(snap, scoped, lens, operator, connections, time.Now()),
 		Services:      buildServiceSummaries(snap, scoped.Nodes, lens),
 		Connections:   buildConnectionSummaries(scoped.Nodes, connections),
 		Workloads:     s.buildWorkloadSummaries(snap, scoped, lens),
@@ -789,7 +789,7 @@ func (s *Service) buildSelfSummary(snap state.Snapshot, lens view.Lens, operator
 	}
 }
 
-func (s *Service) buildNodeSummaries(snap state.Snapshot, scoped view.ScopedView, lens view.Lens, operator bool, connections []tunneling.ConnectionInfo) []*controlv1.NodeSummary {
+func (s *Service) buildNodeSummaries(snap state.Snapshot, scoped view.ScopedView, lens view.Lens, operator bool, connections []tunneling.ConnectionInfo, now time.Time) []*controlv1.NodeSummary {
 	liveSet := make(map[types.PeerKey]struct{}, len(snap.PeerKeys))
 	for _, pk := range snap.PeerKeys {
 		liveSet[pk] = struct{}{}
@@ -800,11 +800,16 @@ func (s *Service) buildNodeSummaries(snap state.Snapshot, scoped view.ScopedView
 		tunnelCounts[c.PeerID]++
 	}
 
-	// Drop the node rendered as Self so it never appears twice.
+	// Drop the node rendered as Self so it never appears twice, and
+	// peers whose non-renewable grant has passed: those daemons have
+	// shut down for good and no --include-offline view brings them back.
 	selfKey := selfNodeKey(snap, lens, operator)
 	out := make([]*controlv1.NodeSummary, 0, len(scoped.Nodes))
 	for key, node := range scoped.Nodes {
 		if key == selfKey {
+			continue
+		}
+		if identity.GrantTerminallyExpired(node.Grant, now) {
 			continue
 		}
 		_, isLive := liveSet[key]
@@ -1174,7 +1179,7 @@ func (s *Service) UpgradePeer(ctx context.Context, req *controlv1.UpgradePeerReq
 	if err := s.requireAdoptAuthority(ctx, target); err != nil {
 		return nil, err
 	}
-	grant, err := s.membership.IssueGrant(ctx, target, caps, req.GetBudget())
+	grant, err := s.membership.IssueGrant(ctx, target, caps, req.GetBudget(), false)
 	if err != nil {
 		if errors.Is(err, membership.ErrNotDelegating) {
 			return nil, status.Error(codes.FailedPrecondition, "this node has no delegation authority; target a delegating node")
@@ -1216,10 +1221,14 @@ func (s *Service) RenewGrant(ctx context.Context, _ *controlv1.RenewGrantRequest
 	if !ok || !caller.Valid() {
 		return nil, status.Error(codes.PermissionDenied, "no verified caller identity")
 	}
-	if caller.Grant.GetClaims().GetGrantDeadlineUnix() == 0 {
+	callerClaims := caller.Grant.GetClaims()
+	if callerClaims.GetGrantDeadlineUnix() == 0 {
 		return nil, status.Error(codes.FailedPrecondition, "grant has no renewal horizon")
 	}
-	grant, err := s.membership.IssueGrant(ctx, caller.Subject(), caller.Capabilities, caller.Budget)
+	if callerClaims.GetNonRenewable() {
+		return nil, status.Error(codes.FailedPrecondition, "grant is non-renewable; obtain a fresh invite")
+	}
+	grant, err := s.membership.IssueGrant(ctx, caller.Subject(), caller.Capabilities, caller.Budget, false)
 	if err != nil {
 		if errors.Is(err, membership.ErrNotDelegating) {
 			return nil, status.Error(codes.FailedPrecondition, "this node has no delegation authority; target a delegating node")

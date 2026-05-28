@@ -271,6 +271,16 @@ func (m *GrantClaims) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 		i -= len(m.unknownFields)
 		copy(dAtA[i:], m.unknownFields)
 	}
+	if m.NonRenewable {
+		i--
+		if m.NonRenewable {
+			dAtA[i] = 1
+		} else {
+			dAtA[i] = 0
+		}
+		i--
+		dAtA[i] = 0x40
+	}
 	if m.Serial != 0 {
 		i = protohelpers.EncodeVarint(dAtA, i, uint64(m.Serial))
 		i--
@@ -678,6 +688,16 @@ func (m *InviteTicketClaims) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 		i -= len(m.unknownFields)
 		copy(dAtA[i:], m.unknownFields)
 	}
+	if m.NonRenewable {
+		i--
+		if m.NonRenewable {
+			dAtA[i] = 1
+		} else {
+			dAtA[i] = 0
+		}
+		i--
+		dAtA[i] = 0x50
+	}
 	if m.GrantDeadlineUnix != 0 {
 		i = protohelpers.EncodeVarint(dAtA, i, uint64(m.GrantDeadlineUnix))
 		i--
@@ -916,6 +936,9 @@ func (m *GrantClaims) SizeVT() (n int) {
 	if m.Serial != 0 {
 		n += 1 + protohelpers.SizeOfVarint(uint64(m.Serial))
 	}
+	if m.NonRenewable {
+		n += 2
+	}
 	n += len(m.unknownFields)
 	return n
 }
@@ -1097,6 +1120,9 @@ func (m *InviteTicketClaims) SizeVT() (n int) {
 	}
 	if m.GrantDeadlineUnix != 0 {
 		n += 1 + protohelpers.SizeOfVarint(uint64(m.GrantDeadlineUnix))
+	}
+	if m.NonRenewable {
+		n += 2
 	}
 	n += len(m.unknownFields)
 	return n
@@ -1807,6 +1833,26 @@ func (m *GrantClaims) UnmarshalVT(dAtA []byte) error {
 					break
 				}
 			}
+		case 8:
+			if wireType != 0 {
+				return fmt.Errorf("proto: wrong wireType = %d for field NonRenewable", wireType)
+			}
+			var v int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return protohelpers.ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				v |= int(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			m.NonRenewable = bool(v != 0)
 		default:
 			iNdEx = preIndex
 			skippy, err := protohelpers.Skip(dAtA[iNdEx:])
@@ -2971,6 +3017,26 @@ func (m *InviteTicketClaims) UnmarshalVT(dAtA []byte) error {
 					break
 				}
 			}
+		case 10:
+			if wireType != 0 {
+				return fmt.Errorf("proto: wrong wireType = %d for field NonRenewable", wireType)
+			}
+			var v int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return protohelpers.ErrIntOverflow
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				v |= int(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			m.NonRenewable = bool(v != 0)
 		default:
 			iNdEx = preIndex
 			skippy, err := protohelpers.Skip(dAtA[iNdEx:])

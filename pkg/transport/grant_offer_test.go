@@ -25,7 +25,7 @@ func TestSendGrantOfferOfflinePeer(t *testing.T) {
 	now := time.Now()
 	grant, err := identity.IssueGrant(priv, nil, pub,
 		identity.FullCapabilities(), identity.UnlimitedBudget(),
-		now.Add(-time.Hour), time.Time{})
+		now.Add(-time.Hour), time.Time{}, false)
 	require.NoError(t, err)
 	creds := identity.NewCredentials(pub, priv, grant)
 	self := types.PeerKeyFromBytes(pub)

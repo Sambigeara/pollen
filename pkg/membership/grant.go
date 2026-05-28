@@ -66,8 +66,10 @@ func (s *Service) RegisterPeerGrant(peer types.PeerKey, grant *identityv1.Grant,
 // node's grant chain. The node must hold a delegating grant. Admin
 // grants carry no horizon (managed infrastructure); delegated tenant
 // grants get the default re-bootstrap deadline bounding stolen-key
-// exposure.
-func (s *Service) IssueGrant(_ context.Context, peerKey types.PeerKey, caps *identityv1.Capabilities, budget *identityv1.Budget) (*identityv1.Grant, error) {
+// exposure. nonRenewable forces the issued grant to refuse renewal;
+// callers re-minting an already non-renewable grant (the renewal path)
+// pass it through so the property cannot be laundered away.
+func (s *Service) IssueGrant(_ context.Context, peerKey types.PeerKey, caps *identityv1.Capabilities, budget *identityv1.Budget, nonRenewable bool) (*identityv1.Grant, error) {
 	if caps == nil {
 		return nil, errors.New("capabilities must be provided")
 	}
@@ -83,7 +85,7 @@ func (s *Service) IssueGrant(_ context.Context, peerKey types.PeerKey, caps *ide
 	if !caps.GetCanAdmit() {
 		grantDeadline = now.Add(identity.DefaultGrantDeadlineTTL)
 	}
-	grant, err := s.creds.IssueGrant(peerKey.Bytes(), caps, budget, now, grantDeadline)
+	grant, err := s.creds.IssueGrant(peerKey.Bytes(), caps, budget, now, grantDeadline, nonRenewable)
 	if err != nil {
 		return nil, fmt.Errorf("issue grant: %w", err)
 	}

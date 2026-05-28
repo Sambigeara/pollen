@@ -26,7 +26,7 @@ func TestVerifyMeshPeerCertLeafBinding(t *testing.T) {
 
 	grant, err := identity.IssueGrant(adminPriv, nil, leafPub,
 		identity.PublisherCapabilities(), identity.UnlimitedBudget(),
-		now.Add(-time.Hour), now.Add(30*24*time.Hour))
+		now.Add(-time.Hour), now.Add(30*24*time.Hour), false)
 	require.NoError(t, err)
 
 	mint := func(certPriv ed25519.PrivateKey, ttl time.Duration, at time.Time) []byte {

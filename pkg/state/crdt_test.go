@@ -43,7 +43,7 @@ func TestGossipConvergesGrantAndFact(t *testing.T) {
 
 	grantP, err := identity.IssueGrant(rootPriv, nil, pPub,
 		identity.PublisherCapabilities(), &identityv1.Budget{},
-		now.Add(-time.Hour), now.Add(30*24*time.Hour))
+		now.Add(-time.Hour), now.Add(30*24*time.Hour), false)
 	require.NoError(t, err)
 	sigP, err := identity.SignGrantSubject(grantP, pPriv)
 	require.NoError(t, err)
@@ -85,14 +85,14 @@ func TestRootDenyPoisonsSubtree(t *testing.T) {
 
 	grantI, err := identity.IssueGrant(rootPriv, nil, iPub,
 		identity.FullCapabilities(), identity.UnlimitedBudget(),
-		now.Add(-time.Hour), now.Add(30*24*time.Hour))
+		now.Add(-time.Hour), now.Add(30*24*time.Hour), false)
 	require.NoError(t, err)
 	sigI, err := identity.SignGrantSubject(grantI, iPriv)
 	require.NoError(t, err)
 
 	grantP, err := identity.IssueGrant(iPriv, grantI, pPub,
 		identity.PublisherCapabilities(), &identityv1.Budget{},
-		now.Add(-time.Minute), now.Add(30*24*time.Hour))
+		now.Add(-time.Minute), now.Add(30*24*time.Hour), false)
 	require.NoError(t, err)
 	sigP, err := identity.SignGrantSubject(grantP, pPriv)
 	require.NoError(t, err)
@@ -140,7 +140,7 @@ func TestWireTombstoneReplayRejected(t *testing.T) {
 
 	grantP, err := identity.IssueGrant(rootPriv, nil, pPub,
 		identity.PublisherCapabilities(), &identityv1.Budget{},
-		now.Add(-time.Hour), now.Add(30*24*time.Hour))
+		now.Add(-time.Hour), now.Add(30*24*time.Hour), false)
 	require.NoError(t, err)
 	sigP, err := identity.SignGrantSubject(grantP, pPriv)
 	require.NoError(t, err)
@@ -197,14 +197,14 @@ func TestDenyBeforeGrantBecomesEffectiveOnArrival(t *testing.T) {
 
 	adminGrant, err := identity.IssueGrant(rootPriv, nil, adminPub,
 		identity.FullCapabilities(), identity.UnlimitedBudget(),
-		now.Add(-time.Hour), now.Add(30*24*time.Hour))
+		now.Add(-time.Hour), now.Add(30*24*time.Hour), false)
 	require.NoError(t, err)
 	sigAdmin, err := identity.SignGrantSubject(adminGrant, adminPriv)
 	require.NoError(t, err)
 
 	grantX, err := identity.IssueGrant(adminPriv, adminGrant, xPub,
 		identity.PublisherCapabilities(), &identityv1.Budget{},
-		now.Add(-time.Minute), now.Add(30*24*time.Hour))
+		now.Add(-time.Minute), now.Add(30*24*time.Hour), false)
 	require.NoError(t, err)
 	sigX, err := identity.SignGrantSubject(grantX, xPriv)
 	require.NoError(t, err)
@@ -271,7 +271,7 @@ func TestRegisterPeerGrantAdmitsDaemonlessPublisher(t *testing.T) {
 
 	grantP, err := identity.IssueGrant(rootPriv, nil, pPub,
 		identity.PublisherCapabilities(), &identityv1.Budget{},
-		now.Add(-time.Hour), now.Add(30*24*time.Hour))
+		now.Add(-time.Hour), now.Add(30*24*time.Hour), false)
 	require.NoError(t, err)
 	sigP, err := identity.SignGrantSubject(grantP, pPriv)
 	require.NoError(t, err)

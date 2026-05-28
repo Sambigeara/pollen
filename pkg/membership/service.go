@@ -59,7 +59,7 @@ type MembershipAPI interface {
 	Stop() error
 
 	DenyPeer(key types.PeerKey) error
-	IssueGrant(ctx context.Context, peerKey types.PeerKey, caps *identityv1.Capabilities, budget *identityv1.Budget) (*identityv1.Grant, error)
+	IssueGrant(ctx context.Context, peerKey types.PeerKey, caps *identityv1.Capabilities, budget *identityv1.Budget, nonRenewable bool) (*identityv1.Grant, error)
 	RegisterPeerGrant(peer types.PeerKey, grant *identityv1.Grant, subjectSig []byte)
 	ReceiveGrantOffer(req *meshv1.GrantOfferRequest) *meshv1.GrantOfferResponse
 	RenewalFailing() bool
@@ -168,32 +168,34 @@ type Service struct {
 	store             ClusterState
 	renewErr          error
 	tracer            trace.Tracer
-	natDetector       *nat.Detector
-	datagramHandler   func(ctx context.Context, from types.PeerKey, env *meshv1.Envelope)
+	lastSentAddr      map[types.PeerKey]sentAddr
+	shutdownCh        chan<- struct{}
 	smoothedErr       *metrics.EWMA
 	log               *zap.SugaredLogger
 	cancel            context.CancelFunc
 	events            chan state.Event
 	lastEagerSync     map[types.PeerKey]time.Time
-	shutdownCh        chan<- struct{}
+	expiryTimer       *time.Timer
 	creds             *identity.Credentials
 	peerConnectTime   map[types.PeerKey]time.Time
-	lastSentAddr      map[types.PeerKey]sentAddr
+	natDetector       *nat.Detector
 	nodeMetrics       *metrics.NodeMetrics
+	datagramHandler   func(ctx context.Context, from types.PeerKey, env *meshv1.Envelope)
 	pollenDir         string
 	signPriv          ed25519.PrivateKey
 	advertisedIPs     []string
 	localCoord        coords.Coord
 	wg                sync.WaitGroup
-	port              int
-	gossipJitter      float64
+	eagerSyncFailures atomic.Int64
 	membershipTTL     time.Duration
 	peerTickInterval  time.Duration
 	vivaldiSamples    atomic.Int64
 	localCoordErr     float64
-	eagerSyncFailures atomic.Int64
+	port              int
 	eagerSyncs        atomic.Int64
 	gossipInterval    time.Duration
+	gossipJitter      float64
+	expirySkew        time.Duration
 	stopOnce          sync.Once
 	mu                sync.Mutex
 	localID           types.PeerKey
@@ -231,6 +233,7 @@ func New(self types.PeerKey, creds *identity.Credentials, net Network, cluster C
 		gossipJitter:     cfg.GossipJitter,
 		peerTickInterval: cfg.PeerTickInterval,
 		shutdownCh:       cfg.ShutdownCh,
+		expirySkew:       identity.TimeSkewAllowance,
 	}
 
 	if cfg.Log != nil {
@@ -258,6 +261,7 @@ func (s *Service) Start(ctx context.Context) error {
 	if s.checkGrantExpiry() {
 		return ErrGrantExpired
 	}
+	s.rescheduleExpiryTimer(s.creds.Grant())
 
 	runCtx, cancel := context.WithCancel(ctx)
 	s.cancel = cancel
@@ -279,6 +283,12 @@ func (s *Service) Start(ctx context.Context) error {
 
 func (s *Service) Stop() error {
 	s.stopOnce.Do(func() {
+		s.mu.Lock()
+		if s.expiryTimer != nil {
+			s.expiryTimer.Stop()
+			s.expiryTimer = nil
+		}
+		s.mu.Unlock()
 		if s.cancel != nil {
 			s.cancel()
 		}

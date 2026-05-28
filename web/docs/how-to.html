@@ -440,6 +440,35 @@ caps:     delegate=false admit=false publish=true max_depth=0</span>
 
     <p><strong>Related:</strong> <a href="concepts.html#grants">Grants and tiers</a>, <a href="concepts.html#scoped-status">What you can see</a>, <a href="cli.html#grant"><code>pln grant</code></a>.</p>
 
+    <h2 id="temp-delegate">Grant a time-boxed delegate</h2>
+    <p>Hand someone an hour of access to your cluster (or your workspace) without the grant later renewing itself into a permanent foothold. The invite's <code>--expire-after</code> flag marks the resulting grant as non-renewable, so the daemon will not renew past the deadline and the cluster will refuse any renewal call against it.</p>
+
+    <ol class="steps">
+      <li>
+        <h3>Mint the invite</h3>
+        <p>From an admin or workspace-admin node, issue an invite scoped to the access they need with the deadline you actually want.</p>
+        <div class="terminal">
+          <span class="cmd">pln invite --workspace --expire-after 1h --subject 7c1a...e9</span>
+          <span class="out">aW52aXRl...</span>
+        </div>
+        <p><code>--subject</code> pins the token to the delegate's node public key; drop it for a token that any joiner may redeem. <code>--workspace</code> is one tier choice; <code>--publisher</code> or <code>--admin</code> work the same way. Without <code>--subject</code> use <code>--ttl</code> to keep the redemption window short.</p>
+      </li>
+      <li>
+        <h3>Delegate joins</h3>
+        <p>On the delegate's machine, redeem the token as usual.</p>
+        <div class="terminal">
+          <span class="cmd">pln join aW52aXRl...</span>
+          <span class="out">credentials enrolled; starting daemon</span>
+        </div>
+      </li>
+      <li>
+        <h3>Verify</h3>
+        <p><code>pln inspect node</code> on the delegate shows the deadline with no further renewals; the daemon log records nothing until the deadline arrives, then prints <code>node grant no longer valid</code> and shuts down. The cluster will reject any RenewGrant call against this grant with <code>grant is non-renewable; obtain a fresh invite</code>.</p>
+      </li>
+    </ol>
+
+    <p><strong>Related:</strong> <a href="concepts.html#grants">Grants and tiers</a>, <a href="cli.html#invite"><code>pln invite</code></a>, <a href="#revoke-peer">Revoke a peer</a>.</p>
+
     <h2 id="revoke-peer">Revoke a peer</h2>
     <p>Tear down a peer's connections and put it on the deny set so it can't rejoin without a fresh grant. Run from the cluster root to revoke any peer; a workspace-admin or delegated admin can revoke only peers within its own delegation subtree.</p>
 

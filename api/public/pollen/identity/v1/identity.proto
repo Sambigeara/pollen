@@ -54,6 +54,12 @@ message GrantClaims {
   int64 not_before_unix = 5;
   int64 grant_deadline_unix = 6;
   uint64 serial = 7;
+  // non_renewable marks a grant whose horizon is absolute: the daemon
+  // and wire-mode renewal paths skip it, and the issuing server refuses
+  // RenewGrant for it. Set by short-lived invites (pln invite
+  // --expire-after) so the deadline is honoured even when a delegating
+  // peer is reachable.
+  bool non_renewable = 8;
 }
 
 message Grant {
@@ -107,6 +113,7 @@ message InviteTicketClaims {
   Capabilities capabilities = 7 [(buf.validate.field).required = true];
   Budget budget = 8 [(buf.validate.field).required = true];
   int64 grant_deadline_unix = 9;
+  bool non_renewable = 10;
 }
 
 message InviteTicket {

@@ -26,7 +26,7 @@ func grantCaps(t *testing.T, now time.Time, caps *identityv1.Capabilities) (root
 	t.Helper()
 	adminPub, adminPriv := newKeyPair(t)
 	authPub, authPriv = newKeyPair(t)
-	g, err := identity.IssueGrant(adminPriv, nil, authPub, caps, identity.UnlimitedBudget(), now.Add(-time.Hour), now.Add(30*24*time.Hour))
+	g, err := identity.IssueGrant(adminPriv, nil, authPub, caps, identity.UnlimitedBudget(), now.Add(-time.Hour), now.Add(30*24*time.Hour), false)
 	require.NoError(t, err)
 	return adminPub, authPub, authPriv, g
 }

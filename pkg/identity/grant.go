@@ -37,14 +37,37 @@ const renewLeadWindow = DefaultGrantDeadlineTTL / 3
 
 // GrantRenewDue reports whether grant has a finite horizon within the
 // renewal lead window of now. Grants with no horizon (admin/root) are
-// never due. It is the single owner of the renew-now policy shared by
-// the daemon maintenance loop and the wire-mode CLI.
+// never due. Non-renewable grants are never due: their deadline is
+// absolute by issuer intent. It is the single owner of the renew-now
+// policy shared by the daemon maintenance loop and the wire-mode CLI.
 func GrantRenewDue(grant *identityv1.Grant, now time.Time) bool {
-	dl := grant.GetClaims().GetGrantDeadlineUnix()
+	claims := grant.GetClaims()
+	if claims.GetNonRenewable() {
+		return false
+	}
+	dl := claims.GetGrantDeadlineUnix()
 	if dl == 0 {
 		return false
 	}
 	return time.Unix(dl, 0).Sub(now) < renewLeadWindow
+}
+
+// GrantTerminallyExpired reports whether grant carries a non-renewable
+// horizon that has already passed. A renewable grant past its deadline
+// is not terminal: the holder may still be in the middle of renewing
+// against a delegating peer. A non-renewable expired grant has no
+// recovery path; the peer can only re-enter the cluster via a fresh
+// invite under a new chain.
+func GrantTerminallyExpired(grant *identityv1.Grant, now time.Time) bool {
+	claims := grant.GetClaims()
+	if !claims.GetNonRenewable() {
+		return false
+	}
+	dl := claims.GetGrantDeadlineUnix()
+	if dl == 0 {
+		return false
+	}
+	return now.After(time.Unix(dl, 0))
 }
 
 var ErrGrantInvalid = errors.New("grant invalid")
@@ -125,6 +148,7 @@ func IssueGrant(
 	caps *identityv1.Capabilities,
 	budget *identityv1.Budget,
 	notBefore, grantDeadline time.Time,
+	nonRenewable bool,
 ) (*identityv1.Grant, error) {
 	if len(subjectPub) != ed25519.PublicKeySize {
 		return nil, errors.New("invalid subject key length")
@@ -145,13 +169,14 @@ func IssueGrant(
 	signerPub := signerPriv.Public().(ed25519.PublicKey) //nolint:forcetypeassert
 
 	if parent != nil {
-		clamped, err := applyParent(parent, signerPub, caps, budget, grantDeadline)
+		clampedDeadline, inheritedNonRenewable, err := applyParent(parent, signerPub, caps, budget, grantDeadline)
 		if err != nil {
 			return nil, err
 		}
-		grantDeadline = clamped
+		grantDeadline = clampedDeadline
+		nonRenewable = nonRenewable || inheritedNonRenewable
 	}
-	return signGrant(signerPriv, parent, subjectPub, caps, budget, notBefore, grantDeadline)
+	return signGrant(signerPriv, parent, subjectPub, caps, budget, notBefore, grantDeadline, nonRenewable)
 }
 
 // applyParent clamps a child grant's horizon to its parent's and
@@ -168,7 +193,7 @@ func applyParent(
 	caps *identityv1.Capabilities,
 	budget *identityv1.Budget,
 	grantDeadline time.Time,
-) (time.Time, error) {
+) (time.Time, bool, error) {
 	if pd := parent.GetClaims().GetGrantDeadlineUnix(); pd > 0 {
 		parentDeadline := time.Unix(pd, 0)
 		if grantDeadline.IsZero() || grantDeadline.After(parentDeadline) {
@@ -176,15 +201,15 @@ func applyParent(
 		}
 	}
 	if !bytes.Equal(parent.GetClaims().GetSubjectPub(), signerPub) {
-		return time.Time{}, errors.New("signer key does not match parent grant subject")
+		return time.Time{}, false, errors.New("signer key does not match parent grant subject")
 	}
 	if err := validateChildCapabilities(caps, parent.GetClaims().GetCapabilities()); err != nil {
-		return time.Time{}, err
+		return time.Time{}, false, err
 	}
 	if err := validateChildBudget(budget, parent.GetClaims().GetBudget()); err != nil {
-		return time.Time{}, err
+		return time.Time{}, false, err
 	}
-	return grantDeadline, nil
+	return grantDeadline, parent.GetClaims().GetNonRenewable(), nil
 }
 
 func signGrant(
@@ -194,6 +219,7 @@ func signGrant(
 	caps *identityv1.Capabilities,
 	budget *identityv1.Budget,
 	notBefore, grantDeadline time.Time,
+	nonRenewable bool,
 ) (*identityv1.Grant, error) {
 	signerPub := signerPriv.Public().(ed25519.PublicKey) //nolint:forcetypeassert
 
@@ -213,6 +239,7 @@ func signGrant(
 		Budget:        budget,
 		NotBeforeUnix: notBefore.Unix(),
 		Serial:        serial,
+		NonRenewable:  nonRenewable,
 	}
 	if !grantDeadline.IsZero() {
 		claims.GrantDeadlineUnix = grantDeadline.Unix()
@@ -336,6 +363,18 @@ func childDeadlineWithinParent(child, parent *identityv1.GrantClaims) error {
 	return nil
 }
 
+// childNonRenewableConsistentWithParent enforces that non-renewability
+// cannot be stripped down the chain: a non-renewable parent's
+// descendants must also be non-renewable. Issuance propagates this in
+// applyParent; verification rejects a forged child that cleared the
+// flag.
+func childNonRenewableConsistentWithParent(child, parent *identityv1.GrantClaims) error {
+	if parent.GetNonRenewable() && !child.GetNonRenewable() {
+		return errors.New("grant chain escalation: child clears non-renewable flag")
+	}
+	return nil
+}
+
 // flattenLineage returns the child's embedded chain: parent followed by
 // parent's own (already-flattened) ancestors, leaf-to-root, with every
 // entry's nested Chain cleared. Deriving the full lineage here from the
@@ -405,6 +444,9 @@ func verifyGrantChain(grant *identityv1.Grant) (ed25519.PublicKey, error) {
 			return nil, fmt.Errorf("grant chain escalation: %w", err)
 		}
 		if err := childDeadlineWithinParent(current.GetClaims(), parent.GetClaims()); err != nil {
+			return nil, err
+		}
+		if err := childNonRenewableConsistentWithParent(current.GetClaims(), parent.GetClaims()); err != nil {
 			return nil, err
 		}
 		depthBelow++

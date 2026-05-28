@@ -57,7 +57,7 @@ func publisherStore(t *testing.T, rootPriv ed25519.PrivateKey, rootPub ed25519.P
 
 	grantP, err := identity.IssueGrant(rootPriv, nil, pPub,
 		identity.PublisherCapabilities(), &identityv1.Budget{},
-		now.Add(-time.Hour), now.Add(30*24*time.Hour))
+		now.Add(-time.Hour), now.Add(30*24*time.Hour), false)
 	require.NoError(t, err)
 	sigP, err := identity.SignGrantSubject(grantP, pPriv)
 	require.NoError(t, err)

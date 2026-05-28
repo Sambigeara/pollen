@@ -5,6 +5,7 @@ package control
 
 import (
 	"testing"
+	"time"
 
 	controlv1 "github.com/sambigeara/pollen/api/genpb/pollen/control/v1"
 	factv1 "github.com/sambigeara/pollen/api/genpb/pollen/fact/v1"
@@ -90,18 +91,53 @@ func TestBuildNodeSummariesDropsSelf(t *testing.T) {
 	}
 
 	t.Run("wire tenant drops itself, keeps the serving node", func(t *testing.T) {
-		ks := keys(s.buildNodeSummaries(snap, scoped, lensFor(tenant, false), false, nil))
+		ks := keys(s.buildNodeSummaries(snap, scoped, lensFor(tenant, false), false, nil, time.Now()))
 		require.NotContains(t, ks, tenant)
 		require.Contains(t, ks, local)
 		require.Contains(t, ks, other)
 	})
 
 	t.Run("operator drops the serving node", func(t *testing.T) {
-		ks := keys(s.buildNodeSummaries(snap, scoped, lensFor(pk(9), true), true, nil))
+		ks := keys(s.buildNodeSummaries(snap, scoped, lensFor(pk(9), true), true, nil, time.Now()))
 		require.NotContains(t, ks, local)
 		require.Contains(t, ks, tenant)
 		require.Contains(t, ks, other)
 	})
+}
+
+// A peer whose non-renewable grant has passed is gone for good. Status
+// must drop it from the cluster overview rather than render it as
+// "offline", because no further heartbeat can resurrect it.
+func TestBuildNodeSummariesDropsTerminallyExpiredPeers(t *testing.T) {
+	local := pk(1)
+	live := pk(2)
+	dead := pk(3)
+	now := time.Now()
+	mkGrant := func(deadlineUnix int64, nonRenewable bool) *identityv1.Grant {
+		return &identityv1.Grant{Claims: &identityv1.GrantClaims{
+			GrantDeadlineUnix: deadlineUnix,
+			NonRenewable:      nonRenewable,
+		}}
+	}
+	snap := state.Snapshot{LocalID: local}
+	scoped := view.ScopedView{Nodes: map[types.PeerKey]state.NodeView{
+		local: {Name: "host"},
+		live:  {Name: "live", Grant: mkGrant(now.Add(time.Hour).Unix(), true)},
+		dead:  {Name: "dead", Grant: mkGrant(now.Add(-time.Hour).Unix(), true)},
+	}}
+	s := &Service{}
+
+	keys := func(out []*controlv1.NodeSummary) []types.PeerKey {
+		ks := make([]types.PeerKey, 0, len(out))
+		for _, ns := range out {
+			ks = append(ks, types.PeerKeyFromBytes(ns.GetNode().GetPeerPub()))
+		}
+		return ks
+	}
+
+	ks := keys(s.buildNodeSummaries(snap, scoped, lensFor(pk(9), true), true, nil, now))
+	require.Contains(t, ks, live)
+	require.NotContains(t, ks, dead)
 }
 
 func TestRedactNodeTelemetry(t *testing.T) {

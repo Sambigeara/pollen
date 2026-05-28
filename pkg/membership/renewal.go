@@ -66,6 +66,7 @@ func (s *Service) installRenewedGrant(g *identityv1.Grant) error {
 	if err := s.creds.AdoptGrant(g, time.Now(), s.store.Snapshot().DenyChecker()); err != nil {
 		return err
 	}
+	s.rescheduleExpiryTimer(g)
 	s.publishLocalGrant(g)
 	return nil
 }
@@ -120,4 +121,50 @@ func (s *Service) RenewalFailing() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return !s.renewAttemptedAt.IsZero() && s.renewErr != nil
+}
+
+// rescheduleExpiryTimer arms a one-shot timer that fires shutdown at
+// the grant's deadline (plus skew) for non-renewable grants. The
+// 5-minute grantCheckInterval is fine for renewable grants: a missed
+// renewal has a ~10-day lead window of retries and a five-minute
+// polling lag on the eventual hard stop is invisible against the
+// 30-day default. A non-renewable grant has no second chance, so the
+// daemon must shut down at the actual deadline rather than the next
+// tick. Idempotent: callers re-invoke on every grant swap (start,
+// renewal, admin upgrade) so the timer always reflects the live grant.
+func (s *Service) rescheduleExpiryTimer(grant *identityv1.Grant) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.expiryTimer != nil {
+		s.expiryTimer.Stop()
+		s.expiryTimer = nil
+	}
+	claims := grant.GetClaims()
+	if !claims.GetNonRenewable() {
+		return
+	}
+	dl := claims.GetGrantDeadlineUnix()
+	if dl == 0 {
+		return
+	}
+	when := max(time.Until(time.Unix(dl, 0).Add(s.expirySkew)), 0)
+	s.expiryTimer = time.AfterFunc(when, s.signalExpiryShutdown)
+}
+
+// signalExpiryShutdown fires from the deadline timer. Non-blocking
+// send: the shutdown channel is buffered to one, the periodic ticker
+// is the only other writer, and either reaching the supervisor is
+// enough to unwind. A second writer arriving after the buffer fills
+// would block this goroutine until the supervisor reads, which it
+// already has signal to do.
+func (s *Service) signalExpiryShutdown() {
+	s.log.Errorw("non-renewable grant deadline passed; shutting down",
+		"deadline_unix", s.creds.Grant().GetClaims().GetGrantDeadlineUnix())
+	if s.shutdownCh == nil {
+		return
+	}
+	select {
+	case s.shutdownCh <- struct{}{}:
+	default:
+	}
 }

@@ -48,7 +48,7 @@ func authority(t *testing.T, now, deadline time.Time, attrs map[string]any) (roo
 		require.NoError(t, err)
 		caps.Attributes = s
 	}
-	grant, err := identity.IssueGrant(adminPriv, nil, authPub, caps, identity.UnlimitedBudget(), now.Add(-time.Hour), deadline)
+	grant, err := identity.IssueGrant(adminPriv, nil, authPub, caps, identity.UnlimitedBudget(), now.Add(-time.Hour), deadline, false)
 	require.NoError(t, err)
 	return adminPub, authPub, authPriv, grant
 }
@@ -184,7 +184,7 @@ func TestAdmitWrapsRejectionsAsErrRejected(t *testing.T) {
 		authPub, authPriv := newKeyPair(t)
 		grant, err := identity.IssueGrant(adminPriv, nil, authPub,
 			identity.PublisherCapabilities(), &identityv1.Budget{MaxFunctions: 1},
-			now.Add(-time.Hour), now.Add(30*24*time.Hour))
+			now.Add(-time.Hour), now.Add(30*24*time.Hour), false)
 		require.NoError(t, err)
 
 		snap := state.Snapshot{

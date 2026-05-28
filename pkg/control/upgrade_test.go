@@ -148,12 +148,12 @@ func (m *stubMembership) DenyPeer(key types.PeerKey) error {
 	return nil
 }
 
-func (m *stubMembership) IssueGrant(_ context.Context, peerKey types.PeerKey, caps *identityv1.Capabilities, budget *identityv1.Budget) (*identityv1.Grant, error) {
+func (m *stubMembership) IssueGrant(_ context.Context, peerKey types.PeerKey, caps *identityv1.Capabilities, budget *identityv1.Budget, _ bool) (*identityv1.Grant, error) {
 	if budget == nil {
 		budget = identity.UnlimitedBudget()
 	}
 	now := time.Now()
-	return identity.IssueGrant(m.rootPriv, nil, ed25519.PublicKey(peerKey.Bytes()), caps, budget, now.Add(-time.Hour), now.Add(30*24*time.Hour))
+	return identity.IssueGrant(m.rootPriv, nil, ed25519.PublicKey(peerKey.Bytes()), caps, budget, now.Add(-time.Hour), now.Add(30*24*time.Hour), false)
 }
 func (m *stubMembership) RegisterPeerGrant(types.PeerKey, *identityv1.Grant, []byte) {}
 func (m *stubMembership) RenewalFailing() bool                                       { return false }

@@ -34,6 +34,7 @@ func IssueInviteTicket(
 	grantDeadline time.Time,
 	now time.Time,
 	ttl time.Duration,
+	nonRenewable bool,
 ) (*identityv1.InviteTicket, error) {
 	if ttl <= 0 {
 		return nil, errors.New("invite ticket ttl must be positive")
@@ -59,6 +60,7 @@ func IssueInviteTicket(
 		Capabilities:      caps,
 		Budget:            budget,
 		GrantDeadlineUnix: grantDeadlineUnix(grantDeadline),
+		NonRenewable:      nonRenewable,
 	}
 	if err := protovalidate.Validate(claims); err != nil {
 		return nil, fmt.Errorf("invite ticket claims invalid: %w", err)
@@ -147,7 +149,7 @@ func RedeemInviteTicket(
 		grantDeadline = time.Unix(d, 0)
 	}
 
-	childGrant, err := IssueGrant(issuerPriv, parent, joinerPub, claims.GetCapabilities(), claims.GetBudget(), now, grantDeadline)
+	childGrant, err := IssueGrant(issuerPriv, parent, joinerPub, claims.GetCapabilities(), claims.GetBudget(), now, grantDeadline, claims.GetNonRenewable())
 	if err != nil {
 		return nil, fmt.Errorf("mint joiner grant: %w", err)
 	}

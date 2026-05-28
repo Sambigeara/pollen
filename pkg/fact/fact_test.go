@@ -34,7 +34,7 @@ func authorityGrant(t *testing.T, now, deadline time.Time) (rootPub, authorityPu
 	authorityPub, authorityPriv = newKeyPair(t)
 	grant, err := identity.IssueGrant(adminPriv, nil, authorityPub,
 		identity.PublisherCapabilities(), &identityv1.Budget{MaxSites: 2},
-		now.Add(-time.Hour), deadline)
+		now.Add(-time.Hour), deadline, false)
 	require.NoError(t, err)
 	return adminPub, authorityPub, authorityPriv, grant
 }
@@ -103,7 +103,7 @@ func TestVerifyFact(t *testing.T) {
 		bPub, _ := newKeyPair(t)
 		_ = aPub
 		bGrant, err := identity.IssueGrant(adminPriv, nil, bPub,
-			identity.PublisherCapabilities(), &identityv1.Budget{}, now.Add(-time.Hour), now.Add(30*24*time.Hour))
+			identity.PublisherCapabilities(), &identityv1.Budget{}, now.Add(-time.Hour), now.Add(30*24*time.Hour), false)
 		require.NoError(t, err)
 		f, err := fact.IssueFact(aPriv, res, body, nil, 1, false)
 		require.NoError(t, err)
@@ -133,11 +133,11 @@ func delegatedAuthority(t *testing.T, now, deadline time.Time) (rootPub, interme
 
 	root, err := identity.IssueGrant(adminPriv, nil, intermediatePub,
 		identity.FullCapabilities(), identity.UnlimitedBudget(),
-		now.Add(-time.Hour), time.Time{})
+		now.Add(-time.Hour), time.Time{}, false)
 	require.NoError(t, err)
 	grant, err = identity.IssueGrant(intermediatePriv, root, authorityPub,
 		identity.PublisherCapabilities(), &identityv1.Budget{MaxSites: 2},
-		now.Add(-time.Minute), deadline)
+		now.Add(-time.Minute), deadline, false)
 	require.NoError(t, err)
 	return adminPub, intermediatePub, authorityPub, authorityPriv, grant
 }

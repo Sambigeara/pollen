@@ -38,7 +38,7 @@ func TestForgedCapabilityEscalationRejected(t *testing.T) {
 	// delegate, no admit.
 	dGrant, err := IssueGrant(rootPriv, nil, dPub,
 		&identityv1.Capabilities{CanDelegate: true, MaxDepth: 5, Publish: &identityv1.PublishCapability{Sites: true}},
-		&identityv1.Budget{}, now.Add(-time.Hour), now.Add(30*24*time.Hour))
+		&identityv1.Budget{}, now.Add(-time.Hour), now.Add(30*24*time.Hour), false)
 	require.NoError(t, err)
 
 	// D forges a wildly escalated child by signing the proto itself.
@@ -49,7 +49,7 @@ func TestForgedCapabilityEscalationRejected(t *testing.T) {
 			MaxDepth:    255,
 			Publish:     &identityv1.PublishCapability{Functions: true, Blobs: true, Sites: true, Services: true},
 		},
-		&identityv1.Budget{}, now, now.Add(3650*24*time.Hour))
+		&identityv1.Budget{}, now, now.Add(3650*24*time.Hour), false)
 	require.NoError(t, err)
 
 	chk := CheckGrant(forged, rootPub, now, nil, nil)
@@ -65,18 +65,67 @@ func TestForgedHorizonExtensionRejected(t *testing.T) {
 
 	dCaps := &identityv1.Capabilities{CanDelegate: true, MaxDepth: 5, Publish: &identityv1.PublishCapability{Sites: true}}
 	dGrant, err := IssueGrant(rootPriv, nil, dPub, dCaps, &identityv1.Budget{},
-		now.Add(-time.Hour), now.Add(time.Hour))
+		now.Add(-time.Hour), now.Add(time.Hour), false)
 	require.NoError(t, err)
 
 	// Same capabilities, but a horizon a decade past the parent's.
 	forged, err := signGrant(dPriv, dGrant, attackerPub,
 		&identityv1.Capabilities{CanDelegate: true, MaxDepth: 5, Publish: &identityv1.PublishCapability{Sites: true}},
-		&identityv1.Budget{}, now, now.Add(3650*24*time.Hour))
+		&identityv1.Budget{}, now, now.Add(3650*24*time.Hour), false)
 	require.NoError(t, err)
 
 	chk := CheckGrant(forged, rootPub, now, nil, nil)
 	require.Equal(t, GrantStatusInvalidChain, chk.Status, chk.Reason)
 	require.Contains(t, chk.Reason, "horizon")
+}
+
+// TestForgedNonRenewableStripRejected proves a delegating peer cannot
+// launder a non-renewable parent into a renewable child: the chain
+// check rejects any link whose child clears the flag the parent set.
+// Without this an attacker holding a non-renewable delegating grant
+// could sign a "fresh" child off-band and bypass the deadline.
+func TestForgedNonRenewableStripRejected(t *testing.T) {
+	now := time.Now()
+	rootPub, rootPriv := kp(t)
+	dPub, dPriv := kp(t)
+	attackerPub, _ := kp(t)
+
+	dCaps := &identityv1.Capabilities{CanDelegate: true, MaxDepth: 5, Publish: &identityv1.PublishCapability{Sites: true}}
+	dGrant, err := IssueGrant(rootPriv, nil, dPub, dCaps, &identityv1.Budget{},
+		now.Add(-time.Hour), now.Add(time.Hour), true)
+	require.NoError(t, err)
+	require.True(t, dGrant.GetClaims().GetNonRenewable())
+
+	forged, err := signGrant(dPriv, dGrant, attackerPub,
+		&identityv1.Capabilities{CanDelegate: true, MaxDepth: 5, Publish: &identityv1.PublishCapability{Sites: true}},
+		&identityv1.Budget{}, now, now.Add(time.Hour), false)
+	require.NoError(t, err)
+
+	chk := CheckGrant(forged, rootPub, now, nil, nil)
+	require.Equal(t, GrantStatusInvalidChain, chk.Status, chk.Reason)
+	require.Contains(t, chk.Reason, "non-renewable")
+}
+
+// TestNonRenewablePropagatesOnIssue proves IssueGrant infects the child
+// when the parent is non-renewable: a caller asking for a renewable
+// child still gets a non-renewable one, so a delegating peer that
+// honestly calls IssueGrant cannot accidentally weaken the property.
+func TestNonRenewablePropagatesOnIssue(t *testing.T) {
+	now := time.Now()
+	_, rootPriv := kp(t)
+	dPub, dPriv := kp(t)
+	childPub, _ := kp(t)
+
+	parent, err := IssueGrant(rootPriv, nil, dPub,
+		&identityv1.Capabilities{CanDelegate: true, MaxDepth: 5, Publish: &identityv1.PublishCapability{Sites: true}},
+		&identityv1.Budget{}, now.Add(-time.Hour), now.Add(time.Hour), true)
+	require.NoError(t, err)
+
+	child, err := IssueGrant(dPriv, parent, childPub,
+		&identityv1.Capabilities{Publish: &identityv1.PublishCapability{Sites: true}},
+		&identityv1.Budget{}, now, now.Add(30*time.Minute), false)
+	require.NoError(t, err)
+	require.True(t, child.GetClaims().GetNonRenewable(), "child of non-renewable parent must inherit the flag")
 }
 
 func TestForgedAttributeEscalationRejected(t *testing.T) {
@@ -87,14 +136,14 @@ func TestForgedAttributeEscalationRejected(t *testing.T) {
 
 	dGrant, err := IssueGrant(rootPriv, nil, dPub,
 		&identityv1.Capabilities{CanDelegate: true, MaxDepth: 5},
-		&identityv1.Budget{}, now.Add(-time.Hour), now.Add(30*24*time.Hour))
+		&identityv1.Budget{}, now.Add(-time.Hour), now.Add(30*24*time.Hour), false)
 	require.NoError(t, err)
 
 	attrs, err := structpb.NewStruct(map[string]any{"role": "admin"})
 	require.NoError(t, err)
 	forged, err := signGrant(dPriv, dGrant, attackerPub,
 		&identityv1.Capabilities{CanDelegate: true, MaxDepth: 5, Attributes: attrs},
-		&identityv1.Budget{}, now, now.Add(24*time.Hour))
+		&identityv1.Budget{}, now, now.Add(24*time.Hour), false)
 	require.NoError(t, err)
 
 	chk := CheckGrant(forged, rootPub, now, nil, nil)
@@ -109,15 +158,15 @@ func TestLegitimateDeepChainStillVerifies(t *testing.T) {
 	cPub, _ := kp(t)
 
 	aGrant, err := IssueGrant(rootPriv, nil, aPub, FullCapabilities(), UnlimitedBudget(),
-		now.Add(-time.Hour), time.Time{})
+		now.Add(-time.Hour), time.Time{}, false)
 	require.NoError(t, err)
 	bGrant, err := IssueGrant(aPriv, aGrant, bPub,
 		&identityv1.Capabilities{CanDelegate: true, MaxDepth: 10, Publish: &identityv1.PublishCapability{Sites: true}},
-		&identityv1.Budget{}, now.Add(-time.Minute), now.Add(30*24*time.Hour))
+		&identityv1.Budget{}, now.Add(-time.Minute), now.Add(30*24*time.Hour), false)
 	require.NoError(t, err)
 	cGrant, err := IssueGrant(bPriv, bGrant, cPub,
 		&identityv1.Capabilities{Publish: &identityv1.PublishCapability{Sites: true}},
-		&identityv1.Budget{}, now, now.Add(7*24*time.Hour))
+		&identityv1.Budget{}, now, now.Add(7*24*time.Hour), false)
 	require.NoError(t, err)
 
 	chk := CheckGrant(cGrant, rootPub, now, nil, nil)
@@ -137,14 +186,14 @@ func TestForgedDepthBudgetRejected(t *testing.T) {
 	// M may root a subtree at most one delegation hop deep.
 	mGrant, err := IssueGrant(rootPriv, nil, mPub,
 		&identityv1.Capabilities{CanDelegate: true, MaxDepth: 1, Publish: &identityv1.PublishCapability{Sites: true}},
-		&identityv1.Budget{}, now.Add(-time.Hour), now.Add(30*24*time.Hour))
+		&identityv1.Budget{}, now.Add(-time.Hour), now.Add(30*24*time.Hour), false)
 	require.NoError(t, err)
 
 	// One hop below M: within budget, verifies.
 	l1Pub, _ := kp(t)
 	l1, err := IssueGrant(mPriv, mGrant, l1Pub,
 		&identityv1.Capabilities{Publish: &identityv1.PublishCapability{Sites: true}},
-		&identityv1.Budget{}, now, now.Add(24*time.Hour))
+		&identityv1.Budget{}, now, now.Add(24*time.Hour), false)
 	require.NoError(t, err)
 	require.Equal(t, GrantStatusOK, CheckGrant(l1, rootPub, now, nil, nil).Status)
 
@@ -152,12 +201,12 @@ func TestForgedDepthBudgetRejected(t *testing.T) {
 	nPub, nPriv := kp(t)
 	nGrant, err := IssueGrant(mPriv, mGrant, nPub,
 		&identityv1.Capabilities{CanDelegate: true, MaxDepth: 1, Publish: &identityv1.PublishCapability{Sites: true}},
-		&identityv1.Budget{}, now, now.Add(24*time.Hour))
+		&identityv1.Budget{}, now, now.Add(24*time.Hour), false)
 	require.NoError(t, err)
 	l2Pub, _ := kp(t)
 	l2, err := IssueGrant(nPriv, nGrant, l2Pub,
 		&identityv1.Capabilities{Publish: &identityv1.PublishCapability{Sites: true}},
-		&identityv1.Budget{}, now, now.Add(24*time.Hour))
+		&identityv1.Budget{}, now, now.Add(24*time.Hour), false)
 	require.NoError(t, err)
 
 	chk := CheckGrant(l2, rootPub, now, nil, nil)
@@ -178,7 +227,7 @@ func TestForgedBudgetRejected(t *testing.T) {
 	// M may publish at most 5 functions.
 	mGrant, err := IssueGrant(rootPriv, nil, mPub,
 		&identityv1.Capabilities{CanDelegate: true, MaxDepth: 5, Publish: &identityv1.PublishCapability{Functions: true}},
-		&identityv1.Budget{MaxFunctions: 5}, now.Add(-time.Hour), now.Add(30*24*time.Hour))
+		&identityv1.Budget{MaxFunctions: 5}, now.Add(-time.Hour), now.Add(30*24*time.Hour), false)
 	require.NoError(t, err)
 
 	childCaps := &identityv1.Capabilities{Publish: &identityv1.PublishCapability{Functions: true}}
@@ -186,21 +235,21 @@ func TestForgedBudgetRejected(t *testing.T) {
 	// Within budget: issues and verifies.
 	okPub, _ := kp(t)
 	ok, err := IssueGrant(mPriv, mGrant, okPub,
-		childCaps, &identityv1.Budget{MaxFunctions: 3}, now, now.Add(24*time.Hour))
+		childCaps, &identityv1.Budget{MaxFunctions: 3}, now, now.Add(24*time.Hour), false)
 	require.NoError(t, err)
 	require.Equal(t, GrantStatusOK, CheckGrant(ok, rootPub, now, nil, nil).Status)
 
 	// Issuance rejects a child that asks for more than M holds.
 	fatPub, _ := kp(t)
 	_, err = IssueGrant(mPriv, mGrant, fatPub,
-		childCaps, &identityv1.Budget{MaxFunctions: 100}, now, now.Add(24*time.Hour))
+		childCaps, &identityv1.Budget{MaxFunctions: 100}, now, now.Add(24*time.Hour), false)
 	require.ErrorContains(t, err, "child budget exceeds parent: functions")
 
 	// Forge it directly with signGrant, bypassing applyParent. Every
 	// signature is valid and the chain anchors at root, but verification
 	// is the authority boundary and rejects the budget escalation.
 	forged, err := signGrant(mPriv, mGrant, fatPub,
-		childCaps, &identityv1.Budget{MaxFunctions: 100}, now, now.Add(24*time.Hour))
+		childCaps, &identityv1.Budget{MaxFunctions: 100}, now, now.Add(24*time.Hour), false)
 	require.NoError(t, err)
 	chk := CheckGrant(forged, rootPub, now, nil, nil)
 	require.Equal(t, GrantStatusInvalidChain, chk.Status, chk.Reason)
@@ -217,16 +266,16 @@ func TestInfrastructureCapabilityMonotone(t *testing.T) {
 
 	mGrant, err := IssueGrant(rootPriv, nil, mPub,
 		&identityv1.Capabilities{CanDelegate: true, MaxDepth: 5, Publish: &identityv1.PublishCapability{}},
-		UnlimitedBudget(), now.Add(-time.Hour), time.Time{})
+		UnlimitedBudget(), now.Add(-time.Hour), time.Time{}, false)
 	require.NoError(t, err)
 
 	infraCaps := &identityv1.Capabilities{IsInfrastructure: true, Publish: &identityv1.PublishCapability{}}
 	cPub, _ := kp(t)
 
-	_, err = IssueGrant(mPriv, mGrant, cPub, infraCaps, UnlimitedBudget(), now, time.Time{})
+	_, err = IssueGrant(mPriv, mGrant, cPub, infraCaps, UnlimitedBudget(), now, time.Time{}, false)
 	require.ErrorContains(t, err, "child capabilities exceed parent: IsInfrastructure")
 
-	forged, err := signGrant(mPriv, mGrant, cPub, infraCaps, UnlimitedBudget(), now, time.Time{})
+	forged, err := signGrant(mPriv, mGrant, cPub, infraCaps, UnlimitedBudget(), now, time.Time{}, false)
 	require.NoError(t, err)
 	chk := CheckGrant(forged, rootPub, now, nil, nil)
 	require.Equal(t, GrantStatusInvalidChain, chk.Status, chk.Reason)
@@ -239,11 +288,11 @@ func TestOverDeepChainRejected(t *testing.T) {
 	subPub, subPriv := kp(t)
 
 	g0, err := IssueGrant(rootPriv, nil, subPub, FullCapabilities(), UnlimitedBudget(),
-		now.Add(-time.Hour), time.Time{})
+		now.Add(-time.Hour), time.Time{}, false)
 	require.NoError(t, err)
 
 	leaf, err := signGrant(subPriv, g0, subPub,
-		FullCapabilities(), UnlimitedBudget(), now, time.Time{})
+		FullCapabilities(), UnlimitedBudget(), now, time.Time{}, false)
 	require.NoError(t, err)
 	filler := make([]*identityv1.Grant, maxGrantChainDepth+1)
 	for i := range filler {

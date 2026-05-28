@@ -53,6 +53,7 @@ func (s *Service) ReceiveGrantOffer(req *meshv1.GrantOfferRequest) *meshv1.Grant
 		return &meshv1.GrantOfferResponse{Reason: fmt.Sprintf("revoke own specs: %s", revokeErr.Error())}
 	}
 	s.forwardEvents(revokeEvents)
+	s.rescheduleExpiryTimer(newGrant)
 	s.publishLocalGrant(newGrant)
 
 	ownSubject := identity.PrincipalFromGrant(newGrant).SubjectPub

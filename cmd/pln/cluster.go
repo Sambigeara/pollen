@@ -102,7 +102,7 @@ Pass --no-up to skip starting the local daemon after bootstrapping.`,
 		RunE: withEnv(runBootstrapSSH),
 	}
 	sshCmd.Flags().Int("relay-port", config.DefaultBootstrapPort, "Relay UDP port to advertise")
-	sshCmd.Flags().Duration("expire-after", 0, "Hard access expiry for the relay peer")
+	sshCmd.Flags().Duration("expire-after", 0, "Hard, non-renewable access expiry for the relay peer")
 	sshCmd.Flags().Bool("admin", false, "Issue with admin capabilities (delegate + admit + publish)")
 	sshCmd.Flags().Bool("workspace", false, workspaceFlagDesc)
 	sshCmd.Flags().Bool("publisher", false, "Issue with publisher capability")
@@ -162,7 +162,7 @@ further grants.`,
 	}
 	inviteCmd.Flags().String("subject", "", "Optional hex node public key to bind invite")
 	inviteCmd.Flags().Duration("ttl", defaultInviteTTL, "Invite token validity duration")
-	inviteCmd.Flags().Duration("expire-after", 0, "Hard access expiry for the invited peer")
+	inviteCmd.Flags().Duration("expire-after", 0, "Hard, non-renewable access expiry for the invited peer")
 	inviteCmd.Flags().StringArray("prop", nil, "Grant properties: key=value, JSON, or - for stdin")
 	inviteCmd.Flags().Bool("admin", false, "Issue with admin capabilities (delegate + admit + publish)")
 	inviteCmd.Flags().Bool("workspace", false, workspaceFlagDesc)
@@ -545,7 +545,10 @@ func mintInviteTicket(cmd *cobra.Command, env *cliEnv, subjectPub []byte, caps *
 		grantDeadline = now.Add(identity.DefaultGrantDeadlineTTL)
 	}
 
-	ticket, err := creds.IssueInvite(bootstrap, subjectPub, caps, budget, grantDeadline, now, ttl)
+	// --expire-after is a hard deadline: the redeemed grant cannot be
+	// renewed past it, so issuing a 1h invite yields a 1h hard cap.
+	// Default invites (no --expire-after) stay renewable.
+	ticket, err := creds.IssueInvite(bootstrap, subjectPub, caps, budget, grantDeadline, now, ttl, expireAfter > 0)
 	if err != nil {
 		return "", err
 	}
@@ -1168,7 +1171,7 @@ func createJoinTokenWithCreds(creds *identity.Credentials, subjectPub ed25519.Pu
 	case !caps.GetCanAdmit():
 		grantDeadline = now.Add(identity.DefaultGrantDeadlineTTL)
 	}
-	grant, err := creds.IssueGrant(subjectPub, caps, identity.UnlimitedBudget(), now, grantDeadline)
+	grant, err := creds.IssueGrant(subjectPub, caps, identity.UnlimitedBudget(), now, grantDeadline, expireAfter > 0)
 	if err != nil {
 		return "", err
 	}

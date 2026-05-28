@@ -266,8 +266,14 @@ type GrantClaims struct {
 	NotBeforeUnix     int64                  `protobuf:"varint,5,opt,name=not_before_unix,json=notBeforeUnix,proto3" json:"not_before_unix,omitempty"`
 	GrantDeadlineUnix int64                  `protobuf:"varint,6,opt,name=grant_deadline_unix,json=grantDeadlineUnix,proto3" json:"grant_deadline_unix,omitempty"`
 	Serial            uint64                 `protobuf:"varint,7,opt,name=serial,proto3" json:"serial,omitempty"`
-	unknownFields     protoimpl.UnknownFields
-	sizeCache         protoimpl.SizeCache
+	// non_renewable marks a grant whose horizon is absolute: the daemon
+	// and wire-mode renewal paths skip it, and the issuing server refuses
+	// RenewGrant for it. Set by short-lived invites (pln invite
+	// --expire-after) so the deadline is honoured even when a delegating
+	// peer is reachable.
+	NonRenewable  bool `protobuf:"varint,8,opt,name=non_renewable,json=nonRenewable,proto3" json:"non_renewable,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *GrantClaims) Reset() {
@@ -347,6 +353,13 @@ func (x *GrantClaims) GetSerial() uint64 {
 		return x.Serial
 	}
 	return 0
+}
+
+func (x *GrantClaims) GetNonRenewable() bool {
+	if x != nil {
+		return x.NonRenewable
+	}
+	return false
 }
 
 type Grant struct {
@@ -696,6 +709,7 @@ type InviteTicketClaims struct {
 	Capabilities      *Capabilities          `protobuf:"bytes,7,opt,name=capabilities,proto3" json:"capabilities,omitempty"`
 	Budget            *Budget                `protobuf:"bytes,8,opt,name=budget,proto3" json:"budget,omitempty"`
 	GrantDeadlineUnix int64                  `protobuf:"varint,9,opt,name=grant_deadline_unix,json=grantDeadlineUnix,proto3" json:"grant_deadline_unix,omitempty"`
+	NonRenewable      bool                   `protobuf:"varint,10,opt,name=non_renewable,json=nonRenewable,proto3" json:"non_renewable,omitempty"`
 	unknownFields     protoimpl.UnknownFields
 	sizeCache         protoimpl.SizeCache
 }
@@ -793,6 +807,13 @@ func (x *InviteTicketClaims) GetGrantDeadlineUnix() int64 {
 	return 0
 }
 
+func (x *InviteTicketClaims) GetNonRenewable() bool {
+	if x != nil {
+		return x.NonRenewable
+	}
+	return false
+}
+
 type InviteTicket struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Claims        *InviteTicketClaims    `protobuf:"bytes,1,opt,name=claims,proto3" json:"claims,omitempty"`
@@ -868,7 +889,7 @@ const file_pollen_identity_v1_identity_proto_rawDesc = "" +
 	"\x06Budget\x12#\n" +
 	"\rmax_functions\x18\x01 \x01(\rR\fmaxFunctions\x12\x1b\n" +
 	"\tmax_blobs\x18\x02 \x01(\rR\bmaxBlobs\x12\x1b\n" +
-	"\tmax_sites\x18\x03 \x01(\rR\bmaxSitesJ\x04\b\x04\x10\x05J\x04\b\x05\x10\x06R\x0fmax_total_bytesR\x11max_traffic_bytes\"\xd9\x02\n" +
+	"\tmax_sites\x18\x03 \x01(\rR\bmaxSitesJ\x04\b\x04\x10\x05J\x04\b\x05\x10\x06R\x0fmax_total_bytesR\x11max_traffic_bytes\"\xfe\x02\n" +
 	"\vGrantClaims\x12(\n" +
 	"\vsubject_pub\x18\x01 \x01(\fB\a\xbaH\x04z\x02h R\n" +
 	"subjectPub\x12&\n" +
@@ -878,7 +899,8 @@ const file_pollen_identity_v1_identity_proto_rawDesc = "" +
 	"\x06budget\x18\x04 \x01(\v2\x1a.pollen.identity.v1.BudgetB\x06\xbaH\x03\xc8\x01\x01R\x06budget\x12&\n" +
 	"\x0fnot_before_unix\x18\x05 \x01(\x03R\rnotBeforeUnix\x12.\n" +
 	"\x13grant_deadline_unix\x18\x06 \x01(\x03R\x11grantDeadlineUnix\x12\x16\n" +
-	"\x06serial\x18\a \x01(\x04R\x06serial\"\xa0\x01\n" +
+	"\x06serial\x18\a \x01(\x04R\x06serial\x12#\n" +
+	"\rnon_renewable\x18\b \x01(\bR\fnonRenewable\"\xa0\x01\n" +
 	"\x05Grant\x12?\n" +
 	"\x06claims\x18\x01 \x01(\v2\x1f.pollen.identity.v1.GrantClaimsB\x06\xbaH\x03\xc8\x01\x01R\x06claims\x12/\n" +
 	"\x05chain\x18\x02 \x03(\v2\x19.pollen.identity.v1.GrantR\x05chain\x12%\n" +
@@ -904,7 +926,7 @@ const file_pollen_identity_v1_identity_proto_rawDesc = "" +
 	"\n" +
 	"GrantToken\x12D\n" +
 	"\x06claims\x18\x01 \x01(\v2$.pollen.identity.v1.GrantTokenClaimsB\x06\xbaH\x03\xc8\x01\x01R\x06claims\x12%\n" +
-	"\tsignature\x18\x02 \x01(\fB\a\xbaH\x04z\x02h@R\tsignature\"\xe4\x03\n" +
+	"\tsignature\x18\x02 \x01(\fB\a\xbaH\x04z\x02h@R\tsignature\"\x89\x04\n" +
 	"\x12InviteTicketClaims\x12%\n" +
 	"\tticket_id\x18\x01 \x01(\tB\b\xbaH\x05r\x03\xb0\x01\x01R\bticketId\x12&\n" +
 	"\n" +
@@ -917,7 +939,9 @@ const file_pollen_identity_v1_identity_proto_rawDesc = "" +
 	"\x0fexpires_at_unix\x18\x06 \x01(\x03R\rexpiresAtUnix\x12L\n" +
 	"\fcapabilities\x18\a \x01(\v2 .pollen.identity.v1.CapabilitiesB\x06\xbaH\x03\xc8\x01\x01R\fcapabilities\x12:\n" +
 	"\x06budget\x18\b \x01(\v2\x1a.pollen.identity.v1.BudgetB\x06\xbaH\x03\xc8\x01\x01R\x06budget\x12.\n" +
-	"\x13grant_deadline_unix\x18\t \x01(\x03R\x11grantDeadlineUnix\"}\n" +
+	"\x13grant_deadline_unix\x18\t \x01(\x03R\x11grantDeadlineUnix\x12#\n" +
+	"\rnon_renewable\x18\n" +
+	" \x01(\bR\fnonRenewable\"}\n" +
 	"\fInviteTicket\x12F\n" +
 	"\x06claims\x18\x01 \x01(\v2&.pollen.identity.v1.InviteTicketClaimsB\x06\xbaH\x03\xc8\x01\x01R\x06claims\x12%\n" +
 	"\tsignature\x18\x02 \x01(\fB\a\xbaH\x04z\x02h@R\tsignatureBFZDgithub.com/sambigeara/pollen/api/genpb/pollen/identity/v1;identityv1b\x06proto3"

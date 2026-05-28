@@ -36,7 +36,7 @@ func TestPresignRoundTrip(t *testing.T) {
 	require.NoError(t, err)
 	grant, err := identity.IssueGrant(adminPriv, nil, authPub,
 		identity.PublisherCapabilities(), identity.UnlimitedBudget(),
-		now.Add(-time.Hour), now.Add(30*24*time.Hour))
+		now.Add(-time.Hour), now.Add(30*24*time.Hour), false)
 	require.NoError(t, err)
 
 	signer := fact.NewSigner(authPriv)

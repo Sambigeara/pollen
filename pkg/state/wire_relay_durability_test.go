@@ -63,7 +63,7 @@ func newRelayHarness(t *testing.T) *relayHarness {
 	pPub, pPriv := keyPair(t)
 	grantP, err := identity.IssueGrant(rootPriv, nil, pPub,
 		identity.PublisherCapabilities(), &identityv1.Budget{},
-		now.Add(-time.Hour), now.Add(30*24*time.Hour))
+		now.Add(-time.Hour), now.Add(30*24*time.Hour), false)
 	require.NoError(t, err)
 	sigP, err := identity.SignGrantSubject(grantP, pPriv)
 	require.NoError(t, err)

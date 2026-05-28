@@ -118,8 +118,9 @@ func (c *Credentials) IssueInvite(
 	budget *identityv1.Budget,
 	grantDeadline, now time.Time,
 	ttl time.Duration,
+	nonRenewable bool,
 ) (*identityv1.InviteTicket, error) {
-	return IssueInviteTicket(c.signPriv, bootstrap, subjectPub, caps, budget, grantDeadline, now, ttl)
+	return IssueInviteTicket(c.signPriv, bootstrap, subjectPub, caps, budget, grantDeadline, now, ttl, nonRenewable)
 }
 
 // IssueGrant mints a child grant for subjectPub under this node's
@@ -130,11 +131,12 @@ func (c *Credentials) IssueGrant(
 	caps *identityv1.Capabilities,
 	budget *identityv1.Budget,
 	now, grantDeadline time.Time,
+	nonRenewable bool,
 ) (*identityv1.Grant, error) {
 	c.mu.RLock()
 	grant := c.grant
 	c.mu.RUnlock()
-	return IssueGrant(c.signPriv, grant, subjectPub, caps, budget, now, grantDeadline)
+	return IssueGrant(c.signPriv, grant, subjectPub, caps, budget, now, grantDeadline, nonRenewable)
 }
 
 // IssueGrantToken wraps an already-issued grant into a GrantToken
@@ -270,7 +272,7 @@ func EnsureLocalRootGrant(identityDir string, nodePub ed25519.PublicKey, attrs *
 	caps := RootCapabilities()
 	caps.Attributes = attrs
 
-	grant, err := IssueGrant(adminPriv, nil, nodePub, caps, UnlimitedBudget(), now, time.Time{})
+	grant, err := IssueGrant(adminPriv, nil, nodePub, caps, UnlimitedBudget(), now, time.Time{}, false)
 	if err != nil {
 		return nil, err
 	}

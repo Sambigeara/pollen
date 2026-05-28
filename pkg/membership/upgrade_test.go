@@ -46,7 +46,7 @@ func newUpgradeHarness(t *testing.T) *upgradeHarness {
 
 	seed, err := identity.IssueGrant(rootPriv, nil, sPub,
 		identity.PublisherCapabilities(), identity.UnlimitedBudget(),
-		time.Now().Add(-time.Hour), time.Now().Add(30*24*time.Hour))
+		time.Now().Add(-time.Hour), time.Now().Add(30*24*time.Hour), false)
 	require.NoError(t, err)
 
 	creds := identity.NewCredentials(rootPub, sPriv, seed)
@@ -75,7 +75,7 @@ func newUpgradeHarness(t *testing.T) *upgradeHarness {
 func (h *upgradeHarness) mintFor(t *testing.T, subject ed25519.PublicKey, caps *identityv1.Capabilities) *identityv1.Grant {
 	t.Helper()
 	g, err := identity.IssueGrant(h.rootPriv, nil, subject, caps, identity.UnlimitedBudget(),
-		time.Now().Add(-time.Hour), time.Now().Add(30*24*time.Hour))
+		time.Now().Add(-time.Hour), time.Now().Add(30*24*time.Hour), false)
 	require.NoError(t, err)
 	return g
 }
@@ -147,7 +147,7 @@ func TestReceiveGrantOffer(t *testing.T) {
 		h := newUpgradeHarness(t)
 		expired, err := identity.IssueGrant(h.rootPriv, nil, h.sPub,
 			identity.FullCapabilities(), identity.UnlimitedBudget(),
-			time.Now().Add(-2*time.Hour), time.Now().Add(-time.Hour))
+			time.Now().Add(-2*time.Hour), time.Now().Add(-time.Hour), false)
 		require.NoError(t, err)
 		before := h.creds.Grant()
 

@@ -32,12 +32,12 @@ func chain(t *testing.T, now, childDeadline time.Time) (rootPub ed25519.PublicKe
 	rnPub, rnPrivK := newKeyPair(t)
 	subPub, subPriv = newKeyPair(t)
 
-	root, err := identity.IssueGrant(adminPriv, nil, rnPub, identity.FullCapabilities(), identity.UnlimitedBudget(), now.Add(-time.Hour), time.Time{})
+	root, err := identity.IssueGrant(adminPriv, nil, rnPub, identity.FullCapabilities(), identity.UnlimitedBudget(), now.Add(-time.Hour), time.Time{}, false)
 	require.NoError(t, err)
 
 	child, err = identity.IssueGrant(rnPrivK, root, subPub,
 		identity.PublisherCapabilities(), &identityv1.Budget{MaxSites: 3},
-		now.Add(-time.Minute), childDeadline)
+		now.Add(-time.Minute), childDeadline, false)
 	require.NoError(t, err)
 
 	return adminPub, child, subPub, subPriv, rnPrivK
@@ -135,7 +135,7 @@ func TestVerifySessionFailClosed(t *testing.T) {
 		subPub, subPriv := newKeyPair(t)
 		grant, err := identity.IssueGrant(adminPriv, nil, subPub,
 			identity.FullCapabilities(), identity.UnlimitedBudget(),
-			now.Add(time.Hour), now.Add(48*time.Hour))
+			now.Add(time.Hour), now.Add(48*time.Hour), false)
 		require.NoError(t, err)
 		s, err := identity.MintSession(grant, subPriv, now.Add(time.Hour), time.Hour)
 		require.NoError(t, err)
@@ -174,30 +174,30 @@ func TestIssueGrantChildCannotExceedParent(t *testing.T) {
 		MaxDepth:    2,
 		Publish:     &identityv1.PublishCapability{Sites: true},
 	}
-	parent, err := identity.IssueGrant(adminPriv, nil, rnPub, parentCaps, identity.UnlimitedBudget(), now.Add(-time.Hour), time.Time{})
+	parent, err := identity.IssueGrant(adminPriv, nil, rnPub, parentCaps, identity.UnlimitedBudget(), now.Add(-time.Hour), time.Time{}, false)
 	require.NoError(t, err)
 
 	subPub, _ := newKeyPair(t)
 
 	_, err = identity.IssueGrant(rnPriv, parent, subPub,
 		&identityv1.Capabilities{Publish: &identityv1.PublishCapability{Functions: true}},
-		identity.UnlimitedBudget(), now, now.Add(time.Hour))
+		identity.UnlimitedBudget(), now, now.Add(time.Hour), false)
 	require.ErrorContains(t, err, "publish functions")
 
 	_, err = identity.IssueGrant(rnPriv, parent, subPub,
 		&identityv1.Capabilities{CanAdmit: true, Publish: &identityv1.PublishCapability{}},
-		identity.UnlimitedBudget(), now, now.Add(time.Hour))
+		identity.UnlimitedBudget(), now, now.Add(time.Hour), false)
 	require.ErrorContains(t, err, "CanAdmit")
 
 	_, err = identity.IssueGrant(rnPriv, parent, subPub,
 		&identityv1.Capabilities{IsWorkspaceAdmin: true, Publish: &identityv1.PublishCapability{}},
-		identity.UnlimitedBudget(), now, now.Add(time.Hour))
+		identity.UnlimitedBudget(), now, now.Add(time.Hour), false)
 	require.ErrorContains(t, err, "IsWorkspaceAdmin")
 
 	// Within bounds: allowed, and the horizon clamps to the parent's.
 	ok, err := identity.IssueGrant(rnPriv, parent, subPub,
 		&identityv1.Capabilities{Publish: &identityv1.PublishCapability{Sites: true}},
-		identity.UnlimitedBudget(), now, now.Add(time.Hour))
+		identity.UnlimitedBudget(), now, now.Add(time.Hour), false)
 	require.NoError(t, err)
 	require.NotNil(t, ok)
 }
@@ -222,7 +222,7 @@ func TestCheckGrantStatuses(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			g, err := identity.IssueGrant(adminPriv, nil, subPub, identity.FullCapabilities(), identity.UnlimitedBudget(), tc.nb, tc.gd)
+			g, err := identity.IssueGrant(adminPriv, nil, subPub, identity.FullCapabilities(), identity.UnlimitedBudget(), tc.nb, tc.gd, false)
 			require.NoError(t, err)
 			chk := identity.CheckGrant(g, tc.root, now, nil, tc.denied)
 			require.Equal(t, tc.want, chk.Status, chk.Reason)
@@ -238,7 +238,7 @@ func TestCheckGrantSubjectMismatch(t *testing.T) {
 
 	g, err := identity.IssueGrant(adminPriv, nil, subPub,
 		identity.FullCapabilities(), identity.UnlimitedBudget(),
-		now.Add(-time.Hour), now.Add(24*time.Hour))
+		now.Add(-time.Hour), now.Add(24*time.Hour), false)
 	require.NoError(t, err)
 
 	ok := identity.CheckGrant(g, adminPub, now, subPub, nil)
@@ -301,7 +301,7 @@ func TestGrantTokenRoundTrip(t *testing.T) {
 
 	grant, err := identity.IssueGrant(adminPriv, nil, joinerPub,
 		identity.PublisherCapabilities(), identity.UnlimitedBudget(),
-		now.Add(-time.Hour), now.Add(30*24*time.Hour))
+		now.Add(-time.Hour), now.Add(30*24*time.Hour), false)
 	require.NoError(t, err)
 
 	tok, err := identity.IssueGrantToken(adminPriv, grant, nil, adminPub, now, time.Hour)
@@ -338,7 +338,7 @@ func TestEnrollGrant(t *testing.T) {
 	adminPub, adminPriv := newKeyPair(t)
 	grant, err := identity.IssueGrant(adminPriv, nil, nodePub,
 		identity.PublisherCapabilities(), identity.UnlimitedBudget(),
-		now.Add(-time.Hour), now.Add(30*24*time.Hour))
+		now.Add(-time.Hour), now.Add(30*24*time.Hour), false)
 	require.NoError(t, err)
 	tok, err := identity.IssueGrantToken(adminPriv, grant, nil, adminPub, now, time.Hour)
 	require.NoError(t, err)
@@ -355,7 +355,7 @@ func TestEnrollGrant(t *testing.T) {
 	adminBPub, adminBPriv := newKeyPair(t)
 	grantB, err := identity.IssueGrant(adminBPriv, nil, nodePub,
 		identity.PublisherCapabilities(), identity.UnlimitedBudget(),
-		now.Add(-time.Hour), now.Add(30*24*time.Hour))
+		now.Add(-time.Hour), now.Add(30*24*time.Hour), false)
 	require.NoError(t, err)
 	tokB, err := identity.IssueGrantToken(adminBPriv, grantB, nil, adminBPub, now, time.Hour)
 	require.NoError(t, err)
@@ -371,7 +371,7 @@ func TestInviteTicketRedeemAndConsume(t *testing.T) {
 
 	hostGrant, err := identity.IssueGrant(adminPriv, nil, hostPub,
 		identity.FullCapabilities(), identity.UnlimitedBudget(),
-		now.Add(-time.Hour), now.Add(30*24*time.Hour))
+		now.Add(-time.Hour), now.Add(30*24*time.Hour), false)
 	require.NoError(t, err)
 
 	bootstrap := []*admissionv1.BootstrapPeer{{
@@ -380,7 +380,7 @@ func TestInviteTicketRedeemAndConsume(t *testing.T) {
 	}}
 	ticket, err := identity.IssueInviteTicket(hostPriv, bootstrap, joinerPub,
 		identity.PublisherCapabilities(), &identityv1.Budget{MaxSites: 1},
-		now.Add(30*24*time.Hour), now, time.Hour)
+		now.Add(30*24*time.Hour), now, time.Hour, false)
 	require.NoError(t, err)
 
 	_, err = identity.VerifyInviteTicket(ticket, joinerPub, now)
@@ -415,6 +415,39 @@ func TestInviteTicketRedeemAndConsume(t *testing.T) {
 	require.False(t, ok, "consumed set survives a rebuild so a ticket cannot be replayed")
 }
 
+// TestRedeemInviteCarriesNonRenewable proves the non-renewable flag on
+// the ticket survives redemption: an admin who issues a short-lived
+// `pln invite --expire-after 1h` gets a hard-cap grant for the joiner,
+// not a grant that the daemon's renewal loop can extend at the next
+// tick.
+func TestRedeemInviteCarriesNonRenewable(t *testing.T) {
+	now := time.Now()
+	adminPub, adminPriv := newKeyPair(t)
+	hostPub, hostPriv := newKeyPair(t)
+	joinerPub, _ := newKeyPair(t)
+
+	hostGrant, err := identity.IssueGrant(adminPriv, nil, hostPub,
+		identity.FullCapabilities(), identity.UnlimitedBudget(),
+		now.Add(-time.Hour), now.Add(30*24*time.Hour), false)
+	require.NoError(t, err)
+
+	bootstrap := []*admissionv1.BootstrapPeer{{
+		PeerPub: bytes.Repeat([]byte{0x09}, 32),
+		Addrs:   []string{"203.0.113.9:60611"},
+	}}
+	ticket, err := identity.IssueInviteTicket(hostPriv, bootstrap, joinerPub,
+		identity.PublisherCapabilities(), &identityv1.Budget{MaxSites: 1},
+		now.Add(time.Hour), now, time.Hour, true)
+	require.NoError(t, err)
+	require.True(t, ticket.GetClaims().GetNonRenewable())
+
+	tok, err := identity.RedeemInviteTicket(hostPriv, hostGrant, adminPub, ticket, joinerPub, now, time.Hour)
+	require.NoError(t, err)
+	v, err := identity.VerifyGrantToken(tok, joinerPub, now)
+	require.NoError(t, err)
+	require.True(t, v.Grant.GetClaims().GetNonRenewable(), "redeemed grant must carry non-renewable from the ticket")
+}
+
 // TestRedeemInviteClampsBudgetToIssuer proves the invite->redeem path
 // cannot mint a grant whose budget exceeds the redeeming issuer's own.
 // `pln invite` accepts --max-* so an admin holding a limited budget
@@ -430,7 +463,7 @@ func TestRedeemInviteClampsBudgetToIssuer(t *testing.T) {
 	// Host can delegate but its own budget allows at most 5 functions.
 	hostGrant, err := identity.IssueGrant(adminPriv, nil, hostPub,
 		identity.FullCapabilities(), &identityv1.Budget{MaxFunctions: 5},
-		now.Add(-time.Hour), now.Add(30*24*time.Hour))
+		now.Add(-time.Hour), now.Add(30*24*time.Hour), false)
 	require.NoError(t, err)
 
 	bootstrap := []*admissionv1.BootstrapPeer{{
@@ -439,7 +472,7 @@ func TestRedeemInviteClampsBudgetToIssuer(t *testing.T) {
 	}}
 	mkTicket := func(b *identityv1.Budget) *identityv1.InviteTicket {
 		tk, terr := identity.IssueInviteTicket(hostPriv, bootstrap, joinerPub,
-			identity.PublisherCapabilities(), b, now.Add(30*24*time.Hour), now, time.Hour)
+			identity.PublisherCapabilities(), b, now.Add(30*24*time.Hour), now, time.Hour, false)
 		require.NoError(t, terr)
 		return tk
 	}
@@ -479,7 +512,7 @@ func TestCheckGrantRejectsSplicedChain(t *testing.T) {
 	adminBPub, adminBPriv := newKeyPair(t)
 	bogus, err := identity.IssueGrant(adminBPriv, nil, adminBPub,
 		identity.FullCapabilities(), identity.UnlimitedBudget(),
-		now.Add(-time.Hour), time.Time{})
+		now.Add(-time.Hour), time.Time{}, false)
 	require.NoError(t, err)
 	child.Chain[0] = bogus
 
@@ -504,7 +537,7 @@ func TestCredentialsIssueAtDepthAnchorsAtTrueRoot(t *testing.T) {
 	n0Pub, n0Priv := newKeyPair(t)
 	g0, err := identity.IssueGrant(rootPriv, nil, n0Pub,
 		identity.FullCapabilities(), identity.UnlimitedBudget(),
-		now.Add(-time.Hour), time.Time{})
+		now.Add(-time.Hour), time.Time{}, false)
 	require.NoError(t, err)
 	creds0 := identity.NewCredentials(rootPub, n0Priv, g0)
 
@@ -512,7 +545,7 @@ func TestCredentialsIssueAtDepthAnchorsAtTrueRoot(t *testing.T) {
 	// production Credentials seam. Its grant now carries a chain.
 	n1Pub, n1Priv := newKeyPair(t)
 	g1, err := creds0.IssueGrant(n1Pub, identity.FullCapabilities(),
-		identity.UnlimitedBudget(), now, now.Add(30*24*time.Hour))
+		identity.UnlimitedBudget(), now, now.Add(30*24*time.Hour), false)
 	require.NoError(t, err)
 	require.NotEmpty(t, g1.GetChain(), "delegate grant must carry its issuer lineage")
 	creds1 := identity.NewCredentials(rootPub, n1Priv, g1)
@@ -521,7 +554,7 @@ func TestCredentialsIssueAtDepthAnchorsAtTrueRoot(t *testing.T) {
 	// anchor at rootPub, not at n0 (the pre-fix failure).
 	tenantPub, _ := newKeyPair(t)
 	g2, err := creds1.IssueGrant(tenantPub, identity.PublisherCapabilities(),
-		&identityv1.Budget{MaxSites: 1}, now, now.Add(30*24*time.Hour))
+		&identityv1.Budget{MaxSites: 1}, now, now.Add(30*24*time.Hour), false)
 	require.NoError(t, err)
 	chk := identity.CheckGrant(g2, rootPub, now, nil, nil)
 	require.Equal(t, identity.GrantStatusOK, chk.Status, chk.Reason)
@@ -535,7 +568,7 @@ func TestCredentialsIssueAtDepthAnchorsAtTrueRoot(t *testing.T) {
 	}}
 	ticket, err := creds1.IssueInvite(bootstrap, joinerPub,
 		identity.PublisherCapabilities(), &identityv1.Budget{MaxSites: 1},
-		now.Add(30*24*time.Hour), now, time.Hour)
+		now.Add(30*24*time.Hour), now, time.Hour, false)
 	require.NoError(t, err)
 	tok, err := creds1.RedeemInvite(ticket, joinerPub, now, time.Hour)
 	require.NoError(t, err)

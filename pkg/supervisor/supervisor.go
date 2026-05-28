@@ -93,6 +93,7 @@ type Supervisor struct {
 	metricsProviders *metrics.Provider
 	creds            *identity.Credentials
 	shutdownCh       chan struct{}
+	runCancel        context.CancelFunc
 	staticAddr       string
 	httpAddr         string
 	socketPath       string
@@ -467,6 +468,13 @@ func initLocalAddresses(store state.StateStore, opts Options) error {
 }
 
 func (n *Supervisor) Run(ctx context.Context) error {
+	// Derive a cancellable context so an internally-driven shutdown
+	// (e.g. grant expiry signalled via shutdownCh) can unblock
+	// spawned goroutines that listen on ctx.Done. Without this, the
+	// SIGTERM-bound parent stays alive and shutdown's wg.Wait
+	// deadlocks past the deadline.
+	ctx, cancel := context.WithCancel(ctx)
+	n.runCancel = cancel
 	defer n.shutdown()
 
 	if err := n.mesh.Start(ctx); err != nil {
@@ -871,6 +879,9 @@ func (n *Supervisor) pruneOrphanBlobs() {
 }
 
 func (n *Supervisor) shutdown() {
+	if n.runCancel != nil {
+		n.runCancel()
+	}
 	n.controlSrv.Stop()
 
 	// Stream handlers block on reads that only unblock when sessions close.

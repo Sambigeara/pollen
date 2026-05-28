@@ -29,7 +29,7 @@ func sessionCertFor(t *testing.T, now time.Time, sessionTTL time.Duration, leafP
 	adminPub, adminPriv := keyPair(t)
 	grant, err := identity.IssueGrant(adminPriv, nil, leafPub,
 		identity.PublisherCapabilities(), identity.UnlimitedBudget(),
-		now.Add(-time.Hour), now.Add(30*24*time.Hour))
+		now.Add(-time.Hour), now.Add(30*24*time.Hour), false)
 	require.NoError(t, err)
 	session, err := identity.MintSession(grant, leafGrantPriv, now, sessionTTL)
 	require.NoError(t, err)

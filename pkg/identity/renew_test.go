@@ -32,6 +32,31 @@ func TestGrantRenewDue(t *testing.T) {
 	require.False(t, GrantRenewDue(mk(now.Add(DefaultGrantDeadlineTTL)), now), "full horizon is not yet due")
 	require.True(t, GrantRenewDue(mk(now.Add(renewLeadWindow-time.Hour)), now), "inside the lead window is due")
 	require.True(t, GrantRenewDue(mk(now.Add(-time.Hour)), now), "already past horizon is still due")
+
+	nonRenewable := mk(now.Add(time.Hour))
+	nonRenewable.Claims.NonRenewable = true
+	require.False(t, GrantRenewDue(nonRenewable, now), "non-renewable grant is never due regardless of horizon")
+}
+
+// TestGrantTerminallyExpired pins the "this peer is permanently gone"
+// predicate used by status to drop dead peers from the cluster view: a
+// renewable expired grant must NOT count (its holder may still be
+// renewing), and a non-renewable grant past its deadline must.
+func TestGrantTerminallyExpired(t *testing.T) {
+	now := time.Now()
+	mk := func(deadline time.Time, nonRenewable bool) *identityv1.Grant {
+		g := &identityv1.Grant{Claims: &identityv1.GrantClaims{NonRenewable: nonRenewable}}
+		if !deadline.IsZero() {
+			g.Claims.GrantDeadlineUnix = deadline.Unix()
+		}
+		return g
+	}
+
+	require.False(t, GrantTerminallyExpired(nil, now), "nil grant is not terminal")
+	require.False(t, GrantTerminallyExpired(mk(time.Time{}, true), now), "no horizon is not terminal")
+	require.False(t, GrantTerminallyExpired(mk(now.Add(-time.Hour), false), now), "renewable expired grant may still renew")
+	require.False(t, GrantTerminallyExpired(mk(now.Add(time.Hour), true), now), "non-renewable but not yet expired is not terminal")
+	require.True(t, GrantTerminallyExpired(mk(now.Add(-time.Hour), true), now), "non-renewable past deadline is terminal")
 }
 
 // TestAdoptGrant proves the delivered grant is never trusted blindly:
@@ -47,7 +72,7 @@ func TestAdoptGrant(t *testing.T) {
 
 	issue := func(t *testing.T, subject []byte, nb, dl time.Time) *identityv1.Grant {
 		t.Helper()
-		g, err := IssueGrant(rootPriv, nil, subject, FullCapabilities(), UnlimitedBudget(), nb, dl)
+		g, err := IssueGrant(rootPriv, nil, subject, FullCapabilities(), UnlimitedBudget(), nb, dl, false)
 		require.NoError(t, err)
 		return g
 	}
@@ -89,12 +114,12 @@ func TestAdoptGrant(t *testing.T) {
 
 	t.Run("upgrade adopts a grant whose caps grow", func(t *testing.T) {
 		leafGrant, err := IssueGrant(rootPriv, nil, sPub, LeafCapabilities(), UnlimitedBudget(),
-			now.Add(-time.Hour), now.Add(DefaultGrantDeadlineTTL))
+			now.Add(-time.Hour), now.Add(DefaultGrantDeadlineTTL), false)
 		require.NoError(t, err)
 		c := NewCredentials(rootPub, sPriv, leafGrant)
 
 		fullGrant, err := IssueGrant(rootPriv, nil, sPub, FullCapabilities(), UnlimitedBudget(),
-			now.Add(-time.Hour), now.Add(DefaultGrantDeadlineTTL))
+			now.Add(-time.Hour), now.Add(DefaultGrantDeadlineTTL), false)
 		require.NoError(t, err)
 		require.NoError(t, c.AdoptGrant(fullGrant, now, nil))
 		require.True(t, c.Grant().GetClaims().GetCapabilities().GetCanAdmit(),
@@ -103,12 +128,12 @@ func TestAdoptGrant(t *testing.T) {
 
 	t.Run("downgrade adopts a grant whose caps shrink", func(t *testing.T) {
 		fullGrant, err := IssueGrant(rootPriv, nil, sPub, FullCapabilities(), UnlimitedBudget(),
-			now.Add(-time.Hour), now.Add(DefaultGrantDeadlineTTL))
+			now.Add(-time.Hour), now.Add(DefaultGrantDeadlineTTL), false)
 		require.NoError(t, err)
 		c := NewCredentials(rootPub, sPriv, fullGrant)
 
 		leafGrant, err := IssueGrant(rootPriv, nil, sPub, LeafCapabilities(), UnlimitedBudget(),
-			now.Add(-time.Hour), now.Add(DefaultGrantDeadlineTTL))
+			now.Add(-time.Hour), now.Add(DefaultGrantDeadlineTTL), false)
 		require.NoError(t, err)
 		require.NoError(t, c.AdoptGrant(leafGrant, now, nil))
 		require.False(t, c.Grant().GetClaims().GetCapabilities().GetCanAdmit(),
@@ -143,14 +168,14 @@ func TestAdoptGrantPersists(t *testing.T) {
 		dir := t.TempDir()
 		sPriv, sPub, err := EnsureIdentityKey(dir)
 		require.NoError(t, err)
-		seed, err := IssueGrant(rootPriv, nil, sPub, FullCapabilities(), UnlimitedBudget(), now.Add(-time.Hour), now.Add(7*24*time.Hour))
+		seed, err := IssueGrant(rootPriv, nil, sPub, FullCapabilities(), UnlimitedBudget(), now.Add(-time.Hour), now.Add(7*24*time.Hour), false)
 		require.NoError(t, err)
 		require.NoError(t, SaveCredentials(dir, &Credentials{rootPub: rootPub, signPriv: sPriv, grant: seed}))
 
 		loaded, err := LoadCredentials(dir)
 		require.NoError(t, err)
 
-		fresh, err := IssueGrant(rootPriv, nil, sPub, FullCapabilities(), UnlimitedBudget(), now.Add(-time.Hour), now.Add(DefaultGrantDeadlineTTL))
+		fresh, err := IssueGrant(rootPriv, nil, sPub, FullCapabilities(), UnlimitedBudget(), now.Add(-time.Hour), now.Add(DefaultGrantDeadlineTTL), false)
 		require.NoError(t, err)
 		require.NoError(t, loaded.AdoptGrant(fresh, now, nil))
 
@@ -163,9 +188,9 @@ func TestAdoptGrantPersists(t *testing.T) {
 	t.Run("in-memory handle does not touch disk", func(t *testing.T) {
 		_, sPriv := kp(t)
 		sPub := sPriv.Public().(ed25519.PublicKey)
-		seed, err := IssueGrant(rootPriv, nil, sPub, FullCapabilities(), UnlimitedBudget(), now.Add(-time.Hour), now.Add(7*24*time.Hour))
+		seed, err := IssueGrant(rootPriv, nil, sPub, FullCapabilities(), UnlimitedBudget(), now.Add(-time.Hour), now.Add(7*24*time.Hour), false)
 		require.NoError(t, err)
-		fresh, err := IssueGrant(rootPriv, nil, sPub, FullCapabilities(), UnlimitedBudget(), now.Add(-time.Hour), now.Add(DefaultGrantDeadlineTTL))
+		fresh, err := IssueGrant(rootPriv, nil, sPub, FullCapabilities(), UnlimitedBudget(), now.Add(-time.Hour), now.Add(DefaultGrantDeadlineTTL), false)
 		require.NoError(t, err)
 
 		c := NewCredentials(rootPub, sPriv, seed)
