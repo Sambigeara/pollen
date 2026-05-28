@@ -221,12 +221,17 @@ func (s *Service) refanoutWrappings(hash string, dek []byte) error {
 	return nil
 }
 
-// Get returns an error when no path back to the DEK has been gossiped
-// to this node yet; the caller can retry once gossip settles.
+// Get returns ErrNotLocal when the ciphertext has not been pulled into
+// local CAS, and errNoWrapping when bytes are present but no gossiped
+// wrapping addresses this node yet. Has-first ordering separates a
+// byte-replication race from a key-distribution race in the log.
 //
 // On cas.ErrAEADAuth, evict both the envelope and the wrapping so the
 // next ensureLocal and reconcile pull a fresh, matching pair.
 func (s *Service) Get(hash string) (io.ReadCloser, error) {
+	if !s.store.Has(hash) {
+		return nil, ErrNotLocal
+	}
 	dek, err := s.localDEK(hash)
 	if err != nil {
 		return nil, err
@@ -296,6 +301,24 @@ func (s *Service) evictDEK(hash string) {
 // rather than to a sidecar key file that would survive cert revocation.
 func (s *Service) publishSelfWrapping(hash string, dek []byte) error {
 	return s.issueWrappingForKey(hash, s.signPub, func() ([]byte, error) { return dek, nil })
+}
+
+// IssueWrappingsFor pre-positions wrappings for every (hash, recipient)
+// pair so callers (notably static seed) can hand serving peers a
+// usable DEK before they fetch, rather than relying on the best-effort
+// lazy-wrap in Serve to race the first request. Self entries are
+// skipped via issueWrappingFor. Stops and returns on the first failure
+// so the caller sees the cause; partial progress is fine because every
+// wrapping is an append-only gossip fact.
+func (s *Service) IssueWrappingsFor(hashes []string, recipients []types.PeerKey) error {
+	for _, hash := range hashes {
+		for _, recipient := range recipients {
+			if err := s.issueWrappingFor(hash, recipient); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // issueWrappingFor gives recipient a published path back to the DEK.

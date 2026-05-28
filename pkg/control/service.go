@@ -36,6 +36,7 @@ import (
 	"github.com/sambigeara/pollen/pkg/placement"
 	"github.com/sambigeara/pollen/pkg/plnfs"
 	"github.com/sambigeara/pollen/pkg/state"
+	"github.com/sambigeara/pollen/pkg/static"
 	"github.com/sambigeara/pollen/pkg/transport"
 	"github.com/sambigeara/pollen/pkg/tunneling"
 	"github.com/sambigeara/pollen/pkg/types"
@@ -1982,6 +1983,11 @@ func (s *Service) fail(err error, msg string, kv ...any) error {
 	// branch does, rather than logging it and returning a generic
 	// Internal.
 	if errors.Is(err, admission.ErrRejected) {
+		return status.Error(codes.FailedPrecondition, err.Error())
+	}
+	// Seeding a static site against a cluster with no --static-addr is
+	// a misconfiguration the caller can fix, not a server fault.
+	if errors.Is(err, static.ErrNoServingCapacity) {
 		return status.Error(codes.FailedPrecondition, err.Error())
 	}
 	s.log.Warnw(msg, append(kv, "err", err)...)

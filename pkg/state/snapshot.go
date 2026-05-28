@@ -295,6 +295,21 @@ type ServiceInfo struct {
 	Protocol statev1.ServiceProtocol
 }
 
+// StaticServingPeers returns every peer that has gossiped
+// StaticCapable, regardless of liveness. Wrappings are append-only and
+// tiny, so it is cheaper to address an offline serving peer (and have
+// the wrapping waiting for it when it rejoins) than to chase liveness
+// and miss a rejoiner. Output is sorted by PeerKey for determinism.
+func (s Snapshot) StaticServingPeers() []types.PeerKey {
+	set := make(map[types.PeerKey]struct{})
+	for pk, nv := range s.Nodes {
+		if nv.CanServeStatic {
+			set[pk] = struct{}{}
+		}
+	}
+	return sortedPeerSet(set)
+}
+
 // PeersWithBlob returns live peers advertising hash. Stale BlobAvailability
 // from offline peers persists in gossip until cert expiry; including them would
 // direct fetches at unreachable nodes.

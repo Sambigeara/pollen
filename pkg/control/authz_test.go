@@ -10,6 +10,7 @@ import (
 
 	identityv1 "github.com/sambigeara/pollen/api/genpb/pollen/identity/v1"
 	"github.com/sambigeara/pollen/pkg/admission"
+	"github.com/sambigeara/pollen/pkg/static"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -136,6 +137,19 @@ func TestAttributesSubsetOf(t *testing.T) {
 	require.NoError(t, attributesSubsetOf(attrs(t, map[string]any{"team": "core"}), parent))
 	require.Error(t, attributesSubsetOf(attrs(t, map[string]any{"missing": "x"}), parent))
 	require.Error(t, attributesSubsetOf(attrs(t, map[string]any{"role": "root"}), parent), "value mismatch is not a subset")
+}
+
+// TestFailSurfacesNoServingCapacity proves a static seed against a
+// cluster with no --static-addr surfaces verbatim as
+// FailedPrecondition rather than a generic Internal, so the operator
+// learns the configuration gap directly from the gRPC error.
+func TestFailSurfacesNoServingCapacity(t *testing.T) {
+	s := &Service{}
+	wrapped := fmt.Errorf("seed: %w", static.ErrNoServingCapacity)
+	st, ok := status.FromError(s.fail(wrapped, "seed static"))
+	require.True(t, ok)
+	require.Equal(t, codes.FailedPrecondition, st.Code())
+	require.Contains(t, st.Message(), "no nodes in this cluster have static serving enabled")
 }
 
 // TestFailSurfacesAdmissionRejected proves the control fail() funnel

@@ -53,6 +53,8 @@ type blobStore interface {
 	Has(hash string) bool
 	Get(hash string) (io.ReadCloser, error)
 	Fetch(ctx context.Context, hash string, peers []types.PeerKey) error
+	ManifestPaths(digest string) (map[string]struct{}, bool)
+	IssueWrappingsFor(hashes []string, recipients []types.PeerKey) error
 }
 
 type Service struct {
@@ -132,12 +134,23 @@ func (s *Service) forwardEvents(events []state.Event) {
 // principal to evaluate against and would be silently ignored.
 var ErrPolicyOnStatic = errors.New("static sites are served via plain HTTP; caller policies have no principal to evaluate against")
 
+// ErrNoServingCapacity rejects a seed against a cluster where no node
+// has gossiped StaticCapable. Without --static-addr somewhere the spec
+// would land but never be claimed; failing here turns a silent drop
+// into a clean operator-facing error.
+var ErrNoServingCapacity = errors.New("no nodes in this cluster have static serving enabled (--static-addr); spec would never be served")
+
 func (s *Service) SeedStatic(name string, manifestDigest []byte, policy *admissionv1.Predicate) error {
 	if policy != nil {
 		return ErrPolicyOnStatic
 	}
 	if len(manifestDigest) != digestSize {
 		return fmt.Errorf("manifest digest must be %d bytes", digestSize)
+	}
+	snap := s.store.Snapshot()
+	serving := snap.StaticServingPeers()
+	if len(serving) == 0 {
+		return ErrNoServingCapacity
 	}
 	events, err := s.store.SetStaticSpec(state.StaticSpec{
 		Name:           name,
@@ -147,6 +160,7 @@ func (s *Service) SeedStatic(name string, manifestDigest []byte, policy *admissi
 		return err
 	}
 	s.forwardEvents(events)
+	s.fanoutWrappingsForServingSet(name, hex.EncodeToString(manifestDigest), serving)
 	return nil
 }
 
@@ -161,6 +175,11 @@ func (s *Service) SeedStaticPresigned(name string, manifestDigest []byte, presig
 	if len(manifestDigest) != digestSize {
 		return fmt.Errorf("manifest digest must be %d bytes", digestSize)
 	}
+	snap := s.store.Snapshot()
+	serving := snap.StaticServingPeers()
+	if len(serving) == 0 {
+		return ErrNoServingCapacity
+	}
 	events, err := s.store.SetStaticSpecPresigned(state.StaticSpec{
 		Name:           name,
 		ManifestDigest: hex.EncodeToString(manifestDigest),
@@ -169,7 +188,28 @@ func (s *Service) SeedStaticPresigned(name string, manifestDigest []byte, presig
 		return err
 	}
 	s.forwardEvents(events)
+	s.fanoutWrappingsForServingSet(name, hex.EncodeToString(manifestDigest), serving)
 	return nil
+}
+
+// fanoutWrappingsForServingSet issues a wrapping for every serving
+// peer against the manifest and every file digest it references.
+// Failures are best-effort: reconcile and lazy-wrap remain the
+// fallback.
+func (s *Service) fanoutWrappingsForServingSet(name, manifestDigestHex string, serving []types.PeerKey) {
+	paths, ok := s.blobs.ManifestPaths(manifestDigestHex)
+	if !ok {
+		s.log.Warnw("static seed: manifest unreadable for wrap fanout", "name", name)
+		return
+	}
+	digests := make([]string, 0, 1+len(paths))
+	digests = append(digests, manifestDigestHex)
+	for d := range paths {
+		digests = append(digests, d)
+	}
+	if err := s.blobs.IssueWrappingsFor(digests, serving); err != nil {
+		s.log.Warnw("static seed: issue wrappings for serving set", "name", name, "err", err)
+	}
 }
 
 func (s *Service) UnseedStatic(name string) error {
