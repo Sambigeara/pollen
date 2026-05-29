@@ -400,6 +400,49 @@ func TestInvokeHostPublicationScopedMultiPublisher(t *testing.T) {
 	})
 }
 
+// TestInvokeByTokenAuthorisesGatedWorkload locks the share-by-token fix:
+// an access token minted by a workload's publisher must authorise
+// invoking it even when the publication is GATED, mirroring FetchByToken.
+// Routing through decide(nil, ...) demanded public=true, so a `pln share`
+// URL for a gated workload returned 403 at the gateway and every hop.
+func TestInvokeByTokenAuthorisesGatedWorkload(t *testing.T) {
+	now := time.Now()
+	rootA, _, _, _ := authority(t, now, now.Add(30*24*time.Hour), nil)
+	_, bPub, bPriv, bGrant := authority(t, now, now.Add(30*24*time.Hour), nil)
+
+	body, res := seedBodyResource("secret", "a")
+	gatedFact, err := fact.IssueFact(bPriv, res, body,
+		&admissionv1.Predicate{Inline: &admissionv1.InlinePredicate{Clauses: []*admissionv1.Clause{{Key: "team", Equals: "core"}}}}, 1, false)
+	require.NoError(t, err)
+	hash := body.GetHash()
+	bPK := types.PeerKeyFromBytes(bPub)
+
+	g := New(rootA, fakeStore{snap: state.Snapshot{
+		Nodes:    map[types.PeerKey]state.NodeView{bPK: {Grant: bGrant}},
+		SpecsAll: []state.WorkloadSpecView{{Fact: gatedFact, Spec: state.WorkloadSpec{Name: "secret", Hash: hash}, Publisher: bPK}},
+	}})
+
+	mintToken := func(priv ed25519.PrivateKey, r *admissionv1.ResourceID) *admissionv1.AccessToken {
+		tok, err := auth.SignAccessToken(priv, r, now, time.Hour)
+		require.NoError(t, err)
+		return tok
+	}
+
+	t.Run("publisher's token authorises invoking its own gated workload", func(t *testing.T) {
+		_, err := g.InvokeByToken(mintToken(bPriv, res), hash)
+		require.NoError(t, err)
+	})
+	t.Run("token bound to its hash: a forged hash cannot borrow the entitlement", func(t *testing.T) {
+		_, err := g.InvokeByToken(mintToken(bPriv, res), strings.Repeat("f", 64))
+		require.ErrorIs(t, err, wasm.ErrTargetNotFound)
+	})
+	t.Run("wrong-issuer token fails closed: only the publication authority's token admits", func(t *testing.T) {
+		_, otherPriv := newKeyPair(t)
+		_, err := g.InvokeByToken(mintToken(otherPriv, res), hash)
+		require.ErrorIs(t, err, wasm.ErrTargetNotFound)
+	})
+}
+
 // TestFetchBlobPublicationScopedMultiPublisher is the blob Fetch
 // analogue of TestInvokeHostPublicationScopedMultiPublisher: two
 // authorities publish byte-identical blob bytes under different names

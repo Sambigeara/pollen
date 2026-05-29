@@ -55,12 +55,13 @@ func TestEnforceGrantCeiling(t *testing.T) {
 		req  *identityv1.Capabilities
 		msg  string
 	}{
-		{"admit escalation", &identityv1.Capabilities{CanAdmit: true}, "cannot grant admit"},
-		{"workspace-admin escalation", &identityv1.Capabilities{IsWorkspaceAdmin: true}, "cannot grant workspace-admin"},
-		{"delegate escalation", &identityv1.Capabilities{CanDelegate: true}, "cannot grant delegate"},
-		{"publish escalation", &identityv1.Capabilities{Publish: &identityv1.PublishCapability{Functions: true}}, "cannot grant publish"},
-		{"max_depth escalation", &identityv1.Capabilities{MaxDepth: 9}, "cannot grant max_depth"},
-		{"attribute not held", &identityv1.Capabilities{Attributes: attrs(t, map[string]any{"role": "root"})}, "cannot grant attributes"},
+		{"admit escalation", &identityv1.Capabilities{CanAdmit: true}, "CanAdmit"},
+		{"workspace-admin escalation", &identityv1.Capabilities{IsWorkspaceAdmin: true}, "IsWorkspaceAdmin"},
+		{"delegate escalation", &identityv1.Capabilities{CanDelegate: true}, "CanDelegate"},
+		{"infrastructure escalation", &identityv1.Capabilities{IsInfrastructure: true}, "IsInfrastructure"},
+		{"publish escalation", &identityv1.Capabilities{Publish: &identityv1.PublishCapability{Functions: true}}, "publish functions"},
+		{"max_depth escalation", &identityv1.Capabilities{MaxDepth: 9}, "MaxDepth"},
+		{"attribute not held", &identityv1.Capabilities{Attributes: attrs(t, map[string]any{"role": "root"})}, "attribute"},
 	}
 	// A caller that itself holds nothing: every requested escalation
 	// must be refused with PermissionDenied.
@@ -108,35 +109,6 @@ func TestEnforceBudgetCeiling(t *testing.T) {
 			require.ErrorContains(t, err, tc.msg)
 		})
 	}
-}
-
-func TestGrantCapsPublishExceeds(t *testing.T) {
-	parent := &identityv1.Capabilities{Publish: &identityv1.PublishCapability{Sites: true, Blobs: true}}
-	cases := []struct {
-		name string
-		kind *identityv1.PublishCapability
-		want bool
-	}{
-		{"subset", &identityv1.PublishCapability{Sites: true}, false},
-		{"equal", &identityv1.PublishCapability{Sites: true, Blobs: true}, false},
-		{"functions exceeds", &identityv1.PublishCapability{Functions: true}, true},
-		{"services exceeds", &identityv1.PublishCapability{Services: true}, true},
-		{"none", &identityv1.PublishCapability{}, false},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			require.Equal(t, tc.want, grantCapsPublishExceeds(&identityv1.Capabilities{Publish: tc.kind}, parent))
-		})
-	}
-}
-
-func TestAttributesSubsetOf(t *testing.T) {
-	parent := attrs(t, map[string]any{"role": "admin", "team": "core"})
-
-	require.NoError(t, attributesSubsetOf(nil, parent), "nil child is a subset")
-	require.NoError(t, attributesSubsetOf(attrs(t, map[string]any{"team": "core"}), parent))
-	require.Error(t, attributesSubsetOf(attrs(t, map[string]any{"missing": "x"}), parent))
-	require.Error(t, attributesSubsetOf(attrs(t, map[string]any{"role": "root"}), parent), "value mismatch is not a subset")
 }
 
 // TestFailSurfacesNoServingCapacity proves a static seed against a

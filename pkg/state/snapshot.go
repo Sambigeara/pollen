@@ -593,6 +593,13 @@ func (s *store) buildSnapshot() Snapshot {
 				if won := winners[id]; won.deleted || r.seq != won.seq || r.bodyHash != won.bodyHash {
 					continue
 				}
+				// Drop a relayed spec whose publishing authority is denied:
+				// the storing peer may be a non-denied relay, so the
+				// valid-set filter above misses it. s.denied already holds
+				// the transitive subtree closure, so a direct test suffices.
+				if _, denied := s.denied[publisher]; denied {
+					continue
+				}
 			}
 			switch key.kind { //nolint:exhaustive
 			case attrWorkloadSpec:

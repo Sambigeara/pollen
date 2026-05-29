@@ -132,6 +132,92 @@ func TestWireRelayedStaticSurvivesOfflinePublisher(t *testing.T) {
 		"wire-relayed static spec must survive with the publisher offline")
 }
 
+// TestWireRelayedSpecVanishesWhenAuthorityDenied closes the revocation gap
+// for the relay model: a tenant's presigned workload lives in the relay
+// node's slot (here the root/infra node that relays for it), so the
+// valid-set filter that drops a denied STORING peer's slot never catches
+// it. Denying the publishing authority must still remove the relayed spec
+// from the snapshot, or a revoked tenant's workloads keep serving.
+func TestWireRelayedSpecVanishesWhenAuthorityDenied(t *testing.T) {
+	h := newRelayHarness(t)
+	rootKey := types.PeerKeyFromBytes(h.rootPub)
+	hash := bytes.Repeat([]byte{0xab}, 32)
+	hashHex := hex.EncodeToString(hash)
+	spec := state.WorkloadSpec{Hash: hashHex, Name: "echo", MinReplicas: 1}
+
+	// The infra/relay node (root here) holds P's grant and accepts P's
+	// presigned workload into its own slot: storing peer = relay, authority = P.
+	r := h.relay(t, rootKey)
+	body := &statev1.WorkloadSpecChange{Name: "echo", Hash: hashHex, MinReplicas: 1}
+	seed := &admissionv1.ResourceID{Body: &admissionv1.ResourceID_Seed{Seed: &admissionv1.SeedID{Name: "echo", Hash: hash}}}
+	f, err := h.signer.IssueFact(seed, body, nil, false)
+	require.NoError(t, err)
+	_, err = r.PublishWorkloadPresigned(spec, f)
+	require.NoError(t, err, "relay admits the presigned workload")
+
+	require.Len(t, r.Snapshot().WorkloadEntitlements(hashHex), 1,
+		"relayed workload serves before the authority is denied")
+
+	// Deny the publishing authority. The storing peer (the relay) is not
+	// denied, so only the authority-side check removes the spec.
+	r.DenyPeer(h.pKey)
+
+	post := r.Snapshot()
+	require.True(t, post.IsDenied(h.pKey))
+	require.Empty(t, post.WorkloadEntitlements(hashHex),
+		"a denied authority's relayed workload must stop serving")
+	require.Empty(t, post.SpecsAll, "and drop from the publication views")
+}
+
+// TestWireRelayedSpecVanishesWhenAuthorityAncestorDenied is the chain-aware
+// case: the relay holds tenant P's presigned workload, P is a child of an
+// intermediate admin I, and the root denies I (not P directly). P's relayed
+// spec must still vanish, proving the publishing-authority filter honours
+// the transitive deny closure recomputeDeniedLocked maintains, not just a
+// direct deny.
+func TestWireRelayedSpecVanishesWhenAuthorityAncestorDenied(t *testing.T) {
+	now := time.Now()
+	rootPub, rootPriv := keyPair(t)
+	rootKey := types.PeerKeyFromBytes(rootPub)
+	iPub, iPriv := keyPair(t)
+	iKey := types.PeerKeyFromBytes(iPub)
+	pPub, pPriv := keyPair(t)
+	pKey := types.PeerKeyFromBytes(pPub)
+
+	grantI, err := identity.IssueGrant(rootPriv, nil, iPub,
+		identity.FullCapabilities(), identity.UnlimitedBudget(),
+		now.Add(-time.Hour), now.Add(30*24*time.Hour), false)
+	require.NoError(t, err)
+	grantP, err := identity.IssueGrant(iPriv, grantI, pPub,
+		identity.PublisherCapabilities(), &identityv1.Budget{},
+		now.Add(-time.Minute), now.Add(30*24*time.Hour), false)
+	require.NoError(t, err)
+	sigP, err := identity.SignGrantSubject(grantP, pPriv)
+	require.NoError(t, err)
+
+	// The root acts as the relay: it registers P's grant and accepts P's
+	// presigned workload into its own slot (storing peer = root, authority = P).
+	r := validatedStore(t, rootKey, rootPub)
+	r.RegisterPeerGrant(pKey, grantP, sigP)
+	hash := bytes.Repeat([]byte{0xcd}, 32)
+	hashHex := hex.EncodeToString(hash)
+	body := &statev1.WorkloadSpecChange{Name: "echo", Hash: hashHex, MinReplicas: 1}
+	seed := &admissionv1.ResourceID{Body: &admissionv1.ResourceID_Seed{Seed: &admissionv1.SeedID{Name: "echo", Hash: hash}}}
+	f, err := fact.NewSigner(pPriv).IssueFact(seed, body, nil, false)
+	require.NoError(t, err)
+	_, err = r.PublishWorkloadPresigned(state.WorkloadSpec{Hash: hashHex, Name: "echo", MinReplicas: 1}, f)
+	require.NoError(t, err, "relay admits the presigned workload")
+	require.Len(t, r.Snapshot().WorkloadEntitlements(hashHex), 1)
+
+	// Root denies the intermediate, not P; the transitive closure poisons P.
+	r.DenyPeer(iKey)
+
+	post := r.Snapshot()
+	require.True(t, post.IsDenied(pKey), "descendant poisoned transitively")
+	require.Empty(t, post.WorkloadEntitlements(hashHex),
+		"a relayed spec whose ancestor authority is denied must stop serving")
+}
+
 // TestReseedIdenticalBytesAfterUnseedRepublishes: a publisher unseeds a
 // static site and re-seeds the byte-identical content, and the re-seed
 // must win. Tombstone and re-seed land in different slots (publisher's

@@ -6,7 +6,8 @@ package membership
 import (
 	"context"
 	"errors"
-	"sort"
+	"maps"
+	"slices"
 	"time"
 
 	identityv1 "github.com/sambigeara/pollen/api/genpb/pollen/identity/v1"
@@ -16,21 +17,18 @@ import (
 	"github.com/sambigeara/pollen/pkg/wire"
 )
 
-// findRenewalTarget picks a reachable peer that can re-mint this node's
-// grant: it must hold delegate authority, not be denied, not be us, and
-// advertise a control endpoint. Any such peer works; renewal does not
+// findRenewalTargets returns the control endpoints of every peer that can
+// re-mint this node's grant: it must hold delegate authority, not be
+// denied, not be us, and advertise a control endpoint. Renewal does not
 // depend on the original issuer still being alive, because the server
 // re-checks the caller's chain and the denylist before re-issuing.
-// Peers are tried in a stable order so a failing attempt retries the
-// same target rather than flapping across the cluster. Returns "" when
-// no candidate is known.
-func findRenewalTarget(snap state.Snapshot, self types.PeerKey) string {
-	peers := make([]types.PeerKey, 0, len(snap.Nodes))
-	for pk := range snap.Nodes {
-		peers = append(peers, pk)
-	}
-	sort.Slice(peers, func(i, j int) bool { return peers[i].String() < peers[j].String() })
-	for _, pk := range peers {
+// Candidates are returned in a stable order so renewal retries the same
+// peer rather than flapping across the cluster; renewGrantOnce walks the
+// list and falls through on a dial failure, so a dead delegating peer at
+// the head of the order cannot wedge renewal while another is reachable.
+func findRenewalTargets(snap state.Snapshot, self types.PeerKey) []string {
+	var addrs []string
+	for _, pk := range slices.SortedFunc(maps.Keys(snap.Nodes), types.PeerKey.Compare) {
 		if pk == self {
 			continue
 		}
@@ -41,19 +39,30 @@ func findRenewalTarget(snap state.Snapshot, self types.PeerKey) string {
 		if !identity.PrincipalFromGrant(nv.Grant).CanDelegate() {
 			continue
 		}
-		return nv.ControlAddr
+		addrs = append(addrs, nv.ControlAddr)
 	}
-	return ""
+	return addrs
 }
 
-// renewGrantOnce finds a delegating peer and asks it to re-mint this
-// node's grant, returning the fresh grant without installing it.
+// renewGrantOnce asks a delegating peer to re-mint this node's grant,
+// returning the fresh grant without installing it. It tries the known
+// delegating peers in stable order and returns the first success; an
+// unreachable peer is skipped (RenewGrantAt bounds each attempt) so one
+// dead delegate does not strand renewal while another is reachable.
 func (s *Service) renewGrantOnce(ctx context.Context) (*identityv1.Grant, error) {
-	addr := findRenewalTarget(s.store.Snapshot(), s.localID)
-	if addr == "" {
-		return nil, errors.New("no delegating peer with a control endpoint is currently reachable")
+	addrs := findRenewalTargets(s.store.Snapshot(), s.localID)
+	if len(addrs) == 0 {
+		return nil, errors.New("no delegating peer with a control endpoint is known")
 	}
-	return wire.RenewGrantAt(ctx, addr, s.creds, s.signPriv)
+	var lastErr error
+	for _, addr := range addrs {
+		g, err := wire.RenewGrantAt(ctx, addr, s.creds, s.signPriv)
+		if err == nil {
+			return g, nil
+		}
+		lastErr = err
+	}
+	return nil, lastErr
 }
 
 // installRenewedGrant adopts a freshly issued grant into the live

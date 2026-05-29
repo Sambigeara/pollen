@@ -14,7 +14,19 @@ import (
 	identityv1 "github.com/sambigeara/pollen/api/genpb/pollen/identity/v1"
 	"github.com/sambigeara/pollen/pkg/identity"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/types/known/structpb"
 )
+
+func structFields(t *testing.T, m map[string]string) *structpb.Struct {
+	t.Helper()
+	fields := make(map[string]any, len(m))
+	for k, v := range m {
+		fields[k] = v
+	}
+	s, err := structpb.NewStruct(fields)
+	require.NoError(t, err)
+	return s
+}
 
 func newKeyPair(t *testing.T) (ed25519.PublicKey, ed25519.PrivateKey) {
 	t.Helper()
@@ -576,4 +588,49 @@ func TestCredentialsIssueAtDepthAnchorsAtTrueRoot(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, identity.GrantStatusOK,
 		identity.CheckGrant(v.Grant, rootPub, now, nil, nil).Status)
+}
+
+// TestCapabilitiesWithinCeiling exercises the shared capability-subset
+// predicate directly: every boolean dimension, max_depth and the
+// attribute subset must reject an escalation, and a strict narrowing must
+// pass. This is the single owner of the relation enforced by both
+// grant-chain verification and the control-plane UpgradePeer ceiling.
+func TestCapabilitiesWithinCeiling(t *testing.T) {
+	full := &identityv1.Capabilities{
+		CanAdmit:         true,
+		CanDelegate:      true,
+		IsWorkspaceAdmin: true,
+		IsInfrastructure: true,
+		MaxDepth:         5,
+		Publish:          &identityv1.PublishCapability{Functions: true, Blobs: true, Sites: true, Services: true},
+		Attributes:       structFields(t, map[string]string{"role": "admin", "team": "core"}),
+	}
+	require.NoError(t, identity.CapabilitiesWithinCeiling(
+		&identityv1.Capabilities{
+			CanDelegate: true,
+			MaxDepth:    3,
+			Publish:     &identityv1.PublishCapability{Sites: true},
+			Attributes:  structFields(t, map[string]string{"team": "core"}),
+		}, full))
+
+	bare := &identityv1.Capabilities{}
+	cases := []struct {
+		name string
+		req  *identityv1.Capabilities
+		msg  string
+	}{
+		{"admit", &identityv1.Capabilities{CanAdmit: true}, "CanAdmit"},
+		{"workspace-admin", &identityv1.Capabilities{IsWorkspaceAdmin: true}, "IsWorkspaceAdmin"},
+		{"delegate", &identityv1.Capabilities{CanDelegate: true}, "CanDelegate"},
+		{"infrastructure", &identityv1.Capabilities{IsInfrastructure: true}, "IsInfrastructure"},
+		{"publish functions", &identityv1.Capabilities{Publish: &identityv1.PublishCapability{Functions: true}}, "publish functions"},
+		{"publish services", &identityv1.Capabilities{Publish: &identityv1.PublishCapability{Services: true}}, "publish services"},
+		{"max_depth", &identityv1.Capabilities{MaxDepth: 9}, "MaxDepth"},
+		{"attribute", &identityv1.Capabilities{Attributes: structFields(t, map[string]string{"role": "root"})}, "attribute"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			require.ErrorContains(t, identity.CapabilitiesWithinCeiling(tc.req, bare), tc.msg)
+		})
+	}
 }

@@ -321,11 +321,17 @@ func (p *Pipeline) InvokeByToken(token *admissionv1.AccessToken, hash string) (w
 	if !ok {
 		return wasm.CallerInfo{}, wasm.ErrTargetNotFound
 	}
-	// The token's issuer is the authority and its seed resource the
-	// name; publicationFact resolves that exact publication and binds
-	// it to hash, subsuming the old issuer/resource equality checks
-	// while no longer trusting the deduped artefact winner.
-	return p.Invoke(nil, pub, hash)
+	// The token is itself the authorisation: its issuer is the publishing
+	// authority and its seed resource the name. publicationFact resolves
+	// that exact (authority, name) publication and binds it to hash, so a
+	// signature-verified token admits the invoke regardless of the spec's
+	// own policy, mirroring FetchByToken. Routing through decide(nil, ...)
+	// instead would wrongly demand public=true and break `pln share` of a
+	// gated workload. The caller is anonymous and carries no attributes.
+	if _, ok := publicationFact(p.store.Snapshot(), *pub, hash); !ok {
+		return wasm.CallerInfo{}, wasm.ErrTargetNotFound
+	}
+	return wasm.CallerInfo{}, nil
 }
 
 // MayHost authorises hostGrant to host the workload described by the

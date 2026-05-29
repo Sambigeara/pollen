@@ -268,16 +268,31 @@ func validateChildCapabilities(child, parent *identityv1.Capabilities) error {
 	if !parent.GetCanDelegate() {
 		return errors.New("parent grant lacks CanDelegate capability")
 	}
-	if child.GetCanAdmit() && !parent.GetCanAdmit() {
+	return CapabilitiesWithinCeiling(child, parent)
+}
+
+// CapabilitiesWithinCeiling enforces that child stays within ceiling in
+// every capability dimension: a child may narrow authority but never add
+// it. It is the single owner of the capability-subset relation, shared by
+// grant-chain verification (validateChildCapabilities, which additionally
+// requires the ceiling to be delegatable) and the control-plane
+// UpgradePeer ceiling (enforceGrantCeiling). One predicate means a new
+// capability bit cannot be enforced on one path but silently skipped on
+// the other.
+func CapabilitiesWithinCeiling(child, ceiling *identityv1.Capabilities) error {
+	if child.GetCanAdmit() && !ceiling.GetCanAdmit() {
 		return errors.New("child capabilities exceed parent: CanAdmit")
 	}
-	if child.GetIsWorkspaceAdmin() && !parent.GetIsWorkspaceAdmin() {
+	if child.GetIsWorkspaceAdmin() && !ceiling.GetIsWorkspaceAdmin() {
 		return errors.New("child capabilities exceed parent: IsWorkspaceAdmin")
 	}
-	if child.GetIsInfrastructure() && !parent.GetIsInfrastructure() {
+	if child.GetCanDelegate() && !ceiling.GetCanDelegate() {
+		return errors.New("child capabilities exceed parent: CanDelegate")
+	}
+	if child.GetIsInfrastructure() && !ceiling.GetIsInfrastructure() {
 		return errors.New("child capabilities exceed parent: IsInfrastructure")
 	}
-	cp, pp := child.GetPublish(), parent.GetPublish()
+	cp, pp := child.GetPublish(), ceiling.GetPublish()
 	if cp.GetFunctions() && !pp.GetFunctions() {
 		return errors.New("child capabilities exceed parent: publish functions")
 	}
@@ -290,10 +305,10 @@ func validateChildCapabilities(child, parent *identityv1.Capabilities) error {
 	if cp.GetServices() && !pp.GetServices() {
 		return errors.New("child capabilities exceed parent: publish services")
 	}
-	if child.GetMaxDepth() > parent.GetMaxDepth() {
-		return errors.New("child capabilities exceed parent: MaxDepth")
+	if child.GetMaxDepth() > ceiling.GetMaxDepth() {
+		return fmt.Errorf("child capabilities exceed parent: MaxDepth %d exceeds %d", child.GetMaxDepth(), ceiling.GetMaxDepth())
 	}
-	return validateAttributesSubset(child.GetAttributes(), parent.GetAttributes())
+	return validateAttributesSubset(child.GetAttributes(), ceiling.GetAttributes())
 }
 
 // validateAttributesSubset enforces that every key the child claims is

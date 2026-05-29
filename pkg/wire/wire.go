@@ -145,6 +145,13 @@ func ClientTLSConfigFromCreds(creds *identity.Credentials, signPriv ed25519.Priv
 	}, nil
 }
 
+// renewRPCTimeout bounds a single RenewGrant dial+RPC. The daemon's
+// grant-maintenance loop passes its long-lived context, so without a
+// self-contained deadline a delegating peer that completes the handshake
+// then stalls the RPC would wedge that loop (and with it the
+// non-renewable expiry hard-stop it also drives).
+const renewRPCTimeout = 30 * time.Second
+
 // RenewGrantAt dials an admin-capable peer's control endpoint with the
 // caller's own live credentials and asks it to re-mint the caller's
 // grant. The server authenticates the caller from the mTLS session and
@@ -155,13 +162,19 @@ func RenewGrantAt(ctx context.Context, addr string, creds *identity.Credentials,
 	if err != nil {
 		return nil, err
 	}
-	httpClient := &http.Client{Transport: &http2.Transport{
+	ctx, cancel := context.WithTimeout(ctx, renewRPCTimeout)
+	defer cancel()
+	tr := &http2.Transport{
 		AllowHTTP: true,
 		DialTLS: func(network, a string, _ *tls.Config) (net.Conn, error) {
 			return (&tls.Dialer{Config: tlsCfg}).DialContext(ctx, network, a)
 		},
-	}}
-	client := controlv1connect.NewControlServiceClient(httpClient, "https://"+addr, connect.WithGRPC())
+	}
+	// The daemon calls this on every maintenance tick once renewal is due;
+	// a GC'd http2.Transport does not reap its conns, so release them
+	// rather than leaking a conn and its readLoop goroutine per attempt.
+	defer tr.CloseIdleConnections()
+	client := controlv1connect.NewControlServiceClient(&http.Client{Transport: tr}, "https://"+addr, connect.WithGRPC())
 	resp, err := client.RenewGrant(ctx, connect.NewRequest(&controlv1.RenewGrantRequest{}))
 	if err != nil {
 		return nil, fmt.Errorf("renew grant rpc: %w", err)

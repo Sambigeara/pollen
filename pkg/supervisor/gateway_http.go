@@ -25,13 +25,23 @@ import (
 	factv1 "github.com/sambigeara/pollen/api/genpb/pollen/fact/v1"
 	"github.com/sambigeara/pollen/pkg/admission"
 	"github.com/sambigeara/pollen/pkg/auth"
+	"github.com/sambigeara/pollen/pkg/placement"
 	"github.com/sambigeara/pollen/pkg/types"
 )
 
 const (
 	gatewayReadHeaderTimeout = 10 * time.Second
-	subdomainBlob            = "blob"
-	subdomainFn              = "fn"
+	// gatewayReadTimeout bounds the whole request read (headers plus body)
+	// so a slow client cannot dribble a body and pin a handler goroutine.
+	// The body is separately capped at placement.MaxInputLen, so this only
+	// needs to be generous enough for a legitimate slow upload. No
+	// WriteTimeout is set: the gateway streams arbitrarily large blobs and
+	// allows long-running workload invocations, so a fixed write deadline
+	// would sever legitimate responses.
+	gatewayReadTimeout = 60 * time.Second
+	gatewayIdleTimeout = 120 * time.Second
+	subdomainBlob      = "blob"
+	subdomainFn        = "fn"
 
 	// Per-token rate limit for the anonymous HTTP gateway. AccessToken is
 	// a bearer credential with a TTL; without a per-token throttle a
@@ -53,6 +63,8 @@ func (n *Supervisor) startGatewayHTTP(ctx context.Context, addr string) error {
 	srv := &http.Server{
 		Handler:           newGatewayHandler(n.gate, n.store, n.blobs, n.placement, n.log),
 		ReadHeaderTimeout: gatewayReadHeaderTimeout,
+		ReadTimeout:       gatewayReadTimeout,
+		IdleTimeout:       gatewayIdleTimeout,
 	}
 	// Track the shutdown watcher via the supervisor's WaitGroup so
 	// Run() returns only after both Serve and its closer have
@@ -387,8 +399,17 @@ func (h *gatewayHandler) streamBlobBytes(w http.ResponseWriter, r *http.Request,
 }
 
 func (h *gatewayHandler) callWorkload(w http.ResponseWriter, r *http.Request, hash, fn string) {
+	// Cap ingress at the wire limit before buffering, so an anonymous
+	// caller cannot force an unbounded allocation: the named (public) path
+	// has no token-bucket throttle in front of it.
+	r.Body = http.MaxBytesReader(w, r.Body, placement.MaxInputLen)
 	input, err := io.ReadAll(r.Body)
 	if err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+			return
+		}
 		http.Error(w, "read body", http.StatusBadRequest)
 		return
 	}

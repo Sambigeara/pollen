@@ -31,8 +31,12 @@ const (
 	callerInfoLenSize = 2
 	hashLen           = 64
 	maxFuncLen        = 255
-	maxInputLen       = 4 << 20 // 4 MiB
 )
+
+// MaxInputLen is the ceiling on a single workload invocation's input,
+// enforced on the mesh wire here and at the anonymous HTTP gateway edge so
+// the body is rejected before it is buffered into memory.
+const MaxInputLen = 4 << 20 // 4 MiB
 
 var errInputTooLarge = errors.New("input too large")
 
@@ -263,7 +267,7 @@ func readWorkloadInput(r io.Reader) ([]byte, error) {
 		return nil, err
 	}
 	inputLen := binary.BigEndian.Uint32(inputLenBuf[:])
-	if inputLen > maxInputLen {
+	if inputLen > MaxInputLen {
 		return nil, errInputTooLarge
 	}
 

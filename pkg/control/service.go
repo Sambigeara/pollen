@@ -49,8 +49,6 @@ import (
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
-	"google.golang.org/protobuf/proto"
-	"google.golang.org/protobuf/types/known/structpb"
 )
 
 type Metrics struct {
@@ -1167,9 +1165,8 @@ func (s *Service) UpgradePeer(ctx context.Context, req *controlv1.UpgradePeerReq
 	if err := identity.ValidateAttributes(caps.GetAttributes()); err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
-	// Caller cannot grant capabilities they don't hold themselves; see
-	// enforceGrantCeiling and enforceBudgetCeiling for the relay-daemon
-	// escalation this closes.
+	// See enforceGrantCeiling and enforceBudgetCeiling for the relay-daemon
+	// escalation these close.
 	if err := enforceGrantCeiling(caps, caller.Capabilities); err != nil {
 		return nil, err
 	}
@@ -1239,31 +1236,17 @@ func (s *Service) RenewGrant(ctx context.Context, _ *controlv1.RenewGrantRequest
 	return &controlv1.RenewGrantResponse{Grant: grant}, nil
 }
 
-// enforceGrantCeiling rejects a requested capability set that exceeds
-// the caller's own in any dimension. The membership signer only
-// enforces child <= this node's parent chain, so without this a
-// CanDelegate tenant could request a child with admit / extra publish
-// kinds / MaxDepth=255 / attrs={role:"admin"} via a higher-cap relay
-// daemon. Returns a gRPC status error so the handler propagates it
-// verbatim.
+// enforceGrantCeiling rejects a requested capability set that exceeds the
+// caller's own in any dimension. UpgradePeer mints under the serving
+// node's chain, so the signer only binds child <= this node; without this
+// caller-side ceiling a CanDelegate tenant could request admit, extra
+// publish kinds, infrastructure, MaxDepth=255 or attrs={role:"admin"} via
+// a higher-cap relay daemon. Delegates to identity.CapabilitiesWithinCeiling,
+// the same predicate grant-chain verification uses, so the two ceilings
+// cannot drift; the verdict is surfaced as PermissionDenied verbatim.
 func enforceGrantCeiling(reqCaps, callerCaps *identityv1.Capabilities) error {
-	if reqCaps.GetCanAdmit() && !callerCaps.GetCanAdmit() {
-		return status.Error(codes.PermissionDenied, "cannot grant admit; caller lacks admit")
-	}
-	if reqCaps.GetIsWorkspaceAdmin() && !callerCaps.GetIsWorkspaceAdmin() {
-		return status.Error(codes.PermissionDenied, "cannot grant workspace-admin; caller lacks workspace-admin")
-	}
-	if reqCaps.GetCanDelegate() && !callerCaps.GetCanDelegate() {
-		return status.Error(codes.PermissionDenied, "cannot grant delegate; caller lacks delegate")
-	}
-	if grantCapsPublishExceeds(reqCaps, callerCaps) {
-		return status.Error(codes.PermissionDenied, "cannot grant publish; caller lacks publish")
-	}
-	if reqCaps.GetMaxDepth() > callerCaps.GetMaxDepth() {
-		return status.Errorf(codes.PermissionDenied, "cannot grant max_depth %d; caller's max_depth is %d", reqCaps.GetMaxDepth(), callerCaps.GetMaxDepth())
-	}
-	if err := attributesSubsetOf(reqCaps.GetAttributes(), callerCaps.GetAttributes()); err != nil {
-		return status.Errorf(codes.PermissionDenied, "cannot grant attributes: %v", err)
+	if err := identity.CapabilitiesWithinCeiling(reqCaps, callerCaps); err != nil {
+		return status.Error(codes.PermissionDenied, err.Error())
 	}
 	return nil
 }
@@ -1293,16 +1276,6 @@ func enforceBudgetCeiling(req, caller *identityv1.Budget) error {
 		return err
 	}
 	return check("sites", req.GetMaxSites(), caller.GetMaxSites())
-}
-
-// grantCapsPublishExceeds reports whether child requests any publish
-// kind the parent does not hold.
-func grantCapsPublishExceeds(child, parent *identityv1.Capabilities) bool {
-	cp, pp := child.GetPublish(), parent.GetPublish()
-	return (cp.GetFunctions() && !pp.GetFunctions()) ||
-		(cp.GetBlobs() && !pp.GetBlobs()) ||
-		(cp.GetSites() && !pp.GetSites()) ||
-		(cp.GetServices() && !pp.GetServices())
 }
 
 func (s *Service) GetMetrics(_ context.Context, _ *controlv1.GetMetricsRequest) (*controlv1.GetMetricsResponse, error) {
@@ -1883,28 +1856,6 @@ func (s *Service) callerGrant(ctx context.Context) *identityv1.Grant {
 type capabilityCheck func(identity.Principal) bool
 
 func admitCap(c identity.Principal) bool { return c.Admin() }
-
-// attributesSubsetOf returns nil if every key/value pair in child is
-// present with the same value in parent. An empty child is a subset of
-// anything (callers who request no attributes don't need to bound them).
-// A missing parent attribute is treated as not-granted: the child can't
-// introduce keys the parent doesn't carry.
-func attributesSubsetOf(child, parent *structpb.Struct) error {
-	if child == nil || len(child.GetFields()) == 0 {
-		return nil
-	}
-	parentFields := parent.GetFields()
-	for key, childVal := range child.GetFields() {
-		parentVal, ok := parentFields[key]
-		if !ok {
-			return fmt.Errorf("attribute %q absent from caller's cert", key)
-		}
-		if !proto.Equal(childVal, parentVal) {
-			return fmt.Errorf("attribute %q value %q does not match caller's %q", key, childVal.GetStringValue(), parentVal.GetStringValue())
-		}
-	}
-	return nil
-}
 
 // requireCallerCap returns a PermissionDenied unless the caller's cert
 // holds the named capability. Unlike the legacy s.canX() helpers it
