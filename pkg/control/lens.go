@@ -59,10 +59,8 @@ func (s *Service) authoriseOwnership(ctx context.Context, snap state.Snapshot, p
 }
 
 // unpublishKind selects which publication register an unpublish
-// authorises against. Centralising the selection is the whole point of
-// authoriseUnpublish: an open-coded per-call-site predicate choice is
-// the one thing that diverged across the handlers and produced a
-// cross-tenant ownership defect.
+// authorises against, so the choice is made in one place rather than
+// open-coded per handler.
 type unpublishKind int
 
 const (

@@ -799,7 +799,7 @@ func (s *Service) resolveGlobal(ctx context.Context, identifier string, authorit
 // resolveHashPrefix resolves a content-hash prefix. A hash is the
 // artefact identity and is deliberately cross-tenant: two tenants
 // publishing identical bytes share one hash, so this stays global and
-// is not authority-scoped (name resolution is, hash resolution is not).
+// is not authority-scoped.
 func (s *Service) resolveHashPrefix(prefix string, snap state.Snapshot) (string, bool) {
 	// Gossip-only: trusting the local manager would let a stale
 	// in-process module shadow a peer-published workload.

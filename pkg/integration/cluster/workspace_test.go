@@ -130,7 +130,7 @@ func TestPublicMesh_WorkspaceIsolation(t *testing.T) {
 	})
 }
 
-// TestPublicMesh_WorkspacePeerVisibility proves the brief's headline
+// TestPublicMesh_WorkspacePeerVisibility proves the headline
 // use-case end-to-end: two publishers in the same workspace see each
 // other's workloads over the real mesh, while a sibling tenant in a
 // different workspace remains opaque to them. The shape is admin (root)

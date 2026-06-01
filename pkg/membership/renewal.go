@@ -23,9 +23,7 @@ import (
 // depend on the original issuer still being alive, because the server
 // re-checks the caller's chain and the denylist before re-issuing.
 // Candidates are returned in a stable order so renewal retries the same
-// peer rather than flapping across the cluster; renewGrantOnce walks the
-// list and falls through on a dial failure, so a dead delegating peer at
-// the head of the order cannot wedge renewal while another is reachable.
+// peer rather than flapping across the cluster.
 func findRenewalTargets(snap state.Snapshot, self types.PeerKey) []string {
 	var addrs []string
 	for _, pk := range slices.SortedFunc(maps.Keys(snap.Nodes), types.PeerKey.Compare) {

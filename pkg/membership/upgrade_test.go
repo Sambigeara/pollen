@@ -195,8 +195,8 @@ func TestReceiveGrantOffer(t *testing.T) {
 }
 
 // failingRevokeStore proxies every ClusterState method through to a
-// real store but forces RevokeOwnSpecs to fail. Used to exercise the
-// rollback path the brief requires for store-corruption scenarios.
+// real store but forces RevokeOwnSpecs to fail, exercising the
+// in-memory grant rollback when a post-adopt store write errors.
 type failingRevokeStore struct {
 	ClusterState
 	err error

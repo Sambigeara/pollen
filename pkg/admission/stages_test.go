@@ -37,7 +37,7 @@ func staticSpecChange(name string) (*statev1.StaticSpecChange, *admissionv1.Reso
 		&admissionv1.ResourceID{Body: &admissionv1.ResourceID_Static{Static: &admissionv1.StaticID{Name: name, ManifestDigest: digest}}}
 }
 
-// TestAuthoriseRejectsMissingPublishBit proves the new authorise stage
+// TestAuthoriseRejectsMissingPublishBit proves the authorise stage
 // rejects a Fact whose authority Grant lacks the per-kind publish
 // capability, and admits it once the bit is present. authenticate
 // passes either way (the grant is well-formed and chains to root). The
@@ -78,7 +78,7 @@ func TestAuthoriseRejectsMissingPublishBit(t *testing.T) {
 
 // TestAuthoriseEnforcesPublisherAttributes proves authorise holds the
 // publisher's own Grant to the spec's inline policy clauses, for every
-// kind (not just placement Seed as the old MayPublish-only path did).
+// kind.
 func TestAuthoriseEnforcesPublisherAttributes(t *testing.T) {
 	now := time.Now()
 	policy := &admissionv1.Predicate{Inline: &admissionv1.InlinePredicate{Clauses: []*admissionv1.Clause{{Key: "team", Equals: "core"}}}}
@@ -108,9 +108,9 @@ func TestAuthoriseEnforcesPublisherAttributes(t *testing.T) {
 }
 
 // TestAuthenticateLocalBootstrapTolerance proves the local-source path
-// preserves MayPublish's bootstrap window: a self-authored Fact whose
-// Grant has not yet gossiped is admitted only with a nil policy, and
-// rejected the moment it carries one.
+// keeps a bootstrap window: a self-authored Fact whose Grant has not
+// yet gossiped is admitted only with a nil policy, and rejected the
+// moment it carries one.
 func TestAuthenticateLocalBootstrapTolerance(t *testing.T) {
 	now := time.Now()
 	rootPub, authPub, authPriv, _ := grantCaps(t, now, identity.PublisherCapabilities())

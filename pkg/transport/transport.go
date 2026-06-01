@@ -211,10 +211,10 @@ func WithIsDenied(fn func(types.PeerKey) bool) Option {
 	return func(o *transportOptions) { o.isDenied = fn }
 }
 
-// WithRelayPermit gates whether this node will forward a relayed message
+// WithRelayPermit gates whether this node forwards a relayed message
 // for a given cryptographically-verified upstream peer. Returning false
-// drops the message, keeping a sibling tenant's traffic out of the
-// relay fabric. Unset means relay for anyone (tests).
+// drops the message; see identity.MayRelay for the confinement rule.
+// Unset means relay for anyone (tests).
 func WithRelayPermit(fn func(types.PeerKey) bool) Option {
 	return func(o *transportOptions) { o.relayPermit = fn }
 }

@@ -89,7 +89,7 @@ func publisherFullState(t *testing.T, rootPriv ed25519.PrivateKey, rootPub ed255
 // and never redelivers, so the restore path has exactly one chance to
 // admit the fact. The single-pass apply resolved the authority grant
 // from the pre-batch snapshot, so the fact was dropped and lost forever,
-// breaking the cluster-scoped durability guarantee. It must survive.
+// breaking the cluster-scoped durability guarantee.
 func TestRestoreAdmitsFactWhoseGrantSharesTheBatch(t *testing.T) {
 	rootPub, rootPriv := keyPair(t)
 	pKey, pPub, hash, data := publisherFullState(t, rootPriv, rootPub)
@@ -153,7 +153,7 @@ func TestRestoreStillRejectsFactWithNoAuthorityGrant(t *testing.T) {
 	require.False(t, ok, "fact with an unresolvable authority is still rejected")
 }
 
-// TestPresignedValidateErrorSurfacesUnwrapped is the G3 regression: a
+// TestPresignedValidateErrorSurfacesUnwrapped pins that a
 // validator (admission pipeline in production) rejection on the
 // presigned path must reach the operator as the clean admission
 // message, not buried under the internal "validate presigned spec:"

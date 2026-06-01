@@ -88,10 +88,10 @@ func New(localID types.PeerKey, store stateStore, blobs blobStore, canServe bool
 }
 
 // SetDomain sets the public DNS suffix this listener resolves Host
-// against (Host = `<name>-<slug>.<domain>`). Empty preserves pre-
-// Pollen-Cloud Host == spec-name behaviour. Input must be the canonical
-// leading-dot, lower-case form (supervisor normalises). Call before
-// Start: handlers read it from spawned goroutines.
+// against (Host = `<name>-<slug>.<domain>`). Empty means Host equals
+// the bare spec name. Input must be the canonical leading-dot,
+// lower-case form (supervisor normalises). Call before Start: handlers
+// read it from spawned goroutines.
 func (s *Service) SetDomain(d string) {
 	s.domain = d
 }

@@ -53,7 +53,7 @@ const (
 	tablePadding     = 2
 	minDisambigPeers = 2
 	shortHexLen      = 8
-	// noVisibility: REPLICAS when nothing in scope is countable.
+	// Placeholder shown in count columns (REPLICAS) when nothing in scope is countable.
 	noVisibility = "-"
 )
 

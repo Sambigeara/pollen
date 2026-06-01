@@ -29,11 +29,10 @@ import (
 // Facts published under the dropped kinds must be tombstoned on both
 // sides.
 //
-// The two-node shape is enough to exercise locked decision #1
-// (cap-shrink tombstones) and the locked decision #2 wire-mode
-// fallback's pre-condition (codes.Unavailable when no live mesh).
-// A three-node shape would only retest gossip propagation that
-// TestPublicMesh_GossipConvergence already covers in this package.
+// The two-node shape exercises cap-shrink tombstones and the
+// wire-mode fallback's pre-condition (codes.Unavailable when no
+// live mesh). A three-node shape would only retest gossip
+// propagation that TestPublicMesh_GossipConvergence already covers.
 func TestPublicMesh_AdminInitiatedUpgrade(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) //nolint:mnd
 	t.Cleanup(cancel)
@@ -117,8 +116,7 @@ func TestPublicMesh_AdminInitiatedUpgrade(t *testing.T) {
 		// Admission must now reject a fresh seed attempt under the lost
 		// kind: the publisher's gossiped grant no longer carries
 		// publish:functions, so a non-tombstone workload Fact fails at
-		// the authorise stage. (Tombstones still pass via the
-		// admission.authorise exemption that this brief introduced.)
+		// the authorise stage.
 		const reseedHash = "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"
 		_, reseedErr := foo.Store().PublishWorkload(state.WorkloadSpec{Hash: reseedHash, Name: "echo-2", MinReplicas: 1}, nil)
 		require.Error(t, reseedErr, "post-shrink seed must be rejected at admission")

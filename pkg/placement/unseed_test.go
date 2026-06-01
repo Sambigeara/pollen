@@ -35,12 +35,9 @@ func (u *unseedStore) DeleteWorkloadSpec(string) ([]state.Event, error) {
 // TestUnseedIgnoresDedupeWinner is the placement-layer companion to
 // state.TestRevokeOwnSpecsIgnoresDedupeWinner: the legitimate owner's
 // Unseed must reach DeleteWorkloadSpec even when a remote tenant's
-// byte-identical content wins the deduped Specs map. The pre-redesign
-// guard arbitrated ownership on snap.Specs[hash] and falsely rejected
-// the owner with "owned by peer <other>"; the fix scopes the guard to
-// LocalPublishesWorkload over the per-(authority, name) SpecsAll, the
-// same predicate UnseedStatic, the blob path, and control.UnseedWorkload
-// use.
+// byte-identical content wins the deduped Specs map. Ownership is
+// decided by LocalPublishesWorkload over the per-(authority, name)
+// SpecsAll, not by the single Specs[hash] dedupe winner.
 func TestUnseedIgnoresDedupeWinner(t *testing.T) {
 	aKey := peerKey(0xaa) // local owner
 	bKey := peerKey(0xbb) // remote co-publisher, the adverse dedupe winner
@@ -63,9 +60,9 @@ func TestUnseedIgnoresDedupeWinner(t *testing.T) {
 		"legitimate owner's unseed must reach DeleteWorkloadSpec despite the remote co-publisher winning the deduped Specs map")
 }
 
-// TestUnseedRejectsNonPublisher pins the other direction: the fix must
-// not turn the ownership guard into a no-op. A node that neither
-// publishes nor runs the workload is still rejected.
+// TestUnseedRejectsNonPublisher pins the other direction: the ownership
+// guard must not become a no-op. A node that neither publishes nor runs
+// the workload is still rejected.
 func TestUnseedRejectsNonPublisher(t *testing.T) {
 	aKey := peerKey(0xaa)
 	cKey := peerKey(0xcc) // neither publisher nor runner

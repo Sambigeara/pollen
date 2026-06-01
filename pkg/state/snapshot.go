@@ -448,9 +448,9 @@ func (s Snapshot) Services() []ServiceInfo {
 	return out
 }
 
-// bodyHashLen is the fixed width of a Fact's body hash (sha256 today),
-// fixed as an array width so a specRank stays comparable; widen it if a
-// future Fact swaps in a different digest.
+// bodyHashLen is the width of a Fact's body hash (sha256 today), held as
+// a fixed array so a specRank stays comparable; widen it if a future
+// Fact swaps in a different digest.
 const bodyHashLen = 32
 
 // specIdent is a publication identity: one (kind, logical name,
@@ -838,8 +838,7 @@ func buildNodeView(pk types.PeerKey, rec nodeRecord) (NodeView, map[string]bool,
 
 // flattenSpecsByPub returns every (authority, name) spec view in a
 // stable (publisher, name) order so cluster-wide views and test
-// fixtures stay reproducible across daemon restarts. key extracts the
-// sort tuple from a view.
+// fixtures stay reproducible across daemon restarts.
 func flattenSpecsByPub[V any](byPub map[types.PeerKey]map[string]V, key func(V) (types.PeerKey, string)) []V {
 	if len(byPub) == 0 {
 		return nil

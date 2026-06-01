@@ -331,7 +331,7 @@ func TestRuntimeMethodsFailClosed(t *testing.T) {
 // and the deduped artefact winner is deliberately the gated one (the
 // shape that produced the live blocker). Invoke and MayHostByHash must
 // decide against the addressed publication / the union, never the
-// deduped winner. The matrix's T10 did not cover this collision.
+// deduped winner.
 func TestInvokeHostPublicationScopedMultiPublisher(t *testing.T) {
 	now := time.Now()
 	rootA, aPub, aPriv, aGrant := authority(t, now, now.Add(30*24*time.Hour), nil)
@@ -473,18 +473,18 @@ func TestFetchBlobPublicationScopedMultiPublisher(t *testing.T) {
 	}
 	meshNodes := map[types.PeerKey]state.NodeView{aPK: {Grant: aGrant}, bPK: {Grant: bGrant}}
 
-	// Deduped winner is the GATED publication: pre-fix Fetch dropped the
-	// public co-publication, so an anonymous read of bytes a tenant
-	// published publicly was denied.
+	// Deduped winner is the GATED publication. Fetch must still resolve the
+	// public co-publication, else an anonymous read of bytes a tenant
+	// published publicly is denied.
 	gatedWinner := New(rootA, fakeStore{snap: state.Snapshot{
 		Nodes:        meshNodes,
 		BlobSpecs:    map[string]state.BlobSpecView{hash: {Fact: gatedFact, Spec: state.BlobSpec{Name: "secret", Digest: hash}, Publisher: bPK}},
 		BlobSpecsAll: bAll,
 	}})
-	// Deduped winner is the PUBLIC publication: pre-fix FetchByToken
-	// dropped the gated co-publication, so a legitimate share-link
-	// holder for a gated blob was denied because someone else's
-	// identical bytes happened to be public.
+	// Deduped winner is the PUBLIC publication: when Fetch drops the
+	// gated co-publication, a legitimate share-link holder for a gated
+	// blob would be denied because someone else's identical bytes
+	// happened to be public.
 	publicWinner := New(rootA, fakeStore{snap: state.Snapshot{
 		Nodes:        meshNodes,
 		BlobSpecs:    map[string]state.BlobSpecView{hash: {Fact: publicFact, Spec: state.BlobSpec{Name: "pubdata", Digest: hash}, Publisher: aPK}},

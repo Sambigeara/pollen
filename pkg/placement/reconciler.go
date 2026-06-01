@@ -120,10 +120,9 @@ func (r *reconciler) reconcile(ctx context.Context) {
 
 	// Deterministic placement tie-break over the content-addressed
 	// runtime view: when one logical name maps to several content
-	// hashes, host the lowest-PeerKey publisher's. Ownership no longer
-	// collides (registers are keyed by (kind, name, authority)); this is
-	// host selection, not a conflict gate. Unnamed specs pass through
-	// unchanged.
+	// hashes, host the lowest-PeerKey publisher's. Registers are keyed
+	// by (kind, name, authority), so this is host selection, not a
+	// conflict gate. Unnamed specs pass through unchanged.
 	nameWinners := make(map[string]string)
 	for hash, sv := range snap.Specs {
 		name := sv.Spec.Name

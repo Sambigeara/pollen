@@ -423,8 +423,8 @@ func (s *Service) Remove(hash string) error {
 // RemovePresigned applies a tenant-signed tombstone for a named blob and
 // gossips it. In wire mode the caller may dial any edge node; only one
 // holds the bytes, but all can relay the tombstone now that
-// DeleteBlobSpecPresigned looks up the body across every peer's log
-// (Phase 3f). Like Remove it leaves bytes to the janitor.
+// DeleteBlobSpecPresigned looks up the body across every peer's log.
+// Like Remove it leaves bytes to the janitor.
 func (s *Service) RemovePresigned(hash string, presignedFact *factv1.Fact) error {
 	if s.state == nil {
 		return nil

@@ -17,13 +17,13 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestMultiTenantSpecIsolation is P1's core-guarantee proof: two
-// distinct principals publishing byte-identical workload content under
-// the same logical name occupy distinct (authority, name) registers and
-// are both visible per-authority, with no cross-publisher conflict
-// rejection. publisherFullState fixes the hash and name, so two calls
-// differ only by principal, exactly the collision the old global
-// content-hash key conflated.
+// TestMultiTenantSpecIsolation proves that two distinct principals
+// publishing byte-identical workload content under the same logical name
+// occupy distinct (authority, name) registers and are both visible
+// per-authority, with no cross-publisher conflict rejection.
+// publisherFullState fixes the hash and name, so two calls differ only by
+// principal, exactly the collision the old global content-hash key
+// conflated.
 func TestMultiTenantSpecIsolation(t *testing.T) {
 	rootPub, rootPriv := keyPair(t)
 	pkA, pubA, hash, dataA := publisherFullState(t, rootPriv, rootPub)
@@ -65,11 +65,6 @@ func TestMultiTenantSpecIsolation(t *testing.T) {
 	// publication only, never the other tenant's identical-content one.
 	require.Equal(t, map[string]struct{}{"echo": {}}, snap.UsageByAuthority(pubA).FunctionNames)
 	require.Equal(t, map[string]struct{}{"echo": {}}, snap.UsageByAuthority(pubB).FunctionNames)
-
-	// Denied-principal exclusion is independent of the retired conflict
-	// scan: it lives in buildSnapshot's valid-record filter and
-	// recomputeDeniedLocked, both untouched by P1 and exercised by the
-	// existing deny/transitive-revocation suite.
 }
 
 // TestRevokeOwnSpecsRetainsAuthorisedKinds proves the cap-aware filter:
@@ -120,21 +115,20 @@ func TestRevokeOwnSpecsRetainsAuthorisedKinds(t *testing.T) {
 	})
 }
 
-// TestRevokeOwnSpecsIgnoresDedupeWinner is the regression for the
-// cycle-2 CRITICAL: RevokeOwnSpecs must tombstone this node's own spec
-// even when a colliding remote tenant publishing byte-identical content
-// won the deduped snap.Specs map. A deduped-map scan would skip the
-// local spec whenever the remote's PeerKey sorts lower, leaving a
-// cap-downgraded principal serving a spec it has lost authority over.
+// TestRevokeOwnSpecsIgnoresDedupeWinner: RevokeOwnSpecs must tombstone
+// this node's own spec even when a colliding remote tenant publishing
+// byte-identical content won the deduped snap.Specs map. A deduped-map
+// scan would skip the local spec whenever the remote's PeerKey sorts
+// lower, leaving a cap-downgraded principal serving a spec it has lost
+// authority over.
 func TestRevokeOwnSpecsIgnoresDedupeWinner(t *testing.T) {
 	rootPub, rootPriv := keyPair(t)
 	remotePK, _, hash, remoteData := publisherFullState(t, rootPriv, rootPub)
 
 	// Force the adverse ordering: the remote tenant must sort lower so
-	// outranks makes it win the deduped snap.Specs. That is exactly the
-	// case the old deduped-map RevokeOwnSpecs skipped this node's own
-	// spec, so the regression now bites deterministically rather than
-	// on a coin-flip of random key order.
+	// outranks makes it win the deduped snap.Specs, exercising the
+	// dedupe-winner case deterministically rather than on a coin-flip of
+	// random key order.
 	var bPub ed25519.PublicKey
 	var bPriv ed25519.PrivateKey
 	var bKey types.PeerKey
@@ -220,9 +214,9 @@ func TestCapShrinkConvergesOnRemotePeer(t *testing.T) {
 	require.Contains(t, b.Snapshot().Specs, hash, "B observes A's workload before the upgrade")
 
 	// A receives an admin-initiated cap-shrink: drops publish:functions.
-	// RevokeOwnSpecs queues the tombstone (signed under A's still-current
-	// signing key, which is unchanged), then SetLocalGrant queues the
-	// new grant event. FlushPendingGossip drains both into one batch.
+	// RevokeOwnSpecs queues the tombstone (signed under A's unchanged
+	// signing key), then SetLocalGrant queues the new grant event.
+	// FlushPendingGossip drains both into one batch.
 	shrunken := &identityv1.Capabilities{
 		Publish: &identityv1.PublishCapability{Sites: true},
 	}
@@ -276,7 +270,7 @@ func TestSpecPublishRequiresName(t *testing.T) {
 	require.ErrorIs(t, err, state.ErrMissingName)
 }
 
-// TestSpecByNameResolvesWithinAuthority proves P2's core resolver
+// TestSpecByNameResolvesWithinAuthority proves the resolver
 // guarantee: a workload name resolves to at most one spec per authority
 // and never crosses tenants. Principals A and B publish byte-identical
 // content under the same logical name "echo"; each authority's lookup

@@ -94,8 +94,7 @@ func (v *VerifiedSession) Principal() Principal {
 	}
 }
 
-// Valid reports whether this Principal resolved to a real authority. The
-// zero Principal is not valid.
+// Valid reports whether this Principal resolved to a real authority.
 func (p Principal) Valid() bool { return p.valid }
 
 // Subject is the principal's own key. Resources it published are keyed

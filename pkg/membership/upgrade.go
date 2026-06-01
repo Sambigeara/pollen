@@ -19,11 +19,8 @@ import (
 // do the cluster mutations run. A rejected or unpersistable grant never
 // leaks half-formed state to peers.
 //
-// Cap-shrink convergence holds because tombstones bypass the
-// per-publish-kind cap check in admission.authorise: a publisher who
-// has lost a kind must still be able to retire their previously
-// authorised Facts of that kind, and the tombstone signature alone
-// proves the publisher owns the deletion.
+// Capability shrink relies on RevokeOwnSpecs; signed tombstones are
+// exempt from the per-kind cap check (see admission.authorise).
 //
 // If RevokeOwnSpecs fails after AdoptGrant has committed, the in
 // memory grant is rolled back to the prior value and persisted to

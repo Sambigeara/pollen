@@ -201,7 +201,7 @@ staging-down:
     cd {{ staging_tf }} && terraform destroy
 
 # Form the staging mesh. install.sh on each node pulls the latest tagged
-# release just so the systemd unit + /var/lib/pln user exist; the Phase 7
+# release just so the systemd unit + /var/lib/pln user exist; the
 # listener surface gets layered on by `staging-deploy-dev` next.
 #
 # Bootstrap staging nodes: install released pln and join the mesh.

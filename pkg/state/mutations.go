@@ -759,10 +759,7 @@ func (s *store) applyPresignedSpec(key attrKey, specChange *statev1.SpecChange, 
 }
 
 // presignedResourceName returns the logical name the publisher signed
-// into a presigned Fact's ResourceID. A tombstone's CRDT register key
-// is (kind, this name, authority), identical to the live spec's, so
-// the tombstone lands on exactly the slot it kills regardless of which
-// peer relayed the original spec.
+// into a presigned Fact's ResourceID.
 func presignedResourceName(f *factv1.Fact) string {
 	switch r := f.GetResource().GetBody().(type) {
 	case *admissionv1.ResourceID_Seed:

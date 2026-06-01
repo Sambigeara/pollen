@@ -25,10 +25,10 @@ import (
 )
 
 // ProtocolMin and ProtocolMax bound the control-plane protocol versions
-// this build speaks. The flag-day cutover re-bootstraps every node, so
-// there is no legacy version to support; the range exists to give a
-// forward, explicit answer when an old client later meets a new daemon
-// (or the reverse).
+// this build speaks. Every node is re-bootstrapped together, so there is
+// no legacy version to support; the range exists to give a forward,
+// explicit answer when an old client later meets a new daemon (or the
+// reverse).
 const (
 	ProtocolMin uint32 = 1
 	ProtocolMax uint32 = 1

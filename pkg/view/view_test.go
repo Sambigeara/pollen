@@ -236,7 +236,7 @@ func TestProjectScopesResourcesByAuthority(t *testing.T) {
 	})
 }
 
-// TestProjectSurfacesCollidingAuthorities proves the P2 reshape: when
+// TestProjectSurfacesCollidingAuthorities proves that when
 // two principals publish byte-identical content, the listing projection
 // no longer collapses to a single lowest-publisher winner. An admin
 // sees BOTH (authority, name) publications, order-independently, and a

@@ -189,9 +189,7 @@ func (p *Pipeline) Admit(sc *statev1.SpecChange) error {
 // bytes. When pub is nil (a downstream relay hop, or a bare-hash
 // invoke that names no publication) the decision is a union over every
 // publication of these bytes, mirroring Fetch: admitted if any one
-// allows the caller. The deduped artefact map is never consulted, so a
-// co-publisher of identical bytes can neither mask nor satisfy
-// another's policy. A nil caller is admitted only by a public policy;
+// allows the caller. A nil caller is admitted only by a public policy;
 // in that case the returned CallerInfo is empty, mirroring the
 // InvokeByToken path. Mesh-peer callers resolve their grant from
 // snap.Nodes via LookupGrant, wire-mode callers pass their
@@ -460,13 +458,8 @@ func grantContext(grant *identityv1.Grant) map[string]string {
 }
 
 // publicationFact resolves the Fact for the (authority, name)
-// publication pub, requiring its content hash to equal hash.
-// Resolution is authority-scoped via SpecByName, never the deduped
-// Specs map: publication identity is (authority, name) and policy is a
-// per-publication property, so a co-publisher of identical bytes must
-// not be reachable here. The hash equality binds the authorised policy
-// to the bytes actually dispatched, so a forged selector cannot pair a
-// permissive publication with another's content.
+// publication pub via SpecByName, requiring its content hash to equal
+// hash.
 func publicationFact(snap state.Snapshot, pub Publication, hash string) (*factv1.Fact, bool) {
 	_, sv, ok := snap.SpecByName(pub.Name, types.PeerKeyFromBytes(pub.AuthorityPub))
 	if !ok || sv.Fact == nil || sv.Spec.Hash != hash {

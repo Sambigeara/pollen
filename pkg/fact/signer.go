@@ -23,10 +23,8 @@ import (
 // durable signer persists the sequence high-water and reloads it on
 // construction, keeping seq monotonic across process restarts. The
 // sequence is carried on every fact to discriminate a
-// republish-after-unseed from a replay of the tombstoned original.
-// NewSigner is the ephemeral in-memory variant
-// for tests and non-persisting callers. It satisfies the state
-// package's local signer contract.
+// republish-after-unseed from a replay of the tombstoned original. It
+// satisfies the state package's local signer contract.
 type Signer struct {
 	seqPath string
 	priv    ed25519.PrivateKey

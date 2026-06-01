@@ -132,12 +132,11 @@ type hasStore struct {
 
 func (h *hasStore) Has(string) bool { return h.has }
 
-// Get differentiates missing bytes from missing wrapping: prior to
-// this change the byte path silently masqueraded as a wrapping error,
-// which is exactly how the user's bug report ("no DEK wrapping for
-// blob") read even though it could have been either failure mode.
-// Reorder pins the contract: ErrNotLocal first, errNoWrapping only when
-// bytes are present.
+// Get must differentiate missing bytes from missing wrapping: the byte
+// check (ErrNotLocal) comes first, errNoWrapping only when bytes are
+// present. A wrapping error for a hash this node has no bytes for reads
+// as the user-facing "no DEK wrapping for blob" yet could be either
+// failure mode.
 func TestGet_OrdersByteCheckBeforeWrapping(t *testing.T) {
 	svc, _ := newWrapTestService(t, realPeerKey(t))
 
@@ -172,9 +171,9 @@ func (d *discardStream) Close() error                { return nil }
 
 // Late-joiner safety net: after fanoutWrappingsForServingSet has run,
 // a node that flips to CanServeStatic later still has to gain a
-// wrapping. The brief keeps the lazy-wrap inside blobs.Serve as the
-// only mechanism for that case, so a future refactor of Serve that
-// drops the issueWrappingFor call would silently lose the safety net.
+// wrapping. Lazy-wrap inside blobs.Serve is the only mechanism for
+// that case, so a future refactor of Serve that drops the
+// issueWrappingFor call would silently lose the safety net.
 // This test pins that Serve still wraps for the requester after a
 // successful stream.
 func TestServe_LazyWrapsForRequester(t *testing.T) {

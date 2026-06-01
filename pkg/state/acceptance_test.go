@@ -13,9 +13,8 @@ import (
 
 // TestDenyOneDoesNotAffectOther is the multi-tenant isolation
 // acceptance: two distinct authorities publish byte-identical content
-// under the same logical name; denying one must not touch the other.
-// This is the property the (authority, name) redesign exists to
-// guarantee, exercised end to end through the real admission pipeline.
+// under the same logical name; denying one must not touch the other,
+// exercised end to end through the real admission pipeline.
 func TestDenyOneDoesNotAffectOther(t *testing.T) {
 	rootPub, rootPriv := keyPair(t)
 	aStore, pA, _, hash := publisherStore(t, rootPriv, rootPub)
@@ -48,7 +47,7 @@ func TestDenyOneDoesNotAffectOther(t *testing.T) {
 	require.True(t, snap.LocalPublishesWorkload(hash, pB), "B still pins the shared hash")
 }
 
-// TestSharedBytesLifetimeFollowsLastOwner proves the P3 content-lifetime
+// TestSharedBytesLifetimeFollowsLastOwner proves the content-lifetime
 // guarantee end to end through DeleteWorkloadSpec: shared bytes stay in
 // the keep set until the last co-owner unseeds. This exercises the
 // tombstone -> SpecsAll -> KeepSet composition on real (authority, name)

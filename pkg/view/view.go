@@ -30,9 +30,7 @@ func LensFor(grant *identityv1.Grant) Lens {
 // hold one entry per (authority, logical name) the lens may see, so a
 // tenant whose artefact or name collides with another's still appears
 // and an admin sees every colliding tenant distinctly. Nodes is the set
-// of nodes the lens may observe, computed by Project as a union of
-// structural visibility (Permits over each node's grant) and the hosts
-// of any visible resource.
+// of nodes the lens may observe (see Project).
 type ScopedView struct {
 	Nodes     map[types.PeerKey]state.NodeView
 	Workloads []state.WorkloadSpecView

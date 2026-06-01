@@ -28,9 +28,9 @@ func dpk(b byte) types.PeerKey {
 	return k
 }
 
-// These pin the wiring after dispatch was lifted into pkg/route:
-// replicasOf feeds the candidate set, isBackedOff feeds the skip
-// predicate, and an empty replica set still maps to ErrNoReplicas.
+// These pin the dispatch wiring: replicasOf feeds the candidate set,
+// isBackedOff feeds the skip predicate, and an empty replica set still
+// maps to ErrNoReplicas.
 func TestDispatcherPick(t *testing.T) {
 	self, a, b := dpk(1), dpk(2), dpk(3)
 	now := time.Unix(1_000, 0)

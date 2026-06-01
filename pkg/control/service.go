@@ -1143,7 +1143,7 @@ func (s *Service) DenyPeer(ctx context.Context, req *controlv1.DenyPeerRequest) 
 // UpgradePeer mints a fresh grant for peer_pub under the caller's
 // authority and pushes it to that peer's daemon over the existing
 // mesh transport. The minted grant is never returned to the issuer:
-// an admin-side artifact is useless because only the subject can adopt
+// an admin-side artefact is useless because only the subject can adopt
 // a grant into its own credentials.
 //
 // A peer with no live mesh daemon (wire-mode tenant) surfaces as
@@ -1165,8 +1165,6 @@ func (s *Service) UpgradePeer(ctx context.Context, req *controlv1.UpgradePeerReq
 	if err := identity.ValidateAttributes(caps.GetAttributes()); err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
-	// See enforceGrantCeiling and enforceBudgetCeiling for the relay-daemon
-	// escalation these close.
 	if err := enforceGrantCeiling(caps, caller.Capabilities); err != nil {
 		return nil, err
 	}

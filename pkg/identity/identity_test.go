@@ -563,7 +563,7 @@ func TestCredentialsIssueAtDepthAnchorsAtTrueRoot(t *testing.T) {
 	creds1 := identity.NewCredentials(rootPub, n1Priv, g1)
 
 	// creds1 is itself a delegate. A tenant grant it issues must still
-	// anchor at rootPub, not at n0 (the pre-fix failure).
+	// anchor at rootPub, not at n0.
 	tenantPub, _ := newKeyPair(t)
 	g2, err := creds1.IssueGrant(tenantPub, identity.PublisherCapabilities(),
 		&identityv1.Budget{MaxSites: 1}, now, now.Add(30*24*time.Hour), false)

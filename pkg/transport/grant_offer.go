@@ -28,11 +28,11 @@ var ErrPeerOffline = errors.New("peer is not reachable over the mesh")
 // Principal updates) holds end-to-end: PoP is never added by the issuer.
 //
 // Direct-only: callers receive ErrPeerOffline when the issuer holds no
-// live session to peerKey, even when a routed path exists. The brief
-// reserves routed delivery for tunnel/blob/workload/membership streams;
-// upgrade grants are short, infrequent, and the offline path already
-// has a clean operator fallback, so the extra route-allow-list surface
-// is not worth the added stream type.
+// live session to peerKey, even when a routed path exists. Routed
+// delivery is reserved for tunnel/blob/workload/membership streams;
+// upgrade grants are short and infrequent, and the offline path has a
+// clean operator fallback, so a routed grant-offer stream is not worth
+// the added surface.
 func (m *QUICTransport) SendGrantOffer(ctx context.Context, peerKey types.PeerKey, grant *identityv1.Grant) (*meshv1.GrantOfferResponse, error) {
 	if _, ok := m.getSession(peerKey); !ok {
 		return nil, ErrPeerOffline

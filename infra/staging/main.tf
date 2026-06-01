@@ -181,7 +181,7 @@ resource "cloudflare_dns_record" "node" {
 # CF can't proxy custom-protocol mTLS-over-TCP, so the endpoint stays
 # grey-cloud and serves multi-A. Resolvers pick essentially at random,
 # which trades worst-case round-trip latency for redundancy. The choice
-# is deliberate: cross-slot tombstone propagation (Phase 3f) means
+# is deliberate: cross-slot tombstone propagation means
 # every node accepts seeds and unseeds for any publisher, so the "wrong
 # node" problem doesn't bite correctness, only latency. CF Load
 # Balancing would add proximity steering but needs the paid

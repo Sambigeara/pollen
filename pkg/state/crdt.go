@@ -326,8 +326,7 @@ func (s *store) isAcceptableWrappingEvent(ev *statev1.GossipEvent) bool {
 	return true
 }
 
-// grantForPeerLocked returns the grant a peer has gossiped, or nil. The
-// caller must hold s.mu.
+// grantForPeerLocked returns the grant a peer has gossiped, or nil.
 func (s *store) grantForPeerLocked(pk types.PeerKey) *identityv1.Grant {
 	rec, ok := s.nodes[pk]
 	if !ok {

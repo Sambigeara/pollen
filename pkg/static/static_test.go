@@ -102,9 +102,9 @@ func pathsOf(files map[string][]byte) map[string]struct{} {
 }
 
 // SeedStatic must pre-position a wrapping for every serving peer
-// against the manifest and every file digest it references. The plan's
-// load-bearing claim ("daemon-up no longer races lazy-wrap") rests on
-// this fanout firing as part of the same call that publishes the spec.
+// against the manifest and every file digest it references, as part of
+// the same call that publishes the spec (so daemon-up does not race
+// lazy-wrap).
 func TestSeedStatic_FanoutWrappingsToServingSet(t *testing.T) {
 	self := pk(1)
 	serveA := pk(2)
@@ -191,10 +191,8 @@ func TestSeedStaticPresigned_RejectsEmptyServingSet(t *testing.T) {
 }
 
 // A failing fanout must not roll back the published spec: lazy-wrap on
-// Serve still covers the tail, and undoing a successful publication
-// would leave the cluster in a worse state than the original
-// (pre-change) behaviour, which is the explicit decision logged in the
-// plan.
+// Serve still covers the tail, so undoing a successful publication
+// would only leave the cluster worse off.
 func TestSeedStatic_FanoutFailureDoesNotRollback(t *testing.T) {
 	self := pk(1)
 	server := pk(2)

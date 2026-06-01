@@ -14,15 +14,10 @@ import (
 	"github.com/sambigeara/pollen/pkg/types"
 )
 
-// TestDeleteSpecSelfScopesToLocalAuthority locks the store property the
-// control ownership-chokepoint consolidation depends on:
+// TestDeleteSpecSelfScopesToLocalAuthority pins that
 // Delete{Workload,Static,Blob}Spec only tombstones the local node's own
-// (authority, key) register. A non-publisher deleting another
-// authority's spec is rejected with ErrUnseedNotAuthored and mints no
-// events; the handler maps this to NotFound so the CLI no longer prints
-// "unseeded" on a foreign publication. The redundant per-call-site
-// ownership guards were removed on the strength of this backstop; if it
-// regresses, that removal becomes unsafe.
+// (authority, key) register: a non-publisher deleting another authority's
+// spec is rejected with ErrUnseedNotAuthored and mints no events.
 func TestDeleteSpecSelfScopesToLocalAuthority(t *testing.T) {
 	rootPub, rootPriv := keyPair(t)
 	aStore, pA, _, hash := publisherStore(t, rootPriv, rootPub)

@@ -253,15 +253,16 @@ func TestPublishedFactCannotBeReplayedAsTombstone(t *testing.T) {
 	require.ErrorContains(t, err, "must have Deleted=true")
 }
 
-// TestRegisterPeerGrantAdmitsDaemonlessPublisher pins the substrate fix
-// for the wire-tenant publish path. A wire publisher runs no daemon, so
-// it never SetLocalGrants its own grant; before the serving node relays
-// that grant in, snap.GrantFor(publisher) is nil and the admission
-// pipeline rejects every presigned Fact with "fact authority grant not
-// in cluster state". RegisterPeerGrant makes the grant resolvable while
-// reusing the identical proof-of-possession gate a gossiped grant must
-// clear, so it introduces no new trust, and the relayed grant converges
-// so peers that never saw the publisher's session admit its Facts too.
+// TestRegisterPeerGrantAdmitsDaemonlessPublisher proves the wire-tenant
+// publish path admits a publisher whose grant the serving node relays in.
+// A wire publisher runs no daemon, so it never SetLocalGrants its own
+// grant; before the serving node relays that grant in,
+// snap.GrantFor(publisher) is nil and the admission pipeline rejects every
+// presigned Fact with "fact authority grant not in cluster state".
+// RegisterPeerGrant makes the grant resolvable while reusing the identical
+// proof-of-possession gate a gossiped grant must clear, so it introduces no
+// new trust, and the relayed grant converges so peers that never saw the
+// publisher's session admit its Facts too.
 func TestRegisterPeerGrantAdmitsDaemonlessPublisher(t *testing.T) {
 	now := time.Now()
 	rootPub, rootPriv := keyPair(t)

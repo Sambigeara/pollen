@@ -112,7 +112,7 @@ just staging-plan                       # terraform plan → staging.tfplan
 just staging-apply                      # apply the saved plan
 pln ctx add staging-root root@$(cd staging && terraform output -json node_ips | jq -r .eu)
 just staging-bootstrap                  # installs via install.sh + systemd unit
-just staging-deploy-dev                 # overlay locally-built binary + Phase 7 listener config
+just staging-deploy-dev                 # overlay locally-built binary + listener config
 just staging-status
 ```
 
@@ -159,7 +159,7 @@ SSL covers them; they are proxied unconditionally.
 The `edge.staging.pln.sh` record stays grey-cloud and serves multi-A. CF can
 not proxy custom-protocol mTLS-over-TCP, so resolvers pick essentially at
 random, which trades worst-case round-trip latency for redundancy. The
-choice is deliberate: cross-slot tombstone propagation (Phase 3f) means
+choice is deliberate: cross-slot tombstone propagation means
 every node accepts seeds and unseeds for any publisher, so the "wrong node"
 problem doesn't bite correctness, only latency. CF Load Balancing would add
 proximity steering but needs the paid Load Balancing subscription enabled on

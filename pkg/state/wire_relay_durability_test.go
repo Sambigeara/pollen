@@ -253,8 +253,6 @@ func TestReseedIdenticalBytesAfterUnseedRepublishes(t *testing.T) {
 // TestHigherSeqUnseedSuppressesStaleLiveAcrossSlots: an unseed that
 // lands in one slot still suppresses a stale, lower-seq live copy
 // carried in another slot, because the tombstone holds the higher seq.
-// This is the cross-slot suppression that body_hash matching used to
-// provide and seq supersession must keep.
 func TestHigherSeqUnseedSuppressesStaleLiveAcrossSlots(t *testing.T) {
 	h := newRelayHarness(t)
 	digest := bytes.Repeat([]byte{0xcc}, 32)
@@ -284,8 +282,7 @@ func TestHigherSeqUnseedSuppressesStaleLiveAcrossSlots(t *testing.T) {
 // gap: a publisher wire-publishes a static (the presigned spec lands in
 // the relay's slot), then unseeds it in daemon mode. The daemon delete
 // must locate the live spec in the relay's slot and mint a superseding
-// tombstone. Before the cross-slot lookup it scanned only the
-// publisher's own slot, found nothing, and silently no-opped.
+// tombstone.
 func TestDaemonUnseedRemovesWireRelayedStatic(t *testing.T) {
 	h := newRelayHarness(t)
 	digest := bytes.Repeat([]byte{0xbb}, 32)

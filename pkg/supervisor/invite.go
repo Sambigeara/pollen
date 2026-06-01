@@ -18,7 +18,7 @@ import (
 
 const (
 	forwardedInviteTimeout        = 10 * time.Second
-	maxForwardedInviteMessageSize = 64 * 1024 // generous cap on a forwarded invite envelope
+	maxForwardedInviteMessageSize = 64 * 1024
 )
 
 func (n *Supervisor) forwardInviteToAdmin(ctx context.Context, joinerKey types.PeerKey, req *meshv1.InviteRedeemRequest) (*meshv1.InviteRedeemResponse, error) {
