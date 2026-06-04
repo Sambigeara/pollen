@@ -53,6 +53,13 @@ func (r *atomicRouter) NextHop(dest types.PeerKey) (types.PeerKey, bool) {
 	return t.NextHop(dest)
 }
 
+func (r *atomicRouter) Cost(dest types.PeerKey) (float64, bool) {
+	r.mu.RLock()
+	t := r.table
+	r.mu.RUnlock()
+	return t.Cost(dest)
+}
+
 func (r *atomicRouter) Changed() <-chan struct{} {
 	r.mu.RLock()
 	ch := r.changeCh

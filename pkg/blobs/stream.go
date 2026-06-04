@@ -29,7 +29,7 @@ func (s *Service) Fetch(ctx context.Context, hash string, peers []types.PeerKey)
 	if s.store.Has(hash) {
 		return nil
 	}
-	peers = route.ByLocality(s.state.Snapshot(), s.self, peers)
+	peers = route.NewSelector(s.state.Snapshot(), s.self, s.costs).ByLocality(peers)
 	var lastErr error
 	attempted := 0
 	for _, pk := range peers {
@@ -147,7 +147,7 @@ func (s *Service) resolveStoringPeer(hash string) (types.PeerKey, bool) {
 			return pk, true
 		}
 	}
-	return route.Nearest(snap, s.self, peers)
+	return route.NewSelector(snap, s.self, s.costs).Nearest(peers)
 }
 
 // fetchPlaintextFrom opens a plaintext stream to source. s.timeout

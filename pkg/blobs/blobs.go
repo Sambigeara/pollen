@@ -23,6 +23,7 @@ import (
 	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
 	"github.com/sambigeara/pollen/pkg/cas"
 	"github.com/sambigeara/pollen/pkg/fact"
+	"github.com/sambigeara/pollen/pkg/route"
 	"github.com/sambigeara/pollen/pkg/state"
 	"github.com/sambigeara/pollen/pkg/transport"
 	"github.com/sambigeara/pollen/pkg/types"
@@ -89,6 +90,7 @@ type Service struct {
 	store          blobStore
 	mesh           streamOpener
 	state          blobState
+	costs          route.Costs
 	gate           hostGate
 	signer         *fact.Signer
 	dekCache       map[string][]byte
@@ -106,7 +108,7 @@ type Service struct {
 
 var _ BlobsAPI = (*Service)(nil)
 
-func New(pollenDir string, self types.PeerKey, mesh streamOpener, st blobState, gate hostGate, signer *fact.Signer, signPriv ed25519.PrivateKey) (*Service, error) {
+func New(pollenDir string, self types.PeerKey, mesh streamOpener, st blobState, costs route.Costs, gate hostGate, signer *fact.Signer, signPriv ed25519.PrivateKey) (*Service, error) {
 	c, err := cas.New(pollenDir)
 	if err != nil {
 		return nil, err
@@ -119,6 +121,7 @@ func New(pollenDir string, self types.PeerKey, mesh streamOpener, st blobState, 
 		store:          c,
 		mesh:           mesh,
 		state:          st,
+		costs:          costs,
 		gate:           gate,
 		signer:         signer,
 		signPriv:       signPriv,

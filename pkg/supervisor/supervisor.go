@@ -252,7 +252,7 @@ func New(opts Options, creds *identity.Credentials, inviteConsumer identity.Invi
 
 	streamAdapter := &streamOpenAdapter{t: m}
 
-	blobsSvc, err := blobs.New(pollenDir, self, streamAdapter, stateStore, runtimeGate, signer, privKey)
+	blobsSvc, err := blobs.New(pollenDir, self, streamAdapter, stateStore, router, runtimeGate, signer, privKey)
 	if err != nil {
 		return nil, fmt.Errorf("create blob store: %w", err)
 	}
@@ -393,6 +393,7 @@ func New(opts Options, creds *identity.Credentials, inviteConsumer identity.Invi
 			placement.WithMesh(placementOpener),
 			placement.WithLogger(log.Named("placement")),
 			placement.WithGate(runtimeGate),
+			placement.WithCosts(router),
 		)
 	}
 
@@ -992,7 +993,7 @@ func (n *Supervisor) routeServiceRequest(ctx context.Context, callerKey types.Pe
 		return nil, fmt.Errorf("no provider for service %q: %w", name, wasm.ErrTargetNotFound)
 	}
 
-	svc := pickNearestService(snap, candidates)
+	svc := pickNearestService(snap, n.router, candidates)
 	if err := n.gate.Connect(n.gate.LookupGrant(callerKey), svc.Peer, svc.Port); err != nil {
 		return nil, fmt.Errorf("connect %s: %w", name, wasm.ErrTargetNotFound)
 	}

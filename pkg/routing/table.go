@@ -23,11 +23,23 @@ type PeerTopology struct {
 
 type Table struct {
 	routes map[types.PeerKey]types.PeerKey
+	costs  map[types.PeerKey]float64
 }
 
 func (t Table) NextHop(dest types.PeerKey) (types.PeerKey, bool) {
 	next, ok := t.routes[dest]
 	return next, ok
+}
+
+// Cost reports the shortest-path cost from the building node to dest,
+// summed over Vivaldi edge weights along the route. A directly-connected
+// dest yields its direct edge weight, which equals the straight-line
+// coordinate distance for peers with a converged coordinate; a
+// relay-only dest yields the higher path cost. ok is false when no path
+// to dest exists.
+func (t Table) Cost(dest types.PeerKey) (float64, bool) {
+	c, ok := t.costs[dest]
+	return c, ok
 }
 
 // Build computes this node's shortest-path next-hop table. permitTransit,
@@ -83,7 +95,7 @@ func Build(self types.PeerKey, topology []PeerTopology, connected []types.PeerKe
 	for _, pk := range connected {
 		delete(firstHop, pk)
 	}
-	return Table{routes: firstHop}
+	return Table{routes: firstHop, costs: dist}
 }
 
 func edgeWeight(a, b *coords.Coord) float64 {

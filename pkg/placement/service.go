@@ -19,6 +19,7 @@ import (
 	identityv1 "github.com/sambigeara/pollen/api/genpb/pollen/identity/v1"
 	"github.com/sambigeara/pollen/pkg/admission"
 	"github.com/sambigeara/pollen/pkg/auth"
+	"github.com/sambigeara/pollen/pkg/route"
 	"github.com/sambigeara/pollen/pkg/state"
 	"github.com/sambigeara/pollen/pkg/transport"
 	"github.com/sambigeara/pollen/pkg/types"
@@ -141,6 +142,7 @@ type Service struct {
 	placement    *placementLoop
 	replicaCount *replicaCountLoop
 	gate         Gate
+	costs        route.Costs
 	wg           sync.WaitGroup
 	localID      types.PeerKey
 }
@@ -157,6 +159,10 @@ func WithMesh(mesh StreamOpener) Option {
 
 func WithGate(g Gate) Option {
 	return func(s *Service) { s.gate = g }
+}
+
+func WithCosts(c route.Costs) Option {
+	return func(s *Service) { s.costs = c }
 }
 
 func New(self types.PeerKey, store WorkloadState, blobs blobsAPI, wasmRT WASMRuntime, opts ...Option) *Service {
@@ -179,7 +185,7 @@ func New(self types.PeerKey, store WorkloadState, blobs blobsAPI, wasmRT WASMRun
 	s.calls = newCallTracker(callTrackerWindow, func(counts map[string]uint64) {
 		store.SetPerSeedCallCounts(counts)
 	})
-	s.dispatcher = newDispatcher(store, self)
+	s.dispatcher = newDispatcher(store, self, s.costs)
 	s.placement = newPlacementLoop(self, placementConfig{
 		tick:             placementTickInterval,
 		migrateThreshold: placementMigrateThreshold,

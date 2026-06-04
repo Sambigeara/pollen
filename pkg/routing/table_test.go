@@ -194,6 +194,39 @@ func TestBuild(t *testing.T) {
 	}
 }
 
+func TestBuild_Cost(t *testing.T) {
+	A, B, C, absent := pk(1), pk(2), pk(3), pk(9)
+
+	// A reaches C only through B. C is nearer to A in a straight line
+	// than the A-B-C relay path is long, so C's path cost must exceed the
+	// straight-line distance between their coordinates.
+	ca, cb, cc := coord(0, 0), coord(0, 10), coord(8, 0)
+	table := Build(A, []PeerTopology{
+		topo(A, ca, B),
+		topo(B, cb, A, C),
+		topo(C, cc, B),
+	}, []types.PeerKey{B}, nil)
+
+	selfCost, ok := table.Cost(A)
+	require.True(t, ok)
+	require.Zero(t, selfCost)
+
+	directCost, ok := table.Cost(B)
+	require.True(t, ok)
+	require.InDelta(t, coords.Distance(*ca, *cb), directCost, 1e-9,
+		"a direct neighbour's cost is its straight-line edge weight")
+
+	relayCost, ok := table.Cost(C)
+	require.True(t, ok)
+	require.InDelta(t, coords.Distance(*ca, *cb)+coords.Distance(*cb, *cc), relayCost, 1e-9,
+		"a relay-only peer's cost sums the path edges")
+	require.Greater(t, relayCost, coords.Distance(*ca, *cc),
+		"the relay path costs more than the straight line")
+
+	_, ok = table.Cost(absent)
+	require.False(t, ok, "no cost for an unreachable peer")
+}
+
 func TestBuild_Idempotent(t *testing.T) {
 	A, B, C := pk(1), pk(2), pk(3)
 

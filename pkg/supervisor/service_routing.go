@@ -32,7 +32,7 @@ func dialLocalService(ctx context.Context, port uint32, input []byte) ([]byte, e
 	return resp, nil
 }
 
-// serviceK caps the candidate set after Vivaldi-distance narrowing. It
+// serviceK caps the candidate set after locality narrowing. It
 // matches placement dispatch's dispatchK so service routing and seed
 // dispatch make the same locality-aware choice through the one selector.
 const serviceK = 2
@@ -40,7 +40,7 @@ const serviceK = 2
 // pickNearestService selects a provider for one service name through the
 // shared locality selector. Callers guarantee a non-empty candidate set,
 // so the selector always yields a peer.
-func pickNearestService(snap state.Snapshot, candidates []state.ServiceInfo) state.ServiceInfo {
+func pickNearestService(snap state.Snapshot, costs route.Costs, candidates []state.ServiceInfo) state.ServiceInfo {
 	byPeer := make(map[types.PeerKey]state.ServiceInfo, len(candidates))
 	peers := make([]types.PeerKey, 0, len(candidates))
 	for _, c := range candidates {
@@ -49,7 +49,7 @@ func pickNearestService(snap state.Snapshot, candidates []state.ServiceInfo) sta
 		}
 		byPeer[c.Peer] = c
 	}
-	pick, _ := route.PowerOfTwo(snap, snap.LocalID, peers, serviceK, nil,
+	pick, _ := route.NewSelector(snap, snap.LocalID, costs).PowerOfTwo(peers, serviceK, nil,
 		rand.IntN) //nolint:gosec
 	return byPeer[pick]
 }

@@ -1,9 +1,10 @@
 // Copyright 2026 Sam Lock
 // SPDX-License-Identifier: Apache-2.0
 
-// Package route resolves the holder set for a Fact and selects a holder
-// by locality, keeping authority and source orthogonal. The locality
-// metric and selection policy are lifted verbatim from placement
-// dispatch so blob fetch and workload routing agree on what "nearest"
-// means.
+// Package route selects a holder for a Fact by locality, keeping
+// authority and source orthogonal. One Selector carries the locality
+// metric and selection policy so blob fetch and workload routing agree
+// on what "nearest" means: it prefers the routing layer's path cost to
+// reach a holder (which prices in relay detours) and falls back to
+// straight-line Vivaldi distance when the router has no route.
 package route
