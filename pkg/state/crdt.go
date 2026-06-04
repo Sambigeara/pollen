@@ -620,13 +620,6 @@ func (s *store) tombstoneStaleAttrsLocked(rec *nodeRecord) {
 		key, _ := getAttrKey(ev)
 		rec.put(key, ev)
 	}
-	for key := range rec.log {
-		if key.kind == attrReachability {
-			rec.maxCounter++
-			ev := &statev1.GossipEvent{PeerId: s.localID.String(), Counter: rec.maxCounter, Deleted: true, Change: &statev1.GossipEvent_Reachability{Reachability: &statev1.ReachabilityChange{PeerId: key.peer.String()}}}
-			rec.put(key, ev)
-		}
-	}
 }
 
 const (
