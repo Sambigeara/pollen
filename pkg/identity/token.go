@@ -19,9 +19,8 @@ import (
 
 // IssueGrantToken bundles a freshly-minted grant with bootstrap peers
 // and the cluster root pub into a short-lived, issuer-signed envelope a
-// joiner redeems. Replaces the member-cert JoinToken: the joiner
-// persists the grant and self-mints sessions, never round-tripping the
-// issuer again.
+// joiner redeems. The joiner persists the grant and self-mints
+// sessions, never round-tripping the issuer again.
 func IssueGrantToken(
 	issuerPriv ed25519.PrivateKey,
 	grant *identityv1.Grant,
@@ -128,10 +127,9 @@ func DecodeGrantToken(s string) (*identityv1.GrantToken, error) {
 // EnrollGrant verifies a grant token for the local node and persists
 // the grant + root pub as the node's durable credential. First-time
 // enrol and same-subject re-enrol (e.g., an admin-issued upgrade token
-// redeemed by an already-joined node) funnel through the same path:
-// the on-disk identity key is reused, the new grant is adopted via
-// AdoptGrant, and the durable record on disk is rewritten as part of
-// that adoption.
+// redeemed by an already-joined node) funnel through the same path: the
+// on-disk identity key is reused and the new grant adopted via
+// AdoptGrant.
 func EnrollGrant(identityDir string, nodePub ed25519.PublicKey, token *identityv1.GrantToken, now time.Time) (*Credentials, error) {
 	verified, err := VerifyGrantToken(token, nodePub, now)
 	if err != nil {

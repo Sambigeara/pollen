@@ -278,10 +278,9 @@ func (h *gatewayHandler) handleNamedInvoke(w http.ResponseWriter, r *http.Reques
 		http.NotFound(w, r)
 		return
 	}
-	// Carry the resolved (authority, name) onto the dispatch hop so a
-	// remote edge that claims the workload authorises this exact
-	// publication, not whichever co-publisher of identical bytes wins
-	// the deduped artefact view.
+	// Carry the resolved (authority, name) onto the dispatch hop so a remote
+	// edge authorises this exact publication, not the deduped artefact winner
+	// (see Snapshot.SpecsAll).
 	r = r.WithContext(admission.WithInvokedPublication(r.Context(), &admission.Publication{AuthorityPub: authority.Bytes(), Name: name}))
 	h.callWorkload(w, r, hash, fn)
 }

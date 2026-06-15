@@ -944,13 +944,11 @@ func (s *store) RevokeOwnSpecs(retain *identityv1.Capabilities) ([]Event, error)
 			}
 		}
 	}
-	// Iterate the per-(authority,name) publication sources, not the
-	// deduped content-addressed maps: when a colliding remote tenant
-	// wins the dedupe, snap.Specs[hash].Publisher is that tenant, so a
-	// deduped-map scan would skip this node's own spec and a
-	// cap-downgraded principal would keep a live gossiped spec it has
-	// lost authority to publish. The delete helpers resolve the local
-	// (authority, name) register by content id.
+	// Iterate the per-(authority, name) publication sources, not the deduped
+	// maps (see the SpecsAll field doc): under a colliding remote tenant a
+	// deduped-map scan skips this node's own spec, so a cap-downgraded
+	// principal would keep a gossiped spec it has lost authority to publish.
+	// The delete helpers resolve the local register by content id.
 	if !p.GetFunctions() {
 		for _, spec := range snap.SpecsAll {
 			if spec.Publisher == snap.LocalID {

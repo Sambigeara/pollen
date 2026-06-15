@@ -173,10 +173,8 @@ func TestAdmit(t *testing.T) {
 	})
 }
 
-// TestAdmitWrapsRejectionsAsErrRejected proves the authorise and
-// account verdicts surface through Admit as ErrRejected with their
-// reason verbatim (the control layer maps that to FailedPrecondition),
-// while the message stays byte-identical to what the daemon logs.
+// Authorise and account rejections surface through Admit as ErrRejected with
+// their reason byte-identical to what the daemon logs.
 func TestAdmitWrapsRejectionsAsErrRejected(t *testing.T) {
 	now := time.Now()
 
@@ -284,8 +282,8 @@ func TestRuntimeMethodsFailClosed(t *testing.T) {
 	}
 	// Mirror buildSnapshot: the deduped runtime view and the
 	// per-(authority, name) publication view are both populated and
-	// consistent. Invoke now reads the publication view; Fetch still
-	// reads the deduped one.
+	// consistent. Invoke reads the publication view; Fetch reads the
+	// deduped one.
 	snap := state.Snapshot{
 		Nodes: nodes(authPub, grant),
 		Specs: map[string]state.WorkloadSpecView{
@@ -337,13 +335,10 @@ func TestRuntimeMethodsFailClosed(t *testing.T) {
 	})
 }
 
-// TestInvokeHostPublicationScopedMultiPublisher locks the multi-tenant
-// correctness the publication-scoped resolve restores: two authorities
-// publish byte-identical workloads under different names and policies,
-// and the deduped artefact winner is deliberately the gated one (the
-// shape that produced the live blocker). Invoke and MayHostByHash must
-// decide against the addressed publication / the union, never the
-// deduped winner.
+// Two authorities publish byte-identical workloads under different names and
+// policies; the deduped artefact winner is the gated one. Invoke and
+// MayHostByHash must decide against the addressed publication or the union,
+// never the deduped winner.
 func TestInvokeHostPublicationScopedMultiPublisher(t *testing.T) {
 	now := time.Now()
 	rootA, aPub, aPriv, aGrant := authority(t, now, now.Add(30*24*time.Hour), nil)
@@ -365,8 +360,8 @@ func TestInvokeHostPublicationScopedMultiPublisher(t *testing.T) {
 
 	snap := state.Snapshot{
 		Nodes: map[types.PeerKey]state.NodeView{aPK: {Grant: aGrant}, bPK: {Grant: bGrant}},
-		// Deduped winner is the GATED publication: the exact shape that
-		// denied a legitimately-public publication on the live cluster.
+		// Deduped winner is the GATED publication: the shape that denied a
+		// legitimately-public publication on the live cluster.
 		Specs: map[string]state.WorkloadSpecView{
 			hash: {Fact: gatedFact, Spec: state.WorkloadSpec{Name: "secret", Hash: hash}, Publisher: bPK},
 		},
@@ -412,11 +407,9 @@ func TestInvokeHostPublicationScopedMultiPublisher(t *testing.T) {
 	})
 }
 
-// TestInvokeByTokenAuthorisesGatedWorkload locks the share-by-token fix:
-// an access token minted by a workload's publisher must authorise
-// invoking it even when the publication is GATED, mirroring FetchByToken.
-// Routing through decide(nil, ...) demanded public=true, so a `pln share`
-// URL for a gated workload returned 403 at the gateway and every hop.
+// A publisher's access token must authorise invoking its own workload even
+// when the publication is gated, mirroring FetchByToken. Routing through
+// decide(nil, ...) wrongly demanded public=true.
 func TestInvokeByTokenAuthorisesGatedWorkload(t *testing.T) {
 	now := time.Now()
 	adminPub, adminPriv := newKeyPair(t)
@@ -455,15 +448,11 @@ func TestInvokeByTokenAuthorisesGatedWorkload(t *testing.T) {
 	})
 }
 
-// TestFetchBlobPublicationScopedMultiPublisher is the blob Fetch
-// analogue of TestInvokeHostPublicationScopedMultiPublisher: two
-// authorities publish byte-identical blob bytes under different names
-// and policies. Fetch (bare-hash union) and FetchByToken (exact
-// issuer+resource) must decide over every co-publication, never an
-// arbitrary deduped-map winner. The bug bites under opposite winners
-// for the two paths, so each is locked against the adversarial one.
-// The named blob path stays exact via AllowAnonymous and is covered by
-// TestRuntimeMethodsFailClosed.
+// Blob analogue of TestInvokeHostPublicationScopedMultiPublisher. Fetch
+// (bare-hash union) and FetchByToken (exact issuer+resource) must decide
+// over every co-publication, never an arbitrary deduped-map winner. The bug
+// bites under opposite winners, so each path is locked against its own
+// adversarial winner.
 func TestFetchBlobPublicationScopedMultiPublisher(t *testing.T) {
 	now := time.Now()
 	adminPub, adminPriv := newKeyPair(t)
@@ -535,8 +524,7 @@ func TestFetchBlobPublicationScopedMultiPublisher(t *testing.T) {
 	})
 }
 
-// TestTokenBindsToIssuerGrantHorizon locks share-token revocation: the
-// token gates (issuerGrantValid) must refuse a token once the issuer's
+// The token gate (issuerGrantValid) must refuse a token once the issuer's
 // Grant has expired or been denied, not merely when the token's own TTL
 // lapses.
 func TestTokenBindsToIssuerGrantHorizon(t *testing.T) {
@@ -558,7 +546,7 @@ func TestTokenBindsToIssuerGrantHorizon(t *testing.T) {
 
 	t.Run("denied when the issuer grant has expired", func(t *testing.T) {
 		adminPub, adminPriv := newKeyPair(t)
-		bPub, bPriv, bGrant := rootedAuthority(t, adminPriv, now, now.Add(-time.Minute)) // grant past its deadline
+		bPub, bPriv, bGrant := rootedAuthority(t, adminPriv, now, now.Add(-time.Minute))
 		bPK := types.PeerKeyFromBytes(bPub)
 		g := New(adminPub, fakeStore{snap: state.Snapshot{
 			Nodes:    map[types.PeerKey]state.NodeView{bPK: {Grant: bGrant}},

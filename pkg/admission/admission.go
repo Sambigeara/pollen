@@ -26,31 +26,25 @@ import (
 
 const CallerKey = "pln.caller"
 
-// errLocalGrantUnpublished is returned when a node acts on its own
-// authority before its Grant has gossiped. MayPublish and
-// resolveAndVerify share this one sentinel so the bootstrap-window rule
-// has a single owner.
+// errLocalGrantUnpublished marks a node acting on its own authority before
+// its Grant has gossiped. MayPublish and resolveAndVerify share this one
+// sentinel.
 var errLocalGrantUnpublished = errors.New("local grant is not yet published")
 
-// ErrRejected wraps an authorise- or account-stage verdict so the
-// control layer can surface the operator-facing reason as
-// FailedPrecondition instead of a generic Internal, exactly as it does
-// for placement.ErrPublishDenied. Its text is "admission", so a wrapped
-// error reads "admission: <reason>". authenticate-stage failures are
-// deliberately not wrapped: they are integrity faults, not
-// authorisation verdicts, and stay opaque. Runtime decisions
-// (Invoke/Fetch/Connect) likewise do not wrap with this; they return
-// opaque wasm.ErrTargetNotFound to avoid leaking admission state to
-// remote callers.
+// ErrRejected wraps an authorise- or account-stage verdict so the control
+// layer surfaces the operator-facing reason as FailedPrecondition.
+// authenticate-stage failures stay opaque: they are integrity faults, not
+// authorisation verdicts. Runtime decisions (Invoke/Fetch/Connect) also do
+// not wrap; they return opaque wasm.ErrTargetNotFound so admission state
+// does not leak to remote callers.
 var ErrRejected = errors.New("admission")
 
 type accessTokenCtxKey struct{}
 
-// WithAccessToken attaches an AccessToken to ctx so downstream
-// decisions can substitute token-based authorisation for grant-based
-// authorisation. The anonymous HTTP gateway sets the token here; the
-// peer cert path leaves the ctx untouched and falls through to the
-// existing checks.
+// WithAccessToken attaches an AccessToken so downstream decisions use
+// token-based instead of grant-based authorisation. The anonymous HTTP
+// gateway sets it; the peer cert path leaves ctx untouched and falls
+// through to the grant checks.
 func WithAccessToken(ctx context.Context, token *admissionv1.AccessToken) context.Context {
 	if token == nil {
 		return ctx
@@ -58,19 +52,15 @@ func WithAccessToken(ctx context.Context, token *admissionv1.AccessToken) contex
 	return context.WithValue(ctx, accessTokenCtxKey{}, token)
 }
 
-// AccessTokenFromContext returns the AccessToken set by WithAccessToken,
-// if any.
 func AccessTokenFromContext(ctx context.Context) (*admissionv1.AccessToken, bool) {
 	t, ok := ctx.Value(accessTokenCtxKey{}).(*admissionv1.AccessToken)
 	return t, ok && t != nil
 }
 
-// Publication selects the (authority, name) publication a runtime
-// decision authorises against. Policy is a per-publication property:
-// two authorities can publish byte-identical content under different
-// policies. Resolving through this selector rather than the deduped
-// artefact map is what stops a co-publisher of identical bytes masking
-// or satisfying another publication's policy.
+// Publication selects the (authority, name) publication a runtime decision
+// authorises against. Policy is per-publication, so resolving through this
+// selector rather than the deduped artefact map stops a co-publisher of
+// identical bytes masking or satisfying another publication's policy.
 type Publication struct {
 	Name         string
 	AuthorityPub []byte
@@ -79,13 +69,11 @@ type Publication struct {
 type invokedPubCtxKey struct{}
 
 // WithInvokedPublication records the (authority, name) publication the
-// caller addressed so a remote dispatch hop authorises the same
-// publication the gateway resolved, mirroring WithAccessToken. The
-// selector is unauthenticated and only narrows the decision: the hop
-// re-resolves it against its own gossiped state and binds it to the
+// caller addressed so a remote dispatch hop authorises the same publication
+// the gateway resolved. The selector is unauthenticated and only narrows:
+// the hop re-resolves it against its own gossiped state and binds it to the
 // dispatched content hash, so a forged selector can only name a real
-// publication whose own policy is then enforced. A nil selector or
-// empty fields leave the context untouched.
+// publication whose own policy is then enforced.
 func WithInvokedPublication(ctx context.Context, pub *Publication) context.Context {
 	if pub == nil || len(pub.AuthorityPub) == 0 || pub.Name == "" {
 		return ctx
@@ -93,18 +81,15 @@ func WithInvokedPublication(ctx context.Context, pub *Publication) context.Conte
 	return context.WithValue(ctx, invokedPubCtxKey{}, pub)
 }
 
-// InvokedPublicationFromContext returns the publication set by
-// WithInvokedPublication, if any.
 func InvokedPublicationFromContext(ctx context.Context) (*Publication, bool) {
 	p, ok := ctx.Value(invokedPubCtxKey{}).(*Publication)
 	return p, ok && p != nil
 }
 
-// PublicationFromToken derives the (authority, name) publication an
-// access token authorises: the issuer is the publishing authority and
-// the token's seed resource carries the logical name. Returns false for
-// a non-seed token (e.g. a blob token presented to the fn gateway) or a
-// token with no issuer.
+// PublicationFromToken derives the publication an access token authorises:
+// the issuer is the publishing authority and the token's seed resource
+// carries the name. Returns false for a non-seed token or one with no
+// issuer.
 func PublicationFromToken(token *admissionv1.AccessToken) (*Publication, bool) {
 	seed := token.GetClaims().GetResource().GetSeed()
 	if seed == nil {
@@ -121,19 +106,18 @@ type StateReader interface {
 	Snapshot() state.Snapshot
 }
 
-// Pipeline runs the four-stage admission check (Admit:
-// authenticate->authorise->account) and the runtime decisions (Invoke,
-// Fetch, Connect) against a single store.
+// Pipeline runs the Admit write check (authenticate, authorise, account)
+// and the runtime decisions (Invoke, Fetch, Connect) against a single
+// store.
 //
 // Trust contract: runtime decisions trust Facts pulled from the store
-// without re-verifying their signatures. This is sound because every
-// write into the CRDT log first passes the integrity check for its
-// kind: spec changes through this Admit pipeline (gossip, presigned,
-// local self-signed), grants through the chain + subject-PoP verify,
-// blob wrappings through their authority's grant-bound signature, or
-// own-disk replay for the restore path. Any new write path must
-// satisfy the kind's check, otherwise runtime decisions can be
-// poisoned with attacker-supplied policy.
+// without re-verifying their signatures. This is sound because every write
+// into the CRDT log first passes the integrity check for its kind: spec
+// changes through Admit, grants through the chain plus subject-PoP verify,
+// blob wrappings through their authority's grant-bound signature, own-disk
+// replay for the restore path. Any new write path must satisfy the kind's
+// check, otherwise runtime decisions can be poisoned with attacker-supplied
+// policy.
 type Pipeline struct {
 	store     StateReader
 	manifests state.ManifestPaths
@@ -148,23 +132,18 @@ func New(rootPub []byte, store StateReader) *Pipeline {
 }
 
 // SetManifestPaths wires a static-manifest reader so Fetch can authorise
-// blobs nested inside a published static site. Without it, only direct
-// references (workload hash, blob digest, manifest digest itself) are
-// authorised: nested file blobs are denied, breaking cross-node static
-// replication. Call once after the blobs service is constructed.
+// blobs nested inside a published static site. Without it, nested file
+// blobs are denied, breaking cross-node static replication. Call once after
+// the blobs service is constructed.
 func (p *Pipeline) SetManifestPaths(mp state.ManifestPaths) {
 	p.manifests = mp
 }
 
-// Admit is the four-stage Fact pipeline run on every write into the
-// CRDT log (gossip-received, presigned wire, and local self-signed).
-// authenticate proves the Fact and resolves the authority's Grant;
-// authorise checks the per-kind publish capability and the publisher's
-// own policy attributes; AccountCheck enforces the per-Principal count
-// budget; admit (the CRDT merge) is the caller's mutateLocal. One
-// snapshot is taken and threaded through every stage: Snapshot() is a
-// lock-free atomic load, so this is safe even though Admit runs as the
-// store's validate hook under its lock.
+// Admit is the Fact pipeline run on every write into the CRDT log
+// (gossip-received, presigned wire, local self-signed): authenticate,
+// authorise, then AccountCheck. One snapshot is threaded through every
+// stage: Snapshot() is a lock-free atomic load, so this is safe even though
+// Admit runs as the store's validate hook under its lock.
 func (p *Pipeline) Admit(sc *statev1.SpecChange) error {
 	snap := p.store.Snapshot()
 	authGrant, err := p.authenticate(snap, sc)
@@ -181,19 +160,13 @@ func (p *Pipeline) Admit(sc *statev1.SpecChange) error {
 }
 
 // Invoke authorises caller to invoke the workload at hash. When pub is
-// non-nil the caller addressed one specific (authority, name)
-// publication (an anonymous named URL, an access token, or a name
-// resolved within the caller's own authority): the decision is against
-// exactly that publication's Fact, and the publication's content hash
-// must equal hash so a permissive policy cannot be paired with other
-// bytes. When pub is nil (a downstream relay hop, or a bare-hash
-// invoke that names no publication) the decision is a union over every
-// publication of these bytes, mirroring Fetch: admitted if any one
-// allows the caller. A nil caller is admitted only by a public policy;
-// in that case the returned CallerInfo is empty, mirroring the
-// InvokeByToken path. Mesh-peer callers resolve their grant from
-// snap.Nodes via LookupGrant, wire-mode callers pass their
-// session-bound grant directly.
+// non-nil the caller addressed one specific (authority, name) publication:
+// the decision is against that publication's Fact and its content hash must
+// equal hash, so a permissive policy cannot be paired with other bytes.
+// When pub is nil (a relay hop or a bare-hash invoke) the decision unions
+// every publication of these bytes, mirroring Fetch: admitted if any one
+// allows the caller. A nil caller is admitted only by a public policy,
+// returning empty CallerInfo.
 func (p *Pipeline) Invoke(caller *identityv1.Grant, pub *Publication, hash string) (wasm.CallerInfo, error) {
 	snap := p.store.Snapshot()
 	var facts []*factv1.Fact
@@ -226,14 +199,12 @@ func (p *Pipeline) Invoke(caller *identityv1.Grant, pub *Publication, hash strin
 	return wasm.CallerInfo{}, wasm.ErrTargetNotFound
 }
 
-// Fetch authorises caller to read the CAS object at hash. The same
-// stream type carries workload binaries, named-blob payloads, static
-// manifests, and the file blobs nested inside those manifests, so the
-// lookup unions every referencing Fact and admits the caller if any one
-// of them allows the grant. Without unioning, a non-publisher replica
-// can never fetch the bytes from the publisher and stays stuck in a
-// fetch-EOF loop. A nil caller is admitted only when at least one
-// referencing Fact has policy.public=true.
+// Fetch authorises caller to read the CAS object at hash. One stream type
+// carries workloads, blobs, static manifests, and their nested file blobs,
+// so the lookup unions every referencing Fact and admits if any one allows
+// the grant. Without unioning, a non-publisher replica can never fetch from
+// the publisher and stays stuck in a fetch-EOF loop. A nil caller is
+// admitted only when a referencing Fact has policy.public=true.
 func (p *Pipeline) Fetch(caller *identityv1.Grant, hash string) error {
 	snap := p.store.Snapshot()
 	facts := snap.BlobEntitlements(hash, p.manifests)
@@ -261,9 +232,8 @@ func (p *Pipeline) Connect(caller *identityv1.Grant, hostPeer types.PeerKey, por
 	if !ok {
 		return wasm.ErrTargetNotFound
 	}
-	// Union over every service on this port (mirroring Invoke/Fetch): admit if
-	// any one allows the caller, so the verdict can't depend on map order when
-	// two services share a port.
+	// Union over every service on this port so the verdict can't depend on map
+	// order when two services share a port.
 	now := time.Now()
 	denied := snap.DenyChecker()
 	for _, svc := range target.Services {
@@ -277,11 +247,10 @@ func (p *Pipeline) Connect(caller *identityv1.Grant, hostPeer types.PeerKey, por
 	return wasm.ErrTargetNotFound
 }
 
-// LookupGrant resolves a mesh peer's grant via the gossiped snapshot.
-// Use it on transport-authenticated inbound paths (mesh streams) where
-// the only thing the caller can present is their peer key; wire-mode
-// RPC paths already carry the grant in the request context and should
-// pass it directly.
+// LookupGrant resolves a mesh peer's grant from the gossiped snapshot. Use
+// it on transport-authenticated mesh streams where the caller can present
+// only their peer key; wire-mode RPC paths carry the grant in the request
+// context and pass it directly.
 func (p *Pipeline) LookupGrant(peerKey types.PeerKey) *identityv1.Grant {
 	snap := p.store.Snapshot()
 	nv, ok := snap.Nodes[peerKey]
@@ -291,11 +260,10 @@ func (p *Pipeline) LookupGrant(peerKey types.PeerKey) *identityv1.Grant {
 	return nv.Grant
 }
 
-// issuerGrantValid binds an access token to its issuer's live authority:
-// VerifyAccessToken checks only the token's own signature and expiry, so
-// without this an expired or denied publisher's `pln share` URLs would
-// keep serving for the token's full TTL. Fail-closed: an unresolved issuer
-// grant denies.
+// issuerGrantValid binds an access token to its issuer's live authority.
+// VerifyAccessToken checks only signature and expiry, so without this an
+// expired or denied publisher's share URLs would keep serving for the
+// token's full TTL. An unresolved issuer grant denies.
 func (p *Pipeline) issuerGrantValid(snap state.Snapshot, issuer []byte) bool {
 	grant := snap.GrantFor(issuer)
 	if grant == nil {
@@ -304,11 +272,10 @@ func (p *Pipeline) issuerGrantValid(snap state.Snapshot, issuer []byte) bool {
 	return identity.CheckGrant(grant, p.rootPub, time.Now(), issuer, snap.DenyChecker()).Status.Valid()
 }
 
-// FetchByToken authorises an anonymous caller holding token to read the
-// CAS object at hash. The token must verify (signature, expiry), the
-// issuer's grant must still be live (issuerGrantValid), and the token's
-// resource must correspond to a Fact whose authority signed the token and
-// whose entitlements cover hash.
+// FetchByToken authorises an anonymous token holder to read the CAS object
+// at hash: the token must verify, the issuer's grant must still be live,
+// and the token's resource must match a Fact whose authority signed the
+// token and whose entitlements cover hash.
 func (p *Pipeline) FetchByToken(token *admissionv1.AccessToken, hash string) error {
 	if err := auth.VerifyAccessToken(token, time.Now()); err != nil {
 		return wasm.ErrTargetNotFound
@@ -331,10 +298,9 @@ func (p *Pipeline) FetchByToken(token *admissionv1.AccessToken, hash string) err
 	return wasm.ErrTargetNotFound
 }
 
-// InvokeByToken authorises an anonymous caller holding token to invoke
-// the workload at hash. Same shape as Invoke but the identity comes
-// from the token rather than a peer grant; the returned CallerInfo has
-// no attributes since anonymous callers carry no grant.
+// InvokeByToken authorises an anonymous token holder to invoke the workload
+// at hash. Same shape as Invoke, but the identity comes from the token
+// rather than a peer grant.
 func (p *Pipeline) InvokeByToken(token *admissionv1.AccessToken, hash string) (wasm.CallerInfo, error) {
 	if err := auth.VerifyAccessToken(token, time.Now()); err != nil {
 		return wasm.CallerInfo{}, wasm.ErrTargetNotFound
@@ -347,25 +313,22 @@ func (p *Pipeline) InvokeByToken(token *admissionv1.AccessToken, hash string) (w
 	if !p.issuerGrantValid(snap, token.GetClaims().GetIssuerPub()) {
 		return wasm.CallerInfo{}, wasm.ErrTargetNotFound
 	}
-	// The token is itself the authorisation: its issuer is the publishing
-	// authority and its seed resource the name. publicationFact resolves
-	// that exact (authority, name) publication and binds it to hash, so a
-	// signature-verified token admits the invoke regardless of the spec's
-	// own policy, mirroring FetchByToken. Routing through decide(nil, ...)
-	// instead would wrongly demand public=true and break `pln share` of a
-	// gated workload. The caller is anonymous and carries no attributes.
+	// publicationFact resolves the token's exact (authority, name)
+	// publication and binds it to hash, so a signature-verified token admits
+	// the invoke regardless of the spec's own policy, mirroring FetchByToken.
+	// Routing through decide(nil, ...) would wrongly demand public=true and
+	// break `pln share` of a gated workload.
 	if _, ok := publicationFact(snap, *pub, hash); !ok {
 		return wasm.CallerInfo{}, wasm.ErrTargetNotFound
 	}
 	return wasm.CallerInfo{}, nil
 }
 
-// MayHost authorises hostGrant to host the workload described by the
-// single Fact f. Hosting includes loopback invocation, so the policy
-// must hold against the host's own grant. Callers that hold one
-// specific referencing Fact (blobs unions BlobEntitlements itself) use
-// this; workload hosting, where the bytes are shared across
-// publications, goes through MayHostByHash.
+// MayHost authorises hostGrant to host the workload described by Fact f.
+// Hosting includes loopback invocation, so the policy must hold against the
+// host's own grant. Callers that hold one specific referencing Fact use
+// this; workload hosting, where bytes are shared across publications, goes
+// through MayHostByHash.
 func (p *Pipeline) MayHost(hostGrant *identityv1.Grant, f *factv1.Fact) error {
 	if hostGrant == nil || f == nil {
 		return wasm.ErrTargetNotFound
@@ -373,13 +336,11 @@ func (p *Pipeline) MayHost(hostGrant *identityv1.Grant, f *factv1.Fact) error {
 	return p.decide(hostGrant, f, time.Now(), p.store.Snapshot().DenyChecker())
 }
 
-// MayHostByHash authorises hostGrant to host the bytes at hash. Hosting
-// is artefact-shared: one module serves every publication of identical
-// bytes, so the decision is a union over WorkloadEntitlements(hash):
-// the host may run the bytes if any referencing publication's policy
-// admits it, mirroring blobs.MayStore over BlobEntitlements. A
-// co-publisher's stricter policy therefore cannot suppress hosting of a
-// permissive publication of the same bytes.
+// MayHostByHash authorises hostGrant to host the bytes at hash. Hosting is
+// artefact-shared: one module serves every publication of identical bytes,
+// so the decision unions over WorkloadEntitlements(hash) and admits if any
+// referencing policy allows it. A co-publisher's stricter policy therefore
+// cannot suppress hosting of a permissive publication of the same bytes.
 func (p *Pipeline) MayHostByHash(hostGrant *identityv1.Grant, hash string) error {
 	if hostGrant == nil {
 		return wasm.ErrTargetNotFound
@@ -399,16 +360,13 @@ func (p *Pipeline) MayHostByHash(hostGrant *identityv1.Grant, hash string) error
 	return wasm.ErrTargetNotFound
 }
 
-// MayPublish reports whether grant satisfies policy at publish time.
-// The returned error is descriptive so the local publisher can see
-// exactly why their grant doesn't qualify. The other pipeline methods
-// (Invoke, Fetch, Connect, MayHost) return opaque ErrTargetNotFound
-// to avoid leaking admission state to remote callers; MayPublish
-// runs against the local grant only, so descriptive errors are safe.
+// MayPublish reports whether grant satisfies policy at publish time. It runs
+// against the local grant only, so unlike the runtime methods it returns
+// descriptive errors telling the publisher why their grant does not qualify.
 //
-// A nil policy is always permitted, even when grant is nil, so that
-// publishes during the bootstrap window (before the local grant lands
-// in gossip) keep working.
+// A nil policy is always permitted, even when grant is nil, so publishes
+// during the bootstrap window (before the local grant lands in gossip) keep
+// working.
 func (p *Pipeline) MayPublish(grant *identityv1.Grant, policy *admissionv1.Predicate) error {
 	if policy == nil {
 		return nil
@@ -422,13 +380,10 @@ func (p *Pipeline) MayPublish(grant *identityv1.Grant, policy *admissionv1.Predi
 	return checkPolicyClauses(grant, policy)
 }
 
-// decide authorises grant against f's policy. A nil grant (anonymous
-// caller) is admitted only when the spec's policy has public=true;
-// otherwise the grant is held to the durable-authority rule (chain to
-// root, within horizon, not denied) and its attributes are matched
-// against the policy's inline clauses. Public also short-circuits
-// grant-bearing callers: anyone reaching a public spec is admitted
-// regardless of their attribute claims.
+// decide authorises grant against f's policy. A public policy admits anyone,
+// grant or not. Otherwise a nil grant is denied, and a grant is held to the
+// durable-authority rule (chains to root, within horizon, not denied) with
+// its attributes matched against the policy's inline clauses.
 func (p *Pipeline) decide(grant *identityv1.Grant, f *factv1.Fact, now time.Time, denied identity.DenyChecker) error {
 	policy := f.GetPolicy()
 	if policy.GetPublic() {
@@ -446,10 +401,6 @@ func (p *Pipeline) decide(grant *identityv1.Grant, f *factv1.Fact, now time.Time
 	return nil
 }
 
-// checkPolicyClauses returns nil if grant satisfies policy, or a
-// descriptive error otherwise. A nil or public policy is trivially
-// satisfied; an inline policy is matched clause by clause against the
-// grant's attributes.
 func checkPolicyClauses(grant *identityv1.Grant, policy *admissionv1.Predicate) error {
 	if policy == nil {
 		return nil
@@ -485,9 +436,6 @@ func grantContext(grant *identityv1.Grant) map[string]string {
 	return ctx
 }
 
-// publicationFact resolves the Fact for the (authority, name)
-// publication pub via SpecByName, requiring its content hash to equal
-// hash.
 func publicationFact(snap state.Snapshot, pub Publication, hash string) (*factv1.Fact, bool) {
 	_, sv, ok := snap.SpecByName(pub.Name, types.PeerKeyFromBytes(pub.AuthorityPub))
 	if !ok || sv.Fact == nil || sv.Spec.Hash != hash {
@@ -496,10 +444,9 @@ func publicationFact(snap state.Snapshot, pub Publication, hash string) (*factv1
 	return sv.Fact, true
 }
 
-// AllowAnonymous reports whether an anonymous caller (no grant) may
-// access a spec described by f. Used by the HTTP gateway's canonical
-// URL handlers once they have resolved (authority-slug, resource-name)
-// against the snapshot.
+// AllowAnonymous reports whether an anonymous caller (no grant) may access
+// the spec described by f. Used by the HTTP gateway's canonical URL handlers
+// after they resolve (authority-slug, resource-name) against the snapshot.
 func (p *Pipeline) AllowAnonymous(f *factv1.Fact) error {
 	return p.decide(nil, f, time.Now(), p.store.Snapshot().DenyChecker())
 }

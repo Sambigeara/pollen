@@ -21,10 +21,10 @@ import (
 
 // DefaultGrantDeadlineTTL is the horizon callers (join/bootstrap and
 // membership) apply to delegated grants when the issuer specifies none.
-// This package does not impose it: IssueGrant leaves a zero deadline as
-// no-horizon and clamps only to the parent. Past the applied horizon a
-// grant can no longer mint sessions or vouch for facts and a fresh join
-// is required. Admin/root grants carry no horizon (zero).
+// IssueGrant itself imposes nothing: a zero deadline is no-horizon,
+// clamped only to the parent. Past the horizon a grant can no longer
+// mint sessions or vouch for facts and a fresh join is required;
+// admin/root grants carry no horizon.
 const DefaultGrantDeadlineTTL = 30 * 24 * time.Hour
 
 // renewLeadWindow is how far before its deadline a grant becomes due
@@ -182,11 +182,9 @@ func IssueGrant(
 // applyParent clamps a child grant's horizon to its parent's and
 // enforces that the signer owns the parent and is not granting beyond
 // its own authority. These are issuance-time conveniences that fail
-// early with a clear error; they are not the security boundary.
-// verifyGrantChain re-enforces the same subset and horizon rules on
-// every link and re-anchors the chain at the pinned root, so a caller
-// passing an unverified or forged parent here cannot produce a grant
-// that verifies.
+// early with a clear error, not the security boundary: verifyGrantChain
+// re-enforces the same rules on every link and re-anchors at the pinned
+// root, so a forged parent here cannot produce a grant that verifies.
 func applyParent(
 	parent *identityv1.Grant,
 	signerPub ed25519.PublicKey,
@@ -484,10 +482,9 @@ func verifyGrantChain(grant *identityv1.Grant) (ed25519.PublicKey, error) {
 }
 
 // ChainSubjectPubs returns every pub authoritatively above (and
-// including) the leaf in this grant's delegation lineage. Walks every
-// grant from leaf to root, collecting each grant's subject_pub plus the
-// topmost issuer_pub. The topmost issuer is the root signing key. For
-// fully-chained grants it duplicates the root's subject; for short
+// including) the leaf in this grant's delegation lineage: each grant's
+// subject_pub plus the topmost issuer, which is the root signing key.
+// For fully-chained grants this duplicates the root's subject; for short
 // chains it surfaces root authority explicitly so root-issued denies
 // remain authorisable.
 func ChainSubjectPubs(grant *identityv1.Grant) [][]byte {

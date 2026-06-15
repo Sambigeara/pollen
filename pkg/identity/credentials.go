@@ -60,14 +60,13 @@ func (c *Credentials) Grant() *identityv1.Grant {
 
 // AdoptGrant validates g and installs it as the live grant, clearing
 // the cached session and rewriting the on-disk copy under one lock so
-// readers never observe a half-committed state. g must chain to our
-// root, be within its horizon, carry our own signing key as its
-// subject, and not be denied; otherwise the current grant is kept and
-// an error returned. The same entry point covers first-time enrol,
-// proactive renewal and admin-initiated upgrade. denied may be nil
-// when the issuing server has already enforced the denylist and the
-// caller has no local cluster view (wire client); the mesh handler
-// supplies a real DenyChecker.
+// readers never observe a half-committed state. g must pass CheckGrant
+// against our root with our own signing key as the expected subject;
+// otherwise the current grant is kept and an error returned. The same
+// entry point covers first-time enrol, proactive renewal and
+// admin-initiated upgrade. denied may be nil when the issuing server
+// has already enforced the denylist and the caller has no local cluster
+// view (wire client); the mesh handler supplies a real DenyChecker.
 func (c *Credentials) AdoptGrant(g *identityv1.Grant, now time.Time, denied DenyChecker) error {
 	chk := CheckGrant(g, c.rootPub, now, c.SubjectPub(), denied)
 	if !chk.Status.Valid() {
@@ -233,11 +232,10 @@ func LoadCredentials(identityDir string) (*Credentials, error) {
 	}, nil
 }
 
-// SaveCredentials writes c's root pub and grant to identityDir. Useful
-// for callers that build a Credentials directly (tests, integration
-// harnesses) and want the durable record laid down once; the live
-// adopt and refresh path goes through AdoptGrant, which calls the
-// underlying writeCredentials helper while holding c.mu.
+// SaveCredentials writes c's root pub and grant to identityDir, for
+// callers that build a Credentials directly (tests, harnesses) and want
+// the durable record laid down once. The live adopt and refresh path
+// goes through AdoptGrant.
 func SaveCredentials(identityDir string, c *Credentials) error {
 	c.mu.RLock()
 	defer c.mu.RUnlock()

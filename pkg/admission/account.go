@@ -12,15 +12,14 @@ import (
 	"github.com/sambigeara/pollen/pkg/state"
 )
 
-// AccountCheck enforces the authority's per-Principal count budget for
-// the resource f attests. It is pure over the snapshot (no I/O, no
-// locks), so it runs safely inside the admission pipeline under the
-// store's mutate-validate lock.
+// AccountCheck enforces the authority's per-Principal count budget. It is
+// pure over the snapshot (no I/O, no locks), so it runs safely inside the
+// pipeline under the store's mutate-validate lock.
 //
-// A zero Budget field means no limit for that dimension (the
-// UnlimitedBudget contract). Re-admitting a resource the authority
-// already holds consumes no slot, so gossip replay of an accepted spec
-// stays admissible. Services carry no budget dimension.
+// A zero Budget field means no limit for that dimension (the UnlimitedBudget
+// contract). Re-admitting a resource the authority already holds consumes no
+// slot, so gossip replay of an accepted spec stays admissible. Services carry
+// no budget dimension.
 func AccountCheck(snap state.Snapshot, f *factv1.Fact, authGrant *identityv1.Grant) error {
 	budget := authGrant.GetClaims().GetBudget()
 	usage := snap.UsageByAuthority(f.GetAuthorityPub())

@@ -252,11 +252,9 @@ func (s *Service) run(ctx context.Context) {
 
 func (s *Service) reconcile(ctx context.Context) {
 	snap := s.store.Snapshot()
-	// Iterate the per-publisher view, not the deduped one. When two
-	// publishers seed sites under the same name, the deduped view
-	// drops one of them and the losing publisher's bytes never
-	// replicate; the per-publisher view keeps every (publisher, name)
-	// pair so both tenants converge.
+	// Iterate the per-publisher StaticSpecsAll, not the deduped StaticSpecs
+	// (see Snapshot.SpecsAll): the deduped view would drop a co-named
+	// publisher, so its bytes would never replicate.
 	for _, sv := range snap.StaticSpecsAll {
 		if err := s.ensureReplicated(ctx, snap, sv.Spec, sv.Publisher); err != nil {
 			s.log.Debugw("static replication pending", "name", sv.Spec.Name, "publisher", sv.Publisher.Short(), "err", err)

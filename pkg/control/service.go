@@ -1941,11 +1941,9 @@ func (s *Service) fail(err error, msg string, kv ...any) error {
 	if errors.Is(err, state.ErrTombstoneNoLiveSpec) || errors.Is(err, state.ErrUnseedNotAuthored) {
 		return status.Error(codes.NotFound, "no live spec by this publisher matches; nothing to unseed")
 	}
-	// An admission authorise/account verdict is an operator-actionable
-	// client error, not a server fault: surface the reason verbatim as
-	// FailedPrecondition, exactly as the placement.ErrPublishDenied
-	// branch does, rather than logging it and returning a generic
-	// Internal.
+	// admission.ErrRejected is an operator-actionable client error: surface
+	// its reason as FailedPrecondition (see admission.ErrRejected), not a
+	// generic Internal.
 	if errors.Is(err, admission.ErrRejected) {
 		return status.Error(codes.FailedPrecondition, err.Error())
 	}

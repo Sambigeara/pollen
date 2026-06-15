@@ -12,10 +12,10 @@ import (
 	"github.com/sambigeara/pollen/pkg/types"
 )
 
-// Principal is the resolved authority behind a request: who the subject
-// is, what their grant lets them do, their budget, and the horizon past
-// which the grant no longer vouches for them. It is the single resolved
-// identity the rest of the system reads; control scoping, the read lens
+// Principal is the resolved authority behind a request: the subject and
+// the grant-derived capabilities, budget and horizon it acts under. It
+// is the single resolved identity the rest of the system reads; control
+// scoping, the read lens
 // and the admission pipeline all project from one of these rather than
 // each re-interpreting a raw Grant. It is a derived aggregate, not a
 // wire type: the Grant is the gossiped record.

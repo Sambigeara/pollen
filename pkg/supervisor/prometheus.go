@@ -140,9 +140,8 @@ func (c *stateCollector) Collect(ch chan<- prometheus.Metric) {
 	}
 
 	// workloadInfo is the publication-identity plane: one series per
-	// (authority, name) over the un-deduped source, so byte-identical
-	// workloads from different tenants are each visible rather than
-	// collapsing to a single content-hash entry.
+	// (authority, name) over the un-deduped SpecsAll, so each tenant's
+	// workload stays visible (see Snapshot.SpecsAll).
 	for _, sv := range snap.SpecsAll {
 		name := sv.Spec.Name
 		if name == "" {

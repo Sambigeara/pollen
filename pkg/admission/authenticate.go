@@ -19,18 +19,15 @@ import (
 
 // authenticate proves the Fact and resolves the authority's Grant.
 //
-// The authority Grant is sourced by origin. A Fact whose authority is
-// this node is locally self-signed: its Grant may not have gossiped
-// yet, so it resolves from snap.LocalGrant() and inherits MayPublish's
-// bootstrap tolerance (a nil policy before the local Grant is published
-// is permitted; a non-nil policy is not). Every other Fact (gossip
-// relay, presigned wire publish whose authority is the tenant) resolves
-// the authority Grant from cluster state and must verify against it.
+// The authority Grant is sourced by origin. A Fact whose authority is this
+// node is self-signed and its Grant may not have gossiped yet, so it
+// resolves from snap.LocalGrant() and inherits MayPublish's bootstrap
+// tolerance. Every other Fact resolves the authority Grant from cluster
+// state and must verify against it.
 //
 // The returned Grant is nil only in the tolerated bootstrap window;
-// authorise and AccountCheck both treat a nil authority Grant as the
-// unrestricted bootstrap case, consistent with authenticate permitting
-// it here.
+// authorise and AccountCheck both treat a nil authority Grant as
+// unrestricted.
 func (p *Pipeline) authenticate(snap state.Snapshot, sc *statev1.SpecChange) (*identityv1.Grant, error) {
 	body, expected, err := decodeSpecChange(sc)
 	if err != nil {
@@ -49,18 +46,14 @@ func (p *Pipeline) authenticate(snap state.Snapshot, sc *statev1.SpecChange) (*i
 		return nil, err
 	}
 
-	// A spec that carries both public=true and inline clauses looks
-	// gated to a casual reader but admits anyone at runtime (decide
-	// short-circuits on public). Rejecting it here closes the door
-	// against tampered or hand-crafted facts.
+	// decide short-circuits on public, so a spec carrying both public=true
+	// and inline clauses looks gated but admits anyone. Reject it here.
 	policy := f.GetPolicy()
 	if policy.GetPublic() && policy.GetInline() != nil {
 		return nil, errors.New("admission: predicate has both public=true and inline clauses")
 	}
-	// Defence-in-depth against an authority whose slug grinds against a
-	// live mesh peer's slug. The slug is 60 bits, so a real collision is
-	// statistically unreachable; the check guarantees canonical-URL
-	// routing stays unambiguous against active peers.
+	// Slugs are 60 bits, so a collision is statistically unreachable; this
+	// check keeps canonical-URL routing unambiguous against active peers.
 	authority := types.PeerKeyFromBytes(f.GetAuthorityPub())
 	slug := authority.Slug()
 	for peer := range snap.Nodes {
@@ -98,20 +91,15 @@ func (p *Pipeline) resolveAndVerify(snap state.Snapshot, f *factv1.Fact, body fa
 	return g, nil
 }
 
-// authorise enforces the authority Grant's per-kind publish capability
-// for the resource kind and the publisher's own policy attributes. A
-// nil authGrant is the tolerated bootstrap window (authenticate already
-// permitted it), so there is nothing to enforce yet.
+// authorise enforces the authority Grant's per-kind publish capability and
+// the publisher's policy attributes. A nil authGrant is the bootstrap window
+// authenticate already tolerated, so there is nothing to enforce.
 //
-// Signed tombstones bypass authorise: a publisher who has lost (e.g.)
-// publish:functions must still be able to retire their previously
-// authorised workload Facts, otherwise an admin-initiated cap-shrink
-// would strand the recipient's old publications on remote peers. Only
-// the publisher can produce a tombstone for their own Fact (the Fact
-// is signed by their signing key, verified in authenticate), and a
-// fully denied publisher fails the chain check upstream, so this is
-// safe. The cap- and attribute-clause checks remain on every non
-// tombstone Fact, which is the path that actually publishes new state.
+// Signed tombstones bypass the cap check: a publisher who has lost (e.g.)
+// publish:functions must still retire their own Facts, else a cap-shrink
+// strands old publications on remote peers. Safe because the tombstone is
+// signed by the publisher (verified in authenticate) and a fully denied
+// publisher fails the chain check upstream.
 func authorise(sc *statev1.SpecChange, authGrant *identityv1.Grant) error {
 	if authGrant == nil {
 		return nil

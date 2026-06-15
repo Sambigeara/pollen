@@ -13,11 +13,10 @@ import (
 )
 
 // TestGrantRenewDue pins the single renew-now policy shared by the
-// daemon maintenance loop and the wire-mode CLI: a finite horizon
-// inside the lead window is due, a far horizon is not, no horizon
-// (admin/root) is never due, and a horizon already past is still due so
-// a late caller still attempts a renewal rather than silently giving
-// up. It reads only the deadline, so a bare claims grant exercises it.
+// daemon maintenance loop and the wire-mode CLI. A horizon already past
+// is still due, so a late caller keeps attempting renewal rather than
+// silently giving up. It reads only the deadline, so a bare claims grant
+// exercises it.
 func TestGrantRenewDue(t *testing.T) {
 	now := time.Now()
 	mk := func(deadline time.Time) *identityv1.Grant {
@@ -39,9 +38,9 @@ func TestGrantRenewDue(t *testing.T) {
 }
 
 // TestGrantTerminallyExpired pins the "this peer is permanently gone"
-// predicate used by status to drop dead peers from the cluster view: a
-// renewable expired grant must NOT count (its holder may still be
-// renewing), and a non-renewable grant past its deadline must.
+// predicate status uses to drop dead peers from the cluster view: only
+// a non-renewable grant past its deadline is terminal, since a renewable
+// holder may still be mid-renewal.
 func TestGrantTerminallyExpired(t *testing.T) {
 	now := time.Now()
 	mk := func(deadline time.Time, nonRenewable bool) *identityv1.Grant {
