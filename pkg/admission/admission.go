@@ -24,8 +24,6 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-const CallerKey = "pln.caller"
-
 // errLocalGrantUnpublished marks a node acting on its own authority before
 // its Grant has gossiped. MayPublish and resolveAndVerify share this one
 // sentinel.
@@ -432,7 +430,6 @@ func grantContext(grant *identityv1.Grant) map[string]string {
 			ctx[k] = s
 		}
 	}
-	ctx[CallerKey] = hex.EncodeToString(grant.GetClaims().GetSubjectPub())
 	return ctx
 }
 
