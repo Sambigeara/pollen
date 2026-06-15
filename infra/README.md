@@ -10,28 +10,6 @@ infra/
   justfile          # prod + staging lifecycle (plan, apply, down)
 ```
 
-## Terraform state is local
-
-Both clusters keep state on the operator's laptop. There
-is no remote backend, no lock, no versioning, and no replication. Loss of the
-laptop loses tracking of every cloud resource these modules manage.
-
-This is a known TODO. Before any further bring-ups, migrate state to a remote
-backend (S3 + DynamoDB or Terraform Cloud) so a lost laptop is recoverable.
-
-Copy `.env.example` to `../.env` before running anything:
-
-```bash
-cp .env.example ../.env  # fill in tokens
-```
-
-`just` recipes load `../.env` automatically. Raw `terraform` commands invoked
-outside `just` do not, so source it explicitly first:
-
-```bash
-set -a; source ../.env; set +a   # exports CLOUDFLARE_API_TOKEN and HCLOUD_TOKEN
-```
-
 ## Bring up prod
 
 ```bash
@@ -95,10 +73,8 @@ credential cannot reach prod.
 Pre-flight:
 
 1. Register a `pln-staging` SSH key in Hetzner. This is a one-off; the
-   variable defaults to that name. Reusing the prod key means a single
-   compromised credential can SSH into both clusters, so the default keeps
-   the clusters isolated. Override with `-var ssh_key_name=pln-prod` on
-   `staging-plan` if isolation is explicitly not wanted.
+   variable defaults to that name. Override with `-var ssh_key_name=pln-prod`
+   on `staging-plan` to share the prod key instead.
 2. Enable Cloudflare Advanced Certificate Manager (ACM) on the `pln.sh`
    zone via the dashboard. ACM is billable. The
    `cloudflare_certificate_pack.staging_wildcard` resource fails creation
@@ -117,9 +93,9 @@ just staging-status
 ```
 
 Re-run `staging-deploy-dev` whenever you advance the local branch and want
-staging to track it. The released binary that `bootstrap` lays down is only
-there to provision the systemd unit and the `pln` system user; everything
-substantive comes from the dev overlay. Each `staging-deploy-dev` keeps a
+staging to track it. The released binary that `bootstrap` lays down only
+provisions the systemd unit and the `pln` system user; the dev overlay
+supplies the running binary. Each `staging-deploy-dev` keeps a
 `pln.prev` copy on every node and rolls back automatically if the
 post-restart health probe fails.
 
@@ -156,15 +132,12 @@ SSL covers them; they are proxied unconditionally.
 
 ### Wire-endpoint resolution
 
-The `edge.staging.pln.sh` record stays grey-cloud and serves multi-A. CF can
-not proxy custom-protocol mTLS-over-TCP, so resolvers pick essentially at
-random, which trades worst-case round-trip latency for redundancy. The
-choice is deliberate: cross-slot tombstone propagation means
-every node accepts seeds and unseeds for any publisher, so the "wrong node"
-problem doesn't bite correctness, only latency. CF Load Balancing would add
-proximity steering but needs the paid Load Balancing subscription enabled on
-the account, so anycast and proximity-steered routing are deferred until
-tenant traffic warrants it.
+The `edge.staging.pln.sh` record stays grey-cloud and serves multi-A:
+Cloudflare cannot proxy custom-protocol mTLS-over-TCP, so resolvers pick a
+node at random. Cross-slot tombstone propagation means every node accepts
+seeds and unseeds for any publisher, so a random pick costs round-trip latency
+without affecting correctness. CF Load Balancing would add proximity steering
+but needs the paid Load Balancing subscription enabled on the account.
 
 ### Tear down staging
 
@@ -182,5 +155,3 @@ file:
 # infra/prod/operator.auto.tfvars (gitignored: *.tfvars in .gitignore)
 ssh_source_ips = ["198.51.100.42/32"]
 ```
-
-`*.tfvars` is gitignored, so personal IPs do not leak through the repo.
