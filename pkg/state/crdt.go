@@ -278,7 +278,7 @@ func partitionSpecs(events []*statev1.GossipEvent) (nonSpecs, specs []*statev1.G
 	return nonSpecs, specs
 }
 
-// isAcceptableGrantEvent enforces three invariants on incoming grant
+// isAcceptableGrantEvent enforces four invariants on incoming grant
 // events:
 //   - The grant's subject_pub matches the gossip event's peer_id (basic
 //     shape check).
@@ -289,6 +289,12 @@ func partitionSpecs(events []*statev1.GossipEvent) (nonSpecs, specs []*statev1.G
 //     the proof-of-possession that prevents a delegated admin from
 //     forging a grant for someone else's pub and re-parenting them into
 //     the admin's subtree.
+//   - The grant does not roll the slot back to an older issuance (see the
+//     recency gate below).
+//
+// The same gate guards both gossip admission (admitPeerEventLocked) and
+// the wire-tenant relay (RegisterPeerGrant), so the recency rule covers
+// both rollback vectors.
 func (s *store) isAcceptableGrantEvent(pk types.PeerKey, ev *statev1.GossipEvent) bool {
 	change := ev.GetGrant()
 	grant := change.GetGrant()
@@ -303,6 +309,18 @@ func (s *store) isAcceptableGrantEvent(pk types.PeerKey, ev *statev1.GossipEvent
 	}
 	if err := identity.VerifyGrantSubject(grant, change.GetSubjectSignature()); err != nil {
 		return false
+	}
+	// Recency gate. The gossip counter lives on the unsigned envelope, so an
+	// attacker can replay a peer's own genuinely-signed older grant under a
+	// higher counter to undo a capability shrink or a denial. not_before sits
+	// inside the signed claims, so it is a recency key the attacker cannot
+	// forge: a grant strictly older than the one held is rejected. Equal
+	// not_before falls through to counter-LWW, so idempotent re-gossip is a
+	// no-op.
+	if held := s.grantForPeerLocked(pk); held != nil {
+		if grant.GetClaims().GetNotBeforeUnix() < held.GetClaims().GetNotBeforeUnix() {
+			return false
+		}
 	}
 	return true
 }

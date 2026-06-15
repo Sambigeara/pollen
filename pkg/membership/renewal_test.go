@@ -34,57 +34,83 @@ func plainGrant() *identityv1.Grant {
 	}}
 }
 
+// grantUnder is a delegating grant whose chain names issuer as an
+// ancestor, so identity.AncestorIn(issuer, grantUnder(issuer)) holds.
+func grantUnder(issuer types.PeerKey) *identityv1.Grant {
+	return &identityv1.Grant{
+		Claims: &identityv1.GrantClaims{Capabilities: &identityv1.Capabilities{CanDelegate: true}},
+		Chain: []*identityv1.Grant{
+			{Claims: &identityv1.GrantClaims{SubjectPub: issuer.Bytes()}},
+		},
+	}
+}
+
 func TestFindRenewalTargets(t *testing.T) {
 	self := pk(1)
+	issuer := pk(2)
 
-	t.Run("picks a delegating peer that advertises a control endpoint", func(t *testing.T) {
+	t.Run("picks a delegating peer beneath the issuer with a control endpoint", func(t *testing.T) {
 		snap := state.Snapshot{Nodes: map[types.PeerKey]state.NodeView{
-			pk(2): {Grant: delegatingGrant(), ControlAddr: "admin:8443"},
+			pk(3): {Grant: grantUnder(issuer), ControlAddr: "admin:8443"},
 		}}
-		require.Equal(t, []string{"admin:8443"}, findRenewalTargets(snap, self))
+		require.Equal(t, []string{"admin:8443"}, findRenewalTargets(snap, self, issuer))
+	})
+
+	t.Run("picks the issuer itself", func(t *testing.T) {
+		snap := state.Snapshot{Nodes: map[types.PeerKey]state.NodeView{
+			issuer: {Grant: delegatingGrant(), ControlAddr: "issuer:8443"},
+		}}
+		require.Equal(t, []string{"issuer:8443"}, findRenewalTargets(snap, self, issuer))
+	})
+
+	t.Run("skips a delegating peer outside the issuer's subtree", func(t *testing.T) {
+		snap := state.Snapshot{Nodes: map[types.PeerKey]state.NodeView{
+			pk(7): {Grant: delegatingGrant(), ControlAddr: "outsider:8443"},
+		}}
+		require.Empty(t, findRenewalTargets(snap, self, issuer))
 	})
 
 	t.Run("never targets self", func(t *testing.T) {
 		snap := state.Snapshot{Nodes: map[types.PeerKey]state.NodeView{
-			self: {Grant: delegatingGrant(), ControlAddr: "me:8443"},
+			self: {Grant: grantUnder(issuer), ControlAddr: "me:8443"},
 		}}
-		require.Empty(t, findRenewalTargets(snap, self))
+		require.Empty(t, findRenewalTargets(snap, self, issuer))
 	})
 
 	t.Run("skips a denied peer", func(t *testing.T) {
 		snap := state.Snapshot{
 			Nodes: map[types.PeerKey]state.NodeView{
-				pk(2): {Grant: delegatingGrant(), ControlAddr: "denied:8443"},
+				pk(3): {Grant: grantUnder(issuer), ControlAddr: "denied:8443"},
 			},
-			DeniedKeys: []types.PeerKey{pk(2)},
+			DeniedKeys: []types.PeerKey{pk(3)},
 		}
-		require.Empty(t, findRenewalTargets(snap, self))
+		require.Empty(t, findRenewalTargets(snap, self, issuer))
 	})
 
 	t.Run("skips a peer with no control endpoint", func(t *testing.T) {
 		snap := state.Snapshot{Nodes: map[types.PeerKey]state.NodeView{
-			pk(2): {Grant: delegatingGrant()},
+			pk(3): {Grant: grantUnder(issuer)},
 		}}
-		require.Empty(t, findRenewalTargets(snap, self))
+		require.Empty(t, findRenewalTargets(snap, self, issuer))
 	})
 
 	t.Run("skips a peer that cannot delegate", func(t *testing.T) {
 		snap := state.Snapshot{Nodes: map[types.PeerKey]state.NodeView{
-			pk(2): {Grant: plainGrant(), ControlAddr: "tenant:8443"},
-			pk(3): {ControlAddr: "nogrant:8443"},
+			pk(3): {Grant: plainGrant(), ControlAddr: "tenant:8443"},
+			pk(4): {ControlAddr: "nogrant:8443"},
 		}}
-		require.Empty(t, findRenewalTargets(snap, self))
+		require.Empty(t, findRenewalTargets(snap, self, issuer))
 	})
 
-	t.Run("returns every candidate in stable order so renewal can fall through", func(t *testing.T) {
+	t.Run("returns every in-subtree candidate in stable order so renewal can fall through", func(t *testing.T) {
 		snap := state.Snapshot{Nodes: map[types.PeerKey]state.NodeView{
-			pk(5): {Grant: delegatingGrant(), ControlAddr: "five:8443"},
-			pk(2): {Grant: delegatingGrant(), ControlAddr: "two:8443"},
-			pk(9): {Grant: delegatingGrant(), ControlAddr: "nine:8443"},
+			pk(5): {Grant: grantUnder(issuer), ControlAddr: "five:8443"},
+			pk(3): {Grant: grantUnder(issuer), ControlAddr: "three:8443"},
+			pk(9): {Grant: grantUnder(issuer), ControlAddr: "nine:8443"},
 		}}
-		got := findRenewalTargets(snap, self)
-		require.Equal(t, []string{"two:8443", "five:8443", "nine:8443"}, got)
-		require.Equal(t, got, findRenewalTargets(snap, self))
+		got := findRenewalTargets(snap, self, issuer)
+		require.Equal(t, []string{"three:8443", "five:8443", "nine:8443"}, got)
+		require.Equal(t, got, findRenewalTargets(snap, self, issuer))
 	})
 }
 

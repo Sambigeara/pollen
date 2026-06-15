@@ -17,14 +17,15 @@ import (
 	"github.com/sambigeara/pollen/pkg/wire"
 )
 
-// findRenewalTargets returns the control endpoints of every peer that can
+// findRenewalTargets returns the control endpoints of every peer that may
 // re-mint this node's grant: it must hold delegate authority, not be
-// denied, not be us, and advertise a control endpoint. Renewal does not
-// depend on the original issuer still being alive, because the server
-// re-checks the caller's chain and the denylist before re-issuing.
-// Candidates are returned in a stable order so renewal retries the same
-// peer rather than flapping across the cluster.
-func findRenewalTargets(snap state.Snapshot, self types.PeerKey) []string {
+// denied, not be us, advertise a control endpoint, and sit at or below our
+// immediate issuer (the issuer, or a node with the issuer in its chain).
+// RenewGrant enforces this same subtree rule server-side; filtering here
+// just avoids spending attempts on targets that would reject us. The
+// original issuer need not be alive: any node beneath it qualifies.
+// Candidates are returned in stable order so renewal retries the same peer.
+func findRenewalTargets(snap state.Snapshot, self, issuer types.PeerKey) []string {
 	var addrs []string
 	for _, pk := range slices.SortedFunc(maps.Keys(snap.Nodes), types.PeerKey.Compare) {
 		if pk == self {
@@ -35,6 +36,9 @@ func findRenewalTargets(snap state.Snapshot, self types.PeerKey) []string {
 			continue
 		}
 		if !identity.PrincipalFromGrant(nv.Grant).CanDelegate() {
+			continue
+		}
+		if pk != issuer && !identity.AncestorIn(issuer, nv.Grant) {
 			continue
 		}
 		addrs = append(addrs, nv.ControlAddr)
@@ -48,9 +52,10 @@ func findRenewalTargets(snap state.Snapshot, self types.PeerKey) []string {
 // unreachable peer is skipped (RenewGrantAt bounds each attempt) so one
 // dead delegate does not strand renewal while another is reachable.
 func (s *Service) renewGrantOnce(ctx context.Context) (*identityv1.Grant, error) {
-	addrs := findRenewalTargets(s.store.Snapshot(), s.localID)
+	issuer := types.PeerKeyFromBytes(s.creds.Grant().GetClaims().GetIssuerPub())
+	addrs := findRenewalTargets(s.store.Snapshot(), s.localID, issuer)
 	if len(addrs) == 0 {
-		return nil, errors.New("no delegating peer with a control endpoint is known")
+		return nil, errors.New("no delegating peer beneath this grant's issuer has a control endpoint")
 	}
 	var lastErr error
 	for _, addr := range addrs {

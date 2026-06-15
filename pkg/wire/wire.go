@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"sync"
 	"time"
 
 	"connectrpc.com/connect"
@@ -218,17 +219,62 @@ func MaybeRenewGrant(ctx context.Context, dir, addr string) error {
 	return creds.AdoptGrant(g, time.Now(), nil)
 }
 
+// ServerCertProvider mints and caches the control-plane server identity
+// cert, re-minting it before the embedded Session expires. The control TLS
+// listener lives for the whole daemon, so a static cert would present an
+// expired Session after one TTL and break every wire client, including the
+// daemon-to-daemon grant-renewal path that dials this listener.
+// GetCertificate is safe for concurrent use by crypto/tls.
+type ServerCertProvider struct {
+	notAfter time.Time
+	creds    *identity.Credentials
+	now      func() time.Time
+	cert     *tls.Certificate
+	signPriv ed25519.PrivateKey
+	ttl      time.Duration
+	mu       sync.Mutex
+}
+
+func NewServerCertProvider(creds *identity.Credentials, signPriv ed25519.PrivateKey, ttl time.Duration) *ServerCertProvider {
+	return &ServerCertProvider{creds: creds, signPriv: signPriv, ttl: ttl, now: time.Now}
+}
+
+// GetCertificate returns a live server cert, minting a fresh Session and
+// leaf once the cached one is within half its TTL of expiry. The half-TTL
+// margin matches EnsureFreshSession, so leaf and Session rotate together.
+func (p *ServerCertProvider) GetCertificate(*tls.ClientHelloInfo) (*tls.Certificate, error) {
+	now := p.now()
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.cert != nil && now.Add(p.ttl/2).Before(p.notAfter) { //nolint:mnd
+		return p.cert, nil
+	}
+	session, err := p.creds.EnsureFreshSession(now, p.ttl, p.ttl/2) //nolint:mnd
+	if err != nil {
+		return nil, fmt.Errorf("control tls session: %w", err)
+	}
+	cert, err := transport.GenerateIdentityCert(p.signPriv, session, p.ttl)
+	if err != nil {
+		return nil, fmt.Errorf("control tls identity cert: %w", err)
+	}
+	p.cert = &cert
+	p.notAfter = now.Add(p.ttl)
+	return p.cert, nil
+}
+
 // ServerTLSConfig builds the TLS config for the control RPC listener.
-// Inbound clients must present a cert whose Session extension chains
-// back to the configured root AND whose TLS leaf public key matches the
-// Session's grant subject: without that binding, anyone who has seen
-// the victim's gossiped Session can mint a new leaf and impersonate
-// them. The verified Session is later retrieved from the gRPC peer
-// context by CallerGrantFromContext.
-func ServerTLSConfig(serverCert tls.Certificate, rootPub []byte, denied identity.DenyChecker) *tls.Config {
+// getCertificate supplies the server leaf per handshake (see
+// ServerCertProvider) so a long-lived listener keeps presenting a live
+// Session. Inbound clients must present a cert whose Session extension
+// chains back to the configured root AND whose TLS leaf public key matches
+// the Session's grant subject: without that binding, anyone who has seen
+// the victim's gossiped Session can mint a new leaf and impersonate them.
+// The verified Session is later retrieved from the gRPC peer context by
+// CallerGrantFromContext.
+func ServerTLSConfig(getCertificate func(*tls.ClientHelloInfo) (*tls.Certificate, error), rootPub []byte, denied identity.DenyChecker) *tls.Config {
 	return &tls.Config{
 		MinVersion:            tls.VersionTLS13,
-		Certificates:          []tls.Certificate{serverCert},
+		GetCertificate:        getCertificate,
 		ClientAuth:            tls.RequireAnyClientCert,
 		NextProtos:            []string{"h2"},
 		VerifyPeerCertificate: transport.VerifyDelegatedCounterparty(rootPub, denied),

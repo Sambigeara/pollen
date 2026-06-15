@@ -53,6 +53,18 @@ func authority(t *testing.T, now, deadline time.Time, attrs map[string]any) (roo
 	return adminPub, authPub, authPriv, grant
 }
 
+// rootedAuthority issues a publisher grant under a shared admin key, so
+// several authorities chain to one cluster root. Use it where more than one
+// publisher must coexist under the root the Pipeline verifies against
+// (issuerGrantValid checks each issuer's grant chains to that root).
+func rootedAuthority(t *testing.T, adminPriv ed25519.PrivateKey, now, deadline time.Time) (pub ed25519.PublicKey, priv ed25519.PrivateKey, grant *identityv1.Grant) {
+	t.Helper()
+	pub, priv = newKeyPair(t)
+	grant, err := identity.IssueGrant(adminPriv, nil, pub, identity.PublisherCapabilities(), identity.UnlimitedBudget(), now.Add(-time.Hour), deadline, false)
+	require.NoError(t, err)
+	return pub, priv, grant
+}
+
 func seedBodyResource(name, hexByte string) (*statev1.WorkloadSpecChange, *admissionv1.ResourceID) {
 	body := &statev1.WorkloadSpecChange{Hash: strings.Repeat(hexByte, 64), Name: name, MinReplicas: 1}
 	hb, _ := hex.DecodeString(body.GetHash())
@@ -407,8 +419,8 @@ func TestInvokeHostPublicationScopedMultiPublisher(t *testing.T) {
 // URL for a gated workload returned 403 at the gateway and every hop.
 func TestInvokeByTokenAuthorisesGatedWorkload(t *testing.T) {
 	now := time.Now()
-	rootA, _, _, _ := authority(t, now, now.Add(30*24*time.Hour), nil)
-	_, bPub, bPriv, bGrant := authority(t, now, now.Add(30*24*time.Hour), nil)
+	adminPub, adminPriv := newKeyPair(t)
+	bPub, bPriv, bGrant := rootedAuthority(t, adminPriv, now, now.Add(30*24*time.Hour))
 
 	body, res := seedBodyResource("secret", "a")
 	gatedFact, err := fact.IssueFact(bPriv, res, body,
@@ -417,7 +429,7 @@ func TestInvokeByTokenAuthorisesGatedWorkload(t *testing.T) {
 	hash := body.GetHash()
 	bPK := types.PeerKeyFromBytes(bPub)
 
-	g := New(rootA, fakeStore{snap: state.Snapshot{
+	g := New(adminPub, fakeStore{snap: state.Snapshot{
 		Nodes:    map[types.PeerKey]state.NodeView{bPK: {Grant: bGrant}},
 		SpecsAll: []state.WorkloadSpecView{{Fact: gatedFact, Spec: state.WorkloadSpec{Name: "secret", Hash: hash}, Publisher: bPK}},
 	}})
@@ -454,8 +466,9 @@ func TestInvokeByTokenAuthorisesGatedWorkload(t *testing.T) {
 // TestRuntimeMethodsFailClosed.
 func TestFetchBlobPublicationScopedMultiPublisher(t *testing.T) {
 	now := time.Now()
-	rootA, aPub, aPriv, aGrant := authority(t, now, now.Add(30*24*time.Hour), nil)
-	_, bPub, bPriv, bGrant := authority(t, now, now.Add(30*24*time.Hour), nil)
+	adminPub, adminPriv := newKeyPair(t)
+	aPub, aPriv, aGrant := rootedAuthority(t, adminPriv, now, now.Add(30*24*time.Hour))
+	bPub, bPriv, bGrant := rootedAuthority(t, adminPriv, now, now.Add(30*24*time.Hour))
 
 	bodyA, resA := blobBodyResource("pubdata", "a")
 	publicFact, err := fact.IssueFact(aPriv, resA, bodyA, &admissionv1.Predicate{Public: true}, 1, false)
@@ -476,7 +489,7 @@ func TestFetchBlobPublicationScopedMultiPublisher(t *testing.T) {
 	// Deduped winner is the GATED publication. Fetch must still resolve the
 	// public co-publication, else an anonymous read of bytes a tenant
 	// published publicly is denied.
-	gatedWinner := New(rootA, fakeStore{snap: state.Snapshot{
+	gatedWinner := New(adminPub, fakeStore{snap: state.Snapshot{
 		Nodes:        meshNodes,
 		BlobSpecs:    map[string]state.BlobSpecView{hash: {Fact: gatedFact, Spec: state.BlobSpec{Name: "secret", Digest: hash}, Publisher: bPK}},
 		BlobSpecsAll: bAll,
@@ -485,7 +498,7 @@ func TestFetchBlobPublicationScopedMultiPublisher(t *testing.T) {
 	// gated co-publication, a legitimate share-link holder for a gated
 	// blob would be denied because someone else's identical bytes
 	// happened to be public.
-	publicWinner := New(rootA, fakeStore{snap: state.Snapshot{
+	publicWinner := New(adminPub, fakeStore{snap: state.Snapshot{
 		Nodes:        meshNodes,
 		BlobSpecs:    map[string]state.BlobSpecView{hash: {Fact: publicFact, Spec: state.BlobSpec{Name: "pubdata", Digest: hash}, Publisher: aPK}},
 		BlobSpecsAll: bAll,
@@ -514,10 +527,69 @@ func TestFetchBlobPublicationScopedMultiPublisher(t *testing.T) {
 		require.ErrorIs(t, publicWinner.FetchByToken(mintToken(bPriv, otherRes), hash), wasm.ErrTargetNotFound)
 	})
 	t.Run("anonymous fetch denied when every co-publication is gated and unmet", func(t *testing.T) {
-		gatedOnly := New(rootA, fakeStore{snap: state.Snapshot{
+		gatedOnly := New(adminPub, fakeStore{snap: state.Snapshot{
 			Nodes:        map[types.PeerKey]state.NodeView{bPK: {Grant: bGrant}},
 			BlobSpecsAll: []state.BlobSpecView{{Fact: gatedFact, Spec: state.BlobSpec{Name: "secret", Digest: hash}, Publisher: bPK}},
 		}})
 		require.ErrorIs(t, gatedOnly.Fetch(nil, hash), wasm.ErrTargetNotFound)
+	})
+}
+
+// TestTokenBindsToIssuerGrantHorizon locks share-token revocation: the
+// token gates (issuerGrantValid) must refuse a token once the issuer's
+// Grant has expired or been denied, not merely when the token's own TTL
+// lapses.
+func TestTokenBindsToIssuerGrantHorizon(t *testing.T) {
+	now := time.Now()
+	body, res := seedBodyResource("secret", "a")
+	hash := body.GetHash()
+
+	mintToken := func(priv ed25519.PrivateKey) *admissionv1.AccessToken {
+		tok, err := auth.SignAccessToken(priv, res, now, time.Hour) // token itself stays valid
+		require.NoError(t, err)
+		return tok
+	}
+	specView := func(priv ed25519.PrivateKey) state.WorkloadSpecView {
+		f, err := fact.IssueFact(priv, res, body,
+			&admissionv1.Predicate{Inline: &admissionv1.InlinePredicate{Clauses: []*admissionv1.Clause{{Key: "team", Equals: "core"}}}}, 1, false)
+		require.NoError(t, err)
+		return state.WorkloadSpecView{Fact: f, Spec: state.WorkloadSpec{Name: "secret", Hash: hash}, Publisher: types.PeerKeyFromBytes(priv.Public().(ed25519.PublicKey))}
+	}
+
+	t.Run("denied when the issuer grant has expired", func(t *testing.T) {
+		adminPub, adminPriv := newKeyPair(t)
+		bPub, bPriv, bGrant := rootedAuthority(t, adminPriv, now, now.Add(-time.Minute)) // grant past its deadline
+		bPK := types.PeerKeyFromBytes(bPub)
+		g := New(adminPub, fakeStore{snap: state.Snapshot{
+			Nodes:    map[types.PeerKey]state.NodeView{bPK: {Grant: bGrant}},
+			SpecsAll: []state.WorkloadSpecView{specView(bPriv)},
+		}})
+		_, err := g.InvokeByToken(mintToken(bPriv), hash)
+		require.ErrorIs(t, err, wasm.ErrTargetNotFound)
+	})
+
+	t.Run("denied when the issuer is on the denylist", func(t *testing.T) {
+		adminPub, adminPriv := newKeyPair(t)
+		bPub, bPriv, bGrant := rootedAuthority(t, adminPriv, now, now.Add(30*24*time.Hour))
+		bPK := types.PeerKeyFromBytes(bPub)
+		g := New(adminPub, fakeStore{snap: state.Snapshot{
+			Nodes:      map[types.PeerKey]state.NodeView{bPK: {Grant: bGrant}},
+			DeniedKeys: []types.PeerKey{bPK},
+			SpecsAll:   []state.WorkloadSpecView{specView(bPriv)},
+		}})
+		_, err := g.InvokeByToken(mintToken(bPriv), hash)
+		require.ErrorIs(t, err, wasm.ErrTargetNotFound)
+	})
+
+	t.Run("admitted while the issuer grant is live", func(t *testing.T) {
+		adminPub, adminPriv := newKeyPair(t)
+		bPub, bPriv, bGrant := rootedAuthority(t, adminPriv, now, now.Add(30*24*time.Hour))
+		bPK := types.PeerKeyFromBytes(bPub)
+		g := New(adminPub, fakeStore{snap: state.Snapshot{
+			Nodes:    map[types.PeerKey]state.NodeView{bPK: {Grant: bGrant}},
+			SpecsAll: []state.WorkloadSpecView{specView(bPriv)},
+		}})
+		_, err := g.InvokeByToken(mintToken(bPriv), hash)
+		require.NoError(t, err)
 	})
 }

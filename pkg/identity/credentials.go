@@ -171,6 +171,24 @@ func rootPubPath(identityDir string) string {
 	return filepath.Join(identityDir, rootPubName)
 }
 
+// PriorEnrollmentArtifact reports a human-readable reason when identityDir
+// already holds a durable trust anchor or a legacy credential file even
+// though LoadCredentials could not assemble usable Credentials: a node
+// enrolled under an older on-disk layout (cert-era), or one whose grant
+// file was lost. The daemon refuses to auto-initialise a fresh root cluster
+// over such a directory, which would overwrite root.pub with a new anchor
+// and strand the node behind ErrDifferentCluster on rejoin. Returns
+// ("", false) for an empty or keys-only directory, where auto-init is safe.
+func PriorEnrollmentArtifact(identityDir string) (string, bool) {
+	if _, err := os.Stat(rootPubPath(identityDir)); err == nil {
+		return "a trust anchor (" + rootPubName + ") is present but its grant is missing or unreadable", true
+	}
+	if _, err := os.Stat(filepath.Join(identityDir, legacyDelegationCertName)); err == nil {
+		return "a legacy delegation certificate (" + legacyDelegationCertName + ") from an older release is present", true
+	}
+	return "", false
+}
+
 func LoadCredentials(identityDir string) (*Credentials, error) {
 	rootRaw, err := os.ReadFile(rootPubPath(identityDir))
 	if err != nil {
@@ -305,11 +323,17 @@ func rootGrantHealthy(existing *Credentials, nodePub, adminPub ed25519.PublicKey
 	}
 	want := RootCapabilities()
 	got := claims.GetCapabilities()
+	// Every capability dimension RootCapabilities sets must be matched, else
+	// a grant that drifts from the current profile is judged healthy and
+	// never re-issued. Budget too: a root grant carries the unlimited
+	// (all-zero) budget, so a drifted budget must also trigger re-issue.
 	return got.GetCanDelegate() == want.CanDelegate &&
 		got.GetCanAdmit() == want.CanAdmit &&
+		got.GetIsWorkspaceAdmin() == want.IsWorkspaceAdmin &&
 		got.GetIsInfrastructure() == want.IsInfrastructure &&
 		got.GetMaxDepth() == want.MaxDepth &&
-		proto.Equal(got.GetPublish(), want.Publish)
+		proto.Equal(got.GetPublish(), want.Publish) &&
+		proto.Equal(claims.GetBudget(), UnlimitedBudget())
 }
 
 // attrsEqual treats nil and an empty Struct as equivalent: yaml

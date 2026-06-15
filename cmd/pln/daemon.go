@@ -214,6 +214,9 @@ func runNode(cmd *cobra.Command, env *cliEnv) error {
 
 	switch {
 	case creds == nil:
+		if reason, occupied := identity.PriorEnrollmentArtifact(identityDir); occupied {
+			return fmt.Errorf("refusing to auto-initialize a root cluster in %s: %s; this looks like a node already enrolled in another cluster. Run `pln purge` to clear it then `pln join <token>`, or restore the missing grant file", identityDir, reason)
+		}
 		logger.Info("node is not initialized; auto-initializing root cluster")
 		creds, err = identity.EnsureLocalRootGrant(identityDir, pubKey, nodeProps, time.Now())
 		if err != nil {

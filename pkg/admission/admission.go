@@ -261,11 +261,18 @@ func (p *Pipeline) Connect(caller *identityv1.Grant, hostPeer types.PeerKey, por
 	if !ok {
 		return wasm.ErrTargetNotFound
 	}
+	// Union over every service on this port (mirroring Invoke/Fetch): admit if
+	// any one allows the caller, so the verdict can't depend on map order when
+	// two services share a port.
+	now := time.Now()
+	denied := snap.DenyChecker()
 	for _, svc := range target.Services {
 		if svc.Port != port || svc.Fact == nil {
 			continue
 		}
-		return p.decide(caller, svc.Fact, time.Now(), snap.DenyChecker())
+		if p.decide(caller, svc.Fact, now, denied) == nil {
+			return nil
+		}
 	}
 	return wasm.ErrTargetNotFound
 }
@@ -284,10 +291,24 @@ func (p *Pipeline) LookupGrant(peerKey types.PeerKey) *identityv1.Grant {
 	return nv.Grant
 }
 
+// issuerGrantValid binds an access token to its issuer's live authority:
+// VerifyAccessToken checks only the token's own signature and expiry, so
+// without this an expired or denied publisher's `pln share` URLs would
+// keep serving for the token's full TTL. Fail-closed: an unresolved issuer
+// grant denies.
+func (p *Pipeline) issuerGrantValid(snap state.Snapshot, issuer []byte) bool {
+	grant := snap.GrantFor(issuer)
+	if grant == nil {
+		return false
+	}
+	return identity.CheckGrant(grant, p.rootPub, time.Now(), issuer, snap.DenyChecker()).Status.Valid()
+}
+
 // FetchByToken authorises an anonymous caller holding token to read the
-// CAS object at hash. The token must verify (signature, expiry) and the
-// token's resource must correspond to a Fact whose authority signed the
-// token and whose entitlements cover hash.
+// CAS object at hash. The token must verify (signature, expiry), the
+// issuer's grant must still be live (issuerGrantValid), and the token's
+// resource must correspond to a Fact whose authority signed the token and
+// whose entitlements cover hash.
 func (p *Pipeline) FetchByToken(token *admissionv1.AccessToken, hash string) error {
 	if err := auth.VerifyAccessToken(token, time.Now()); err != nil {
 		return wasm.ErrTargetNotFound
@@ -295,6 +316,9 @@ func (p *Pipeline) FetchByToken(token *admissionv1.AccessToken, hash string) err
 	resource := token.GetClaims().GetResource()
 	issuer := token.GetClaims().GetIssuerPub()
 	snap := p.store.Snapshot()
+	if !p.issuerGrantValid(snap, issuer) {
+		return wasm.ErrTargetNotFound
+	}
 	for _, f := range snap.BlobEntitlements(hash, p.manifests) {
 		if !bytes.Equal(f.GetAuthorityPub(), issuer) {
 			continue
@@ -319,6 +343,10 @@ func (p *Pipeline) InvokeByToken(token *admissionv1.AccessToken, hash string) (w
 	if !ok {
 		return wasm.CallerInfo{}, wasm.ErrTargetNotFound
 	}
+	snap := p.store.Snapshot()
+	if !p.issuerGrantValid(snap, token.GetClaims().GetIssuerPub()) {
+		return wasm.CallerInfo{}, wasm.ErrTargetNotFound
+	}
 	// The token is itself the authorisation: its issuer is the publishing
 	// authority and its seed resource the name. publicationFact resolves
 	// that exact (authority, name) publication and binds it to hash, so a
@@ -326,7 +354,7 @@ func (p *Pipeline) InvokeByToken(token *admissionv1.AccessToken, hash string) (w
 	// own policy, mirroring FetchByToken. Routing through decide(nil, ...)
 	// instead would wrongly demand public=true and break `pln share` of a
 	// gated workload. The caller is anonymous and carries no attributes.
-	if _, ok := publicationFact(p.store.Snapshot(), *pub, hash); !ok {
+	if _, ok := publicationFact(snap, *pub, hash); !ok {
 		return wasm.CallerInfo{}, wasm.ErrTargetNotFound
 	}
 	return wasm.CallerInfo{}, nil

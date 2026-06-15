@@ -343,18 +343,17 @@ func (s *Server) ServeTLS(l net.Listener) error {
 	if len(s.svc.creds.RootPub()) == 0 {
 		return errors.New("control tls: credentials missing root pub")
 	}
-	session, err := s.svc.creds.EnsureFreshSession(time.Now(), controlTLSIdentityTTL, controlTLSIdentityTTL/2) //nolint:mnd
-	if err != nil {
-		return fmt.Errorf("control tls session: %w", err)
-	}
-	serverCert, err := transport.GenerateIdentityCert(s.svc.signPriv, session, controlTLSIdentityTTL)
-	if err != nil {
-		return fmt.Errorf("control tls identity cert: %w", err)
+	// The control listener outlives a single session TTL, so the leaf is
+	// supplied per-handshake by ServerCertProvider. Mint eagerly here so a
+	// misconfigured signing key fails at Serve time, not first connection.
+	certProvider := wire.NewServerCertProvider(s.svc.creds, s.svc.signPriv, controlTLSIdentityTTL)
+	if _, err := certProvider.GetCertificate(nil); err != nil {
+		return err
 	}
 	denied := func(sub []byte) bool {
 		return s.svc.state.Snapshot().IsDenied(types.PeerKeyFromBytes(sub))
 	}
-	cfg := wire.ServerTLSConfig(serverCert, s.svc.creds.RootPub(), denied)
+	cfg := wire.ServerTLSConfig(certProvider.GetCertificate, s.svc.creds.RootPub(), denied)
 	// gRPC's TLS credentials drive both the handshake and the population
 	// of peer.AuthInfo; pre-wrapping the listener with tls.NewListener
 	// leaves AuthInfo nil, which strips the caller cert from every RPC.
@@ -1223,6 +1222,22 @@ func (s *Service) RenewGrant(ctx context.Context, _ *controlv1.RenewGrantRequest
 	}
 	if callerClaims.GetNonRenewable() {
 		return nil, status.Error(codes.FailedPrecondition, "grant is non-renewable; obtain a fresh invite")
+	}
+	// Renewal re-mints the caller under THIS node's grant chain, and deny
+	// scope follows chain ancestry, so the new parent must sit at or below
+	// the caller's current issuer: otherwise a tenant could renew against any
+	// reachable delegating peer and re-parent itself out from under the admin
+	// that should be able to revoke it. The issuer itself, or any node
+	// beneath it, only adds ancestors.
+	servingGrant := s.creds.Grant()
+	if servingGrant == nil {
+		return nil, status.Error(codes.FailedPrecondition, "this node has no grant to renew under")
+	}
+	issuer := types.PeerKeyFromBytes(callerClaims.GetIssuerPub())
+	servingKey := types.PeerKeyFromBytes(servingGrant.GetClaims().GetSubjectPub())
+	if issuer != servingKey && !identity.AncestorIn(issuer, servingGrant) {
+		return nil, status.Error(codes.FailedPrecondition,
+			"this node cannot renew that grant without re-parenting it; renew against the grant's issuer or a node beneath it")
 	}
 	grant, err := s.membership.IssueGrant(ctx, caller.Subject(), caller.Capabilities, caller.Budget, false)
 	if err != nil {

@@ -35,6 +35,12 @@ const (
 	grantCertName = "grant.pb"
 	factSeqName   = "fact.seq"
 
+	// legacyDelegationCertName is the pre-grant (cert-era) authority file.
+	// It is never written by this build; its presence marks a directory
+	// enrolled by an older release, which the startup path refuses to
+	// auto-initialise over.
+	legacyDelegationCertName = "delegation.cert.pb"
+
 	pemTypePriv = "ED25519 PRIVATE KEY"
 	pemTypePub  = "ED25519 PUBLIC KEY"
 
@@ -190,6 +196,16 @@ func loadKeyPair(privPath, pubPath, privPEMType, pubPEMType string) (ed25519.Pri
 	pubBlock, _ := pem.Decode(pubRaw)
 	if pubBlock == nil || pubBlock.Type != pubPEMType {
 		return nil, nil, errors.New("invalid public key PEM")
+	}
+
+	// ed25519.NewKeyFromSeed panics on a seed that is not SeedSize bytes, so
+	// validate lengths first: a truncated key file must surface an error, not
+	// crash the daemon at load.
+	if len(privBlock.Bytes) != ed25519.SeedSize {
+		return nil, nil, fmt.Errorf("invalid private key: expected %d-byte seed, got %d", ed25519.SeedSize, len(privBlock.Bytes))
+	}
+	if len(pubBlock.Bytes) != ed25519.PublicKeySize {
+		return nil, nil, fmt.Errorf("invalid public key: expected %d bytes, got %d", ed25519.PublicKeySize, len(pubBlock.Bytes))
 	}
 
 	return ed25519.NewKeyFromSeed(privBlock.Bytes), ed25519.PublicKey(pubBlock.Bytes), nil

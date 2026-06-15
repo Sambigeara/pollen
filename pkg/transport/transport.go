@@ -661,6 +661,12 @@ func (m *QUICTransport) recvDatagrams(s *peerSession, peerKey types.PeerKey) {
 		m.metrics.DatagramsRecv.Add(ctx, 1)
 		m.metrics.DatagramBytesRecv.Add(ctx, int64(len(payload)))
 
+		// QUIC permits zero-length DATAGRAM frames (RFC 9221), so guard the
+		// type byte: without this an authenticated peer could panic the node
+		// with a single empty datagram.
+		if len(payload) == 0 {
+			continue
+		}
 		switch DatagramType(payload[0]) {
 		case DatagramTypeMembership:
 			select {

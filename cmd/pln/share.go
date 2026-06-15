@@ -58,7 +58,7 @@ func runShare(cmd *cobra.Command, args []string, env *cliEnv) error {
 		gateway = st.GetGatewayDomain()
 	}
 	if gateway == "" {
-		return errors.New("gateway domain not configured on the cluster; set `pln set static-http` on the daemon or pass --gateway")
+		return errors.New("gateway domain not configured on the cluster; set `pln set static-http-domain` on the daemon or pass --gateway")
 	}
 
 	wl, wlErr := matchWorkloadArg(st.GetWorkloads(), arg)
@@ -100,6 +100,24 @@ func runShare(cmd *cobra.Command, args []string, env *cliEnv) error {
 		return errors.New("no credentials in this context; run `pln join` first")
 	}
 	localPub := creds.Grant().GetClaims().GetSubjectPub()
+
+	// A share token rides the publisher's authority, so refuse to mint one
+	// from an invalid grant and clamp the token horizon to the grant
+	// deadline. The gateway re-checks the issuer's grant per request
+	// (issuerGrantValid), so this can't extend access; it keeps the printed
+	// URL's lifetime honest.
+	if chk := identity.CheckGrant(creds.Grant(), creds.RootPub(), time.Now(), localPub, nil); !chk.Status.Valid() {
+		return fmt.Errorf("cannot mint a share token: local grant is %s (%s); rejoin first", chk.Status, chk.Reason)
+	}
+	if dl := creds.Grant().GetClaims().GetGrantDeadlineUnix(); dl > 0 {
+		maxTTL := time.Until(time.Unix(dl, 0))
+		if maxTTL <= 0 {
+			return errors.New("cannot mint a share token: local grant has expired; rejoin first")
+		}
+		if ttl > maxTTL {
+			ttl = maxTTL
+		}
+	}
 
 	resource, subdomain, err := buildShareResource(wl, hasBlob, blobHash, st.GetBlobs(), localPub)
 	if err != nil {
