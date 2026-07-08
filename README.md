@@ -22,14 +22,14 @@ This demo shows a simple processing pipeline: two chained workloads and a single
 
 ## Features
 
-- **WASM seeds.** `pln seed ./hello.wasm` here, `pln call hello greet` there; artifacts distribute peer-to-peer by hash. One host call invokes another seed by name (`pln://seed/<name>/<fn>`), so authz, routing, and policy can live inside WASM. Authored in Go, Rust, JS, Python, C#, Zig via [Extism](https://extism.org/docs/quickstart/plugin-quickstart).
+- **WASM seeds.** `pln seed ./hello.wasm` here, `pln call hello greet` there; artefacts distribute peer-to-peer by hash. One host call invokes another seed by name (`pln://seed/<name>/<fn>`), so authz, routing, and policy can live inside WASM. Authored in Go, Rust, JS, Python, C#, Zig via [Extism](https://extism.org/docs/quickstart/plugin-quickstart).
 - **Mesh services.** `pln serve 8080 api` here, `pln connect api` there (or `pln://service/<name>` from a seed). TCP and UDP, end-to-end mTLS.
 - **Static sites & blobs.** `pln seed ./public` publishes a site; `pln seed ./file` shares a file. Same verb across workloads, sites, and blobs; kind is autodetected from what you point at. Content-addressed, gossiped, streamed peer-to-peer over QUIC.
 - **Self-organising.** No scheduler, no leader, no coordinator. Topology, placement, and routing emerge from local state; calls go to the nearest, least-loaded replica, and replicas migrate toward demand.
 - **CRDT-native.** A converging document on every node; changes gossip, conflicts resolve.
 - **Partition-tolerant.** Both sides of a split keep running; state converges on rejoin; survivors rehost workloads from failed nodes.
 - **QUIC transport.** One multiplexed, encrypted, UDP-based connection per peer carries gossip, services, and seeds. Connections punch direct between peers; otherwise they relay through any cluster node both peers can reach.
-- **Cryptographic admission.** No shared secrets, no firewall rules. Every link is mTLS.
+- **Cryptographic admission.** No shared secrets, no firewall rules. Every link is mTLS; capabilities ride on signed grants that renew themselves, so the root machine can stay offline.
 - **Edge-ready.** Pure Go, no CGO. Raspberry Pi to cloud host.
 - **Ergonomic.** Opinionated defaults, opt-in configuration.
 
@@ -37,11 +37,11 @@ This demo shows a simple processing pipeline: two chained workloads and a single
 
 Full docs at [docs.pln.sh](https://docs.pln.sh):
 
-- [Quickstart](https://docs.pln.sh/quickstart.html) — install, cluster, workload, call.
-- [Concepts](https://docs.pln.sh/concepts.html) — the model: mesh, gossiped CRDT, placement, storage, capabilities.
-- [How-to](https://docs.pln.sh/how-to.html) — recipes for relays, offline root, property-based access, rollouts.
-- [CLI reference](https://docs.pln.sh/cli.html) — every command, every flag.
-- [Troubleshoot](https://docs.pln.sh/troubleshoot.html) — symptom → cause → fix.
+- [Quickstart](https://docs.pln.sh/quickstart.html). Install, cluster, workload, call.
+- [Concepts](https://docs.pln.sh/concepts.html). The model: mesh, converged state, grants, sessions, admission, scoped status, placement, routing.
+- [How-to](https://docs.pln.sh/how-to.html). Recipes for relays, offline root, property-based access, tenant budgets, rollouts.
+- [CLI reference](https://docs.pln.sh/cli.html). Every command, every flag.
+- [Troubleshoot](https://docs.pln.sh/troubleshoot.html). Symptoms with their causes and fixes.
 
 The rest of this README is a condensed tour. See the docs for the full picture.
 
@@ -68,7 +68,7 @@ pln init                                                  # creates a new cluste
 pln bootstrap ssh user@host [--publisher|--admin]         # requires passwordless SSH + sudo
 ```
 
-You have a zero-trust mesh, a peer-to-peer artifact store, and a WASM
+You have a zero-trust mesh, a peer-to-peer artefact store, and a WASM
 runtime. Public nodes automatically become relays, so the mesh handles
 NAT traversal without configuration. Pass `--publisher` to let the new
 node publish workloads and services, or `--admin` for full delegation
@@ -81,6 +81,9 @@ authority so your root machine doesn't need to stay online.
 ```bash
 pln bootstrap ssh user@host [--publisher|--admin] [--prop region=eu]
 
+# Public box that should serve the CLI over the wire too:
+pln bootstrap ssh edge=root@198.51.100.10 --admin --wire :7443
+
 # Or pipe labelled targets from stdin or a file:
 echo "media=alice@10.0.0.5" | pln bootstrap ssh -
 ```
@@ -89,8 +92,12 @@ Installs Pollen, enrols in the cluster, and starts. Linux targets only;
 needs SSH as root or passwordless sudo. The default tier is leaf
 (consume only); `--publisher` allows the joiner to publish, `--admin`
 delegates full admin authority. `--prop` bakes properties into each
-joiner's cert at issue time; prefix a target with `name=` to label the
-node. Run `pln bootstrap ssh --help` for the full flag set.
+joiner's grant at issue time; prefix a target with `name=` to label the
+node. `--wire :7443` enables the joining node's TLS+mTLS control
+listener and writes it as this context's wire fallback so the local
+CLI keeps working when the local daemon is down; open the inbound
+port at the cloud or host firewall yourself. Run
+`pln bootstrap ssh --help` for the full flag set.
 
 **Out-of-band.** Mint a token on an admin node, ship it to the joiner:
 
@@ -99,7 +106,7 @@ node. Run `pln bootstrap ssh --help` for the full flag set.
 pln invite [--publisher|--admin] [--subject foo]   # subject is the joiner's `pln id`
 
 # New node:
-pln join <token>
+pln join --up <token>
 ```
 
 The token is self-contained: signed admission credentials, the cluster's
@@ -133,12 +140,13 @@ pln call hello greet '{"name":"world"}'
 
 `pln seed` publishes a WASM binary into the cluster. Nodes decide
 *locally* whether to claim a replica, scoring themselves on available
-capacity, cached artifacts, and proximity to traffic. There is no central
+capacity, cached artefacts, and proximity to traffic. There is no central
 scheduler. When a node goes down, survivors pick up the slack.
 Publishing workloads, static sites, named blobs, and services requires
 the publisher capability (or admin, which is a strict superset). Each
-published resource carries a signed cert anchored to the publisher's
-delegation cert.
+published resource is signed and names the publisher's grant rather
+than embedding a copy of it, so it keeps serving while that grant is
+within its deadline and not revoked, even after the publisher leaves.
 
 Example modules live in [`examples/`](examples/). Run `pln --help` for
 the full CLI reference.
@@ -157,21 +165,31 @@ original caller.
 
 ### Grant capabilities
 
-Pollen has three tiers. Pick the smallest that does the job.
+Pollen has four tiers. Pick the smallest that does the job.
 
 - **Leaf** (default): can call workloads and connect to services. Cannot publish, cannot delegate.
 - **Publisher** (`--publisher`): can publish workloads, services, blobs, and static sites. Cannot delegate further.
-- **Admin** (`--admin`): everything publisher can do, plus admit and grant new peers. Only the root admin can mint other admins.
+- **Workspace-admin** (`--workspace`): founds a workspace and operates inside it. Holds delegate authority and full publish capability bounded to that workspace; sees its chain ancestors and own subtree but not siblings or other tenants.
+- **Admin** (`--admin`): cluster-wide. Everything below plus admit and grant new peers anywhere; sees every workload, site, blob and node. Only the root admin can mint other admins.
 
 ```bash
 # Grant publisher capability to an existing peer:
 pln grant <peer-id> --publisher
 
+# Promote to a workspace-admin for multi-tenant isolation; the peer
+# may delegate publishers under it inside its workspace boundary:
+pln grant <peer-id> --workspace
+
 # Delegate admin authority; useful for keeping the mesh operable
-# (admissions, cert re-issues) with the root node offline:
+# (admissions, grant renewals) with the root node offline:
 pln grant <peer-id> --admin
 
-# Bake arbitrary key/value properties into a peer's cert. Seeds see
+# Cap how much a tenant can publish; counts only, 0 means unlimited.
+# The same --max-* flags work at enrolment on `pln invite`:
+pln grant <peer-id> --publisher --max-functions 10 --max-blobs 50 --max-sites 2
+pln invite --publisher --max-functions 10 --max-blobs 50 --max-sites 2
+
+# Bake arbitrary key/value properties into a peer's grant. Seeds see
 # the caller's peer key and properties on every invocation, so auth,
 # routing, and policy decisions can live inside the workload:
 pln grant <peer-id> --prop role=lead --prop team=backend
@@ -190,22 +208,30 @@ pln props role=primary region=eu        # replace
 pln props --clear                       # wipe
 ```
 
+A delegated grant carries a single 30-day deadline, the bound on how
+long a lost key stays usable; admin grants carry none. Renewal is
+automatic: a running daemon renews in the background against any
+reachable delegating peer, and a context with no daemon up renews on
+its next command, so the root and the original issuer can both be
+offline. There is no `pln renew`. If a grant does lapse, mint a fresh
+invite on an admin and `pln join` again.
+
 ### Restrict who can call what
 
 ```bash
-# Require a property on the caller's cert; repeatable, all
+# Require a property on the caller's grant; repeatable, all
 # clauses must match:
 pln serve 8080 internal --allow-prop team=backend
 pln seed ./hello.wasm --allow-prop role=lead
 ```
 
-Policy clauses ride on the spec's signed cert. The runtime gate
-evaluates them against the caller's delegation-cert properties on
-every invoke, fetch, or connect; failed matches close the stream.
-Disjunction lives at issuance: if you want "editors or admins",
-mint both with `pln grant --prop tier=privileged` and require
-`tier=privileged` on the spec. Without a flag the resource is
-open to any authenticated peer.
+Policy clauses ride on the published resource. They are checked
+against the caller's grant properties at the admission authorise
+stage on every invoke, fetch, or connect; failed matches close the
+stream. Disjunction lives at issuance: if you want "editors or
+admins", mint both with `pln grant --prop tier=privileged` and
+require `tier=privileged` on the resource. Without a flag the
+resource is open to any authenticated peer.
 
 ### Serve a static site
 
@@ -231,7 +257,7 @@ HTTP listener routes requests by `Host` header to the matching site.
 ```bash
 # From any node:
 pln seed ./big-file.bin           # prints sha-256 digest
-pln seed ./big-file.bin payload   # …or publish under a name
+pln seed ./big-file.bin payload   # or publish under a name
 
 # From any other node:
 pln fetch <digest|name> ./out.bin     # streams plaintext from the publisher to ./out.bin
@@ -240,7 +266,7 @@ pln fetch <digest|name> ./out.bin     # streams plaintext from the publisher to 
 > Blobs are the primitive behind static sites: content-addressed,
 > gossip-advertised, streamed peer-to-peer over QUIC. Receivers verify
 > the digest on arrival. Bytes are encrypted at rest, so `pln fetch`
-> is the export path — it never writes the encrypted form to your local
+> is the export path. It never writes the encrypted form to your local
 > store.
 
 ## FAQ

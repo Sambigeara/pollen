@@ -15,16 +15,16 @@ import (
 	"time"
 
 	"github.com/quic-go/quic-go"
-	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
+	identityv1 "github.com/sambigeara/pollen/api/genpb/pollen/identity/v1"
 	meshv1 "github.com/sambigeara/pollen/api/genpb/pollen/mesh/v1"
-	"github.com/sambigeara/pollen/pkg/auth"
 	"github.com/sambigeara/pollen/pkg/config"
+	"github.com/sambigeara/pollen/pkg/identity"
 	"github.com/sambigeara/pollen/pkg/types"
 )
 
 const maxInviteEnvelopeSize = 64 * 1024
 
-func RedeemInvite(ctx context.Context, signPriv ed25519.PrivateKey, token *admissionv1.InviteToken) (*admissionv1.JoinToken, error) {
+func RedeemInvite(ctx context.Context, signPriv ed25519.PrivateKey, ticket *identityv1.InviteTicket) (*identityv1.GrantToken, error) {
 	bareCert, err := GenerateIdentityCert(signPriv, nil, config.DefaultTLSIdentityTTL)
 	if err != nil {
 		return nil, err
@@ -42,23 +42,23 @@ func RedeemInvite(ctx context.Context, signPriv ed25519.PrivateKey, token *admis
 		_ = conn.Close()
 	}()
 
-	return redeemInviteWithDial(ctx, token, subjectPub, func(ctx context.Context, addr *net.UDPAddr, expectedPeer types.PeerKey) (*quic.Conn, error) {
+	return redeemInviteWithDial(ctx, ticket, subjectPub, func(ctx context.Context, addr *net.UDPAddr, expectedPeer types.PeerKey) (*quic.Conn, error) {
 		return qt.Dial(ctx, addr, newInviteDialerTLSConfig(bareCert, expectedPeer), quicConfig())
 	})
 }
 
 func redeemInviteWithDial(
 	ctx context.Context,
-	token *admissionv1.InviteToken,
+	ticket *identityv1.InviteTicket,
 	subjectPub ed25519.PublicKey,
 	dial func(context.Context, *net.UDPAddr, types.PeerKey) (*quic.Conn, error),
-) (*admissionv1.JoinToken, error) {
-	if err := auth.VerifyInviteToken(token, subjectPub, time.Now()); err != nil {
+) (*identityv1.GrantToken, error) {
+	if _, err := identity.VerifyInviteTicket(ticket, subjectPub, time.Now()); err != nil {
 		return nil, err
 	}
 
 	var lastErr error
-	for _, bootstrap := range token.GetClaims().GetBootstrap() {
+	for _, bootstrap := range ticket.GetClaims().GetBootstrap() {
 		expectedPeer := types.PeerKeyFromBytes(bootstrap.GetPeerPub())
 		addrs := make([]*net.UDPAddr, 0, len(bootstrap.GetAddrs()))
 		for _, rawAddr := range bootstrap.GetAddrs() {
@@ -78,23 +78,23 @@ func redeemInviteWithDial(
 			continue
 		}
 
-		// Invite tokens are one-shot — racing redemptions would burn the token.
-		joinToken, redeemErr := redeemInviteOnConn(ctx, qc, token, subjectPub)
+		// Invite tickets are one-shot: racing redemptions would burn the ticket.
+		grantToken, redeemErr := redeemInviteOnConn(ctx, qc, ticket, subjectPub)
 		_ = qc.CloseWithError(0, "invite redeemed")
 		if redeemErr != nil {
 			lastErr = redeemErr
 			continue
 		}
 
-		if _, verifyErr := auth.VerifyJoinToken(joinToken, subjectPub, time.Now()); verifyErr != nil {
+		if _, verifyErr := identity.VerifyGrantToken(grantToken, subjectPub, time.Now()); verifyErr != nil {
 			lastErr = verifyErr
 			continue
 		}
 
-		return joinToken, nil
+		return grantToken, nil
 	}
 
-	return nil, fmt.Errorf("failed to redeem invite token: %w", lastErr)
+	return nil, fmt.Errorf("failed to redeem invite ticket: %w", lastErr)
 }
 
 func raceInviteDials(
@@ -142,15 +142,14 @@ func raceInviteDials(
 	return winner, nil
 }
 
-func (m *QUICTransport) JoinWithToken(ctx context.Context, token *admissionv1.JoinToken) error {
-	claims := token.GetClaims()
-	if claims == nil {
-		return fmt.Errorf("join token missing claims")
-	}
-
-	bootstraps := claims.GetBootstrap()
+// JoinWithGrantToken dials the bootstrap peers carried by a redeemed
+// grant token to establish the joiner's first mesh connection. The
+// caller must have enrolled the grant (persisted credentials) before
+// the transport's mesh certificate can authenticate to these peers.
+func (m *QUICTransport) JoinWithGrantToken(ctx context.Context, token *identityv1.GrantToken) error {
+	bootstraps := token.GetClaims().GetBootstrap()
 	if len(bootstraps) == 0 {
-		return fmt.Errorf("join token contains no bootstrap peers")
+		return fmt.Errorf("grant token contains no bootstrap peers")
 	}
 
 	var lastErr error
@@ -179,25 +178,16 @@ func (m *QUICTransport) JoinWithToken(ctx context.Context, token *admissionv1.Jo
 	}
 
 	if lastErr != nil {
-		return fmt.Errorf("failed to join via token bootstrap peers: %w", lastErr)
+		return fmt.Errorf("failed to join via grant token bootstrap peers: %w", lastErr)
 	}
 
-	return fmt.Errorf("failed to join via token bootstrap peers")
+	return fmt.Errorf("failed to join via grant token bootstrap peers")
 }
 
-func (m *QUICTransport) JoinWithInvite(ctx context.Context, token *admissionv1.InviteToken) (*admissionv1.JoinToken, error) {
-	joinToken, err := redeemInviteWithDial(ctx, token, ed25519.PublicKey(m.localKey.Bytes()), func(ctx context.Context, addr *net.UDPAddr, expectedPeer types.PeerKey) (*quic.Conn, error) {
+func (m *QUICTransport) JoinWithInvite(ctx context.Context, ticket *identityv1.InviteTicket) (*identityv1.GrantToken, error) {
+	return redeemInviteWithDial(ctx, ticket, ed25519.PublicKey(m.localKey.Bytes()), func(ctx context.Context, addr *net.UDPAddr, expectedPeer types.PeerKey) (*quic.Conn, error) {
 		return m.mainQT.Dial(ctx, addr, newInviteDialerTLSConfig(m.bareCert, expectedPeer), quicConfig())
 	})
-	if err != nil {
-		return nil, err
-	}
-
-	if err := m.JoinWithToken(ctx, joinToken); err != nil {
-		return nil, err
-	}
-
-	return joinToken, nil
 }
 
 func (m *QUICTransport) handleInviteConnection(ctx context.Context, qc *quic.Conn, peerKey types.PeerKey) {
@@ -232,23 +222,20 @@ func (m *QUICTransport) handleInviteConnection(ctx context.Context, qc *quic.Con
 }
 
 func ProcessInviteRedeem(
-	signer *auth.DelegationSigner,
-	consumer auth.InviteConsumer,
-	membershipTTL time.Duration,
+	issuer *identity.Credentials,
+	consumer identity.InviteConsumer,
 	peerKey types.PeerKey,
 	req *meshv1.InviteRedeemRequest,
 ) *meshv1.InviteRedeemResponse {
 	now := time.Now()
-	if err := auth.VerifyInviteToken(req.GetToken(), ed25519.PublicKey(peerKey.Bytes()), now); err != nil {
+	ticket := req.GetTicket()
+	claims, err := identity.VerifyInviteTicket(ticket, ed25519.PublicKey(peerKey.Bytes()), now)
+	if err != nil {
 		return &meshv1.InviteRedeemResponse{Reason: err.Error()}
 	}
 
-	claims := req.GetToken().GetClaims()
-	if signer == nil || !bytes.Equal(signer.IssuerPub(), claims.GetIssuerPub()) {
-		return &meshv1.InviteRedeemResponse{Reason: "invite token issuer is not local signer"}
-	}
-	if auth.IsCertExpired(signer.IssuerCert(), now) {
-		return &meshv1.InviteRedeemResponse{Reason: "issuer cert expired"}
+	if issuer == nil || !bytes.Equal(issuer.SubjectPub(), claims.GetIssuerPub()) {
+		return &meshv1.InviteRedeemResponse{Reason: "invite ticket issuer is not local issuer"}
 	}
 
 	ttl := inviteRedeemTTL
@@ -256,87 +243,71 @@ func ProcessInviteRedeem(
 		ttl = remaining
 	}
 	if ttl <= 0 {
-		return &meshv1.InviteRedeemResponse{Reason: "invite token expired"}
+		return &meshv1.InviteRedeemResponse{Reason: "invite ticket expired"}
 	}
 
-	consumed, err := consumer.TryConsume(req.GetToken(), now)
+	consumed, err := consumer.TryConsume(ticket, now)
 	if err != nil {
 		return &meshv1.InviteRedeemResponse{Reason: err.Error()}
 	}
 	if !consumed {
-		return &meshv1.InviteRedeemResponse{Reason: "invite token already consumed"}
+		return &meshv1.InviteRedeemResponse{Reason: "invite ticket already consumed"}
 	}
 
-	var accessDeadline time.Time
-	if s := claims.GetMembershipTtlSeconds(); s > 0 {
-		accessDeadline = now.Add(time.Duration(s) * time.Second)
-	}
-
-	certCaps := claims.GetCertCaps()
-	if err := auth.ValidateAttributes(certCaps.GetAttributes()); err != nil {
-		return &meshv1.InviteRedeemResponse{Reason: err.Error()}
-	}
-
-	joinToken, err := signer.IssueJoinToken(
-		ed25519.PublicKey(peerKey.Bytes()),
-		claims.GetBootstrap(),
-		now,
-		ttl,
-		membershipTTL,
-		accessDeadline,
-		certCaps,
-	)
+	grantToken, err := issuer.RedeemInvite(ticket, ed25519.PublicKey(peerKey.Bytes()), now, ttl)
 	if err != nil {
 		return &meshv1.InviteRedeemResponse{Reason: err.Error()}
 	}
-	return &meshv1.InviteRedeemResponse{Accepted: true, JoinToken: joinToken}
+	return &meshv1.InviteRedeemResponse{Accepted: true, GrantToken: grantToken}
 }
 
 type InviteForwarder func(ctx context.Context, peerKey types.PeerKey, req *meshv1.InviteRedeemRequest) (*meshv1.InviteRedeemResponse, error)
 
 func (m *QUICTransport) handleInviteRedeem(ctx context.Context, stream *quic.Stream, peerKey types.PeerKey, req *meshv1.InviteRedeemRequest) error {
 	now := time.Now()
-	if err := auth.VerifyInviteToken(req.GetToken(), ed25519.PublicKey(peerKey.Bytes()), now); err != nil {
+	if _, err := identity.VerifyInviteTicket(req.GetTicket(), ed25519.PublicKey(peerKey.Bytes()), now); err != nil {
 		return err
 	}
 
 	m.inviteHandlerMu.RLock()
-	signer := m.inviteSigner
+	issuer := m.inviteCreds
 	consumer := m.inviteConsumer
 	forwarder := m.inviteForwarder
 	m.inviteHandlerMu.RUnlock()
 
+	issuerPub := req.GetTicket().GetClaims().GetIssuerPub()
+
 	var resp *meshv1.InviteRedeemResponse
 	switch {
-	case signer != nil && bytes.Equal(signer.IssuerPub(), req.GetToken().GetClaims().GetIssuerPub()):
-		resp = ProcessInviteRedeem(signer, consumer, m.membershipTTL, peerKey, req)
+	case issuer != nil && bytes.Equal(issuer.SubjectPub(), issuerPub):
+		resp = ProcessInviteRedeem(issuer, consumer, peerKey, req)
 	case forwarder != nil:
 		var err error
 		resp, err = forwarder(ctx, peerKey, req)
 		if err != nil {
 			return fmt.Errorf("invite forwarding failed: %w", err)
 		}
-	case signer != nil:
-		resp = ProcessInviteRedeem(signer, consumer, m.membershipTTL, peerKey, req)
+	case issuer != nil:
+		resp = ProcessInviteRedeem(issuer, consumer, peerKey, req)
 	default:
-		return errors.New("this node is not an admin and has no forwarding configured")
+		return errors.New("this node is not an issuer and has no forwarding configured")
 	}
 
 	if !resp.GetAccepted() {
 		reason := resp.GetReason()
 		if reason == "" {
-			reason = "invite token rejected"
+			reason = "invite ticket rejected"
 		}
 		return errors.New(reason)
 	}
-	return sendInviteRedeemResponse(stream, resp.GetJoinToken())
+	return sendInviteRedeemResponse(stream, resp.GetGrantToken())
 }
 
-func sendInviteRedeemResponse(stream *quic.Stream, joinToken *admissionv1.JoinToken) error {
+func sendInviteRedeemResponse(stream *quic.Stream, grantToken *identityv1.GrantToken) error {
 	return writeStreamEnvelope(stream, &meshv1.Envelope{
 		Body: &meshv1.Envelope_InviteRedeemResponse{InviteRedeemResponse: &meshv1.InviteRedeemResponse{
-			Accepted:  true,
-			JoinToken: joinToken,
+			Accepted:   true,
+			GrantToken: grantToken,
 		}},
 	})
 }
@@ -344,9 +315,9 @@ func sendInviteRedeemResponse(stream *quic.Stream, joinToken *admissionv1.JoinTo
 func redeemInviteOnConn(
 	ctx context.Context,
 	qc *quic.Conn,
-	token *admissionv1.InviteToken,
+	ticket *identityv1.InviteTicket,
 	subject ed25519.PublicKey,
-) (*admissionv1.JoinToken, error) {
+) (*identityv1.GrantToken, error) {
 	waitCtx, cancel := context.WithTimeout(ctx, handshakeTimeout)
 	defer cancel()
 
@@ -359,7 +330,7 @@ func redeemInviteOnConn(
 	if err := writeStreamEnvelope(stream, &meshv1.Envelope{
 		Body: &meshv1.Envelope_InviteRedeemRequest{
 			InviteRedeemRequest: &meshv1.InviteRedeemRequest{
-				Token:   token,
+				Ticket:  ticket,
 				PeerPub: subject,
 			},
 		},
@@ -382,49 +353,9 @@ func redeemInviteOnConn(
 			if reason := resp.InviteRedeemResponse.GetReason(); reason != "" {
 				return nil, errors.New(reason)
 			}
-			return nil, errors.New("invite token rejected")
+			return nil, errors.New("invite ticket rejected")
 		}
-		return resp.InviteRedeemResponse.GetJoinToken(), nil
-	}
-}
-
-func (m *QUICTransport) RequestCertRenewal(ctx context.Context, peerKey types.PeerKey) (*admissionv1.DelegationCert, error) {
-	currentCert := m.meshCert.Load()
-	var currentCertRaw []byte
-	if len(currentCert.Certificate) > 0 {
-		currentCertRaw = currentCert.Certificate[0]
-	}
-
-	data, err := (&meshv1.Envelope{
-		Body: &meshv1.Envelope_CertRenewalRequest{
-			CertRenewalRequest: &meshv1.CertRenewalRequest{
-				PeerPub:     m.localKey.Bytes(),
-				CurrentCert: currentCertRaw,
-			},
-		},
-	}).MarshalVT()
-	if err != nil {
-		return nil, fmt.Errorf("marshal renewal request: %w", err)
-	}
-	if err := m.SendMembershipDatagram(ctx, peerKey, data); err != nil {
-		return nil, fmt.Errorf("send renewal request: %w", err)
-	}
-
-	waitCtx, cancel := context.WithTimeout(ctx, handshakeTimeout)
-	defer cancel()
-
-	select {
-	case resp := <-m.renewalCh:
-		if !resp.GetAccepted() {
-			reason := resp.GetReason()
-			if reason == "" {
-				reason = "renewal rejected"
-			}
-			return nil, errors.New(reason)
-		}
-		return resp.GetCert(), nil
-	case <-waitCtx.Done():
-		return nil, fmt.Errorf("recv renewal response: %w", waitCtx.Err())
+		return resp.InviteRedeemResponse.GetGrantToken(), nil
 	}
 }
 

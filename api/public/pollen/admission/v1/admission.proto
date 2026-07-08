@@ -6,33 +6,8 @@ syntax = "proto3";
 package pollen.admission.v1;
 
 import "buf/validate/validate.proto";
-import "google/protobuf/struct.proto";
 
 option go_package = "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1;admissionv1";
-
-message Capabilities {
-  bool can_delegate = 1;
-  bool can_admit = 2;
-  uint32 max_depth = 3;
-  google.protobuf.Struct attributes = 4;
-  bool can_publish = 5;
-}
-
-message DelegationCertClaims {
-  bytes subject_pub = 1 [(buf.validate.field).bytes = {len: 32}];
-  bytes issuer_pub = 2 [(buf.validate.field).bytes = {len: 32}];
-  Capabilities capabilities = 3 [(buf.validate.field).required = true];
-  int64 not_before_unix = 4;
-  int64 not_after_unix = 5;
-  uint64 serial = 6;
-  int64 access_deadline_unix = 7;
-}
-
-message DelegationCert {
-  DelegationCertClaims claims = 1 [(buf.validate.field).required = true];
-  repeated DelegationCert chain = 2;
-  bytes signature = 3 [(buf.validate.field).bytes = {len: 64}];
-}
 
 message BootstrapPeer {
   bytes peer_pub = 1 [(buf.validate.field).bytes = {len: 32}];
@@ -42,50 +17,23 @@ message BootstrapPeer {
       string: {min_len: 1}
     }
   }];
+  // host:port of this peer's TLS+mTLS control listener (control-tls).
+  // Empty if the peer has no wire listener. Joiners writing a ctx may use
+  // this as the wire fallback so the CLI keeps working when the local
+  // daemon is down. No scheme: callers prepend `pln://` for display.
+  string wire_endpoint = 3;
 }
 
-message JoinTokenClaims {
-  string token_id = 1 [(buf.validate.field).string = {uuid: true}];
-  bytes issuer_pub = 2 [(buf.validate.field).bytes = {len: 32}];
-  DelegationCert member_cert = 3 [(buf.validate.field).required = true];
-  repeated BootstrapPeer bootstrap = 4;
-  int64 issued_at_unix = 5;
-  int64 expires_at_unix = 6;
-}
-
-message JoinToken {
-  JoinTokenClaims claims = 1 [(buf.validate.field).required = true];
-  bytes signature = 2 [(buf.validate.field).bytes = {len: 64}];
-}
-
-message InviteTokenClaims {
-  string token_id = 1 [(buf.validate.field).string = {uuid: true}];
-  bytes issuer_pub = 2 [(buf.validate.field).bytes = {len: 32}];
-  repeated BootstrapPeer bootstrap = 3 [(buf.validate.field).repeated.min_items = 1];
-  bytes subject_pub = 4 [
-    (buf.validate.field).ignore = IGNORE_IF_ZERO_VALUE,
-    (buf.validate.field).bytes = {len: 32}
-  ];
-  int64 issued_at_unix = 5;
-  int64 expires_at_unix = 6;
-  int64 membership_ttl_seconds = 7;
-  reserved 8, 9;
-  reserved "attributes", "admin";
-  Capabilities cert_caps = 10 [(buf.validate.field).required = true];
-}
-
-message InviteToken {
-  InviteTokenClaims claims = 1 [(buf.validate.field).required = true];
-  bytes signature = 2 [(buf.validate.field).bytes = {len: 64}];
-}
-
-message SpecAuth {
+message AccessTokenClaims {
   ResourceID resource = 1 [(buf.validate.field).required = true];
-  Predicate policy = 2;
-  bytes body_hash = 3 [(buf.validate.field).bytes = {len: 32}];
-  DelegationCert publisher = 4 [(buf.validate.field).required = true];
-  bytes signature = 5 [(buf.validate.field).bytes = {len: 64}];
-  bool deleted = 6;
+  bytes issuer_pub = 2 [(buf.validate.field).bytes = {len: 32}];
+  int64 issued_at_unix = 3;
+  int64 expires_at_unix = 4;
+}
+
+message AccessToken {
+  AccessTokenClaims claims = 1 [(buf.validate.field).required = true];
+  bytes signature = 2 [(buf.validate.field).bytes = {len: 64}];
 }
 
 message ResourceID {
@@ -127,6 +75,9 @@ message ServiceID {
 
 message Predicate {
   InlinePredicate inline = 1;
+  // public, when true, permits anonymous callers (no grant) and
+  // short-circuits attribute clause evaluation.
+  bool public = 2;
 }
 
 message InlinePredicate {

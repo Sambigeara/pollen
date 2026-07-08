@@ -36,6 +36,9 @@ const (
 // reflection-formatted method names, remove the leading slash and convert the remaining slash to a
 // period.
 const (
+	// ControlServiceHandshakeProcedure is the fully-qualified name of the ControlService's Handshake
+	// RPC.
+	ControlServiceHandshakeProcedure = "/pollen.control.v1.ControlService/Handshake"
 	// ControlServiceShutdownProcedure is the fully-qualified name of the ControlService's Shutdown RPC.
 	ControlServiceShutdownProcedure = "/pollen.control.v1.ControlService/Shutdown"
 	// ControlServiceGetBootstrapInfoProcedure is the fully-qualified name of the ControlService's
@@ -73,9 +76,12 @@ const (
 	// ControlServiceCallWorkloadProcedure is the fully-qualified name of the ControlService's
 	// CallWorkload RPC.
 	ControlServiceCallWorkloadProcedure = "/pollen.control.v1.ControlService/CallWorkload"
-	// ControlServiceIssueCertProcedure is the fully-qualified name of the ControlService's IssueCert
+	// ControlServiceUpgradePeerProcedure is the fully-qualified name of the ControlService's
+	// UpgradePeer RPC.
+	ControlServiceUpgradePeerProcedure = "/pollen.control.v1.ControlService/UpgradePeer"
+	// ControlServiceRenewGrantProcedure is the fully-qualified name of the ControlService's RenewGrant
 	// RPC.
-	ControlServiceIssueCertProcedure = "/pollen.control.v1.ControlService/IssueCert"
+	ControlServiceRenewGrantProcedure = "/pollen.control.v1.ControlService/RenewGrant"
 	// ControlServiceFetchBlobProcedure is the fully-qualified name of the ControlService's FetchBlob
 	// RPC.
 	ControlServiceFetchBlobProcedure = "/pollen.control.v1.ControlService/FetchBlob"
@@ -100,6 +106,12 @@ const (
 
 // ControlServiceClient is a client for the pollen.control.v1.ControlService service.
 type ControlServiceClient interface {
+	// Handshake exchanges the client and server protocol-version ranges
+	// before any functional RPC. The server only reports its own
+	// [server_min, server_max]; the client decides compatibility, so a
+	// version mismatch surfaces as an explicit "out of date" message
+	// rather than an opaque transport failure.
+	Handshake(context.Context, *connect.Request[v1.HandshakeRequest]) (*connect.Response[v1.HandshakeResponse], error)
 	Shutdown(context.Context, *connect.Request[v1.ShutdownRequest]) (*connect.Response[v1.ShutdownResponse], error)
 	GetBootstrapInfo(context.Context, *connect.Request[v1.GetBootstrapInfoRequest]) (*connect.Response[v1.GetBootstrapInfoResponse], error)
 	GetStatus(context.Context, *connect.Request[v1.GetStatusRequest]) (*connect.Response[v1.GetStatusResponse], error)
@@ -113,7 +125,8 @@ type ControlServiceClient interface {
 	SeedWorkload(context.Context) *connect.ClientStreamForClient[v1.SeedWorkloadRequest, v1.SeedWorkloadResponse]
 	UnseedWorkload(context.Context, *connect.Request[v1.UnseedWorkloadRequest]) (*connect.Response[v1.UnseedWorkloadResponse], error)
 	CallWorkload(context.Context, *connect.Request[v1.CallWorkloadRequest]) (*connect.Response[v1.CallWorkloadResponse], error)
-	IssueCert(context.Context, *connect.Request[v1.IssueCertRequest]) (*connect.Response[v1.IssueCertResponse], error)
+	UpgradePeer(context.Context, *connect.Request[v1.UpgradePeerRequest]) (*connect.Response[v1.UpgradePeerResponse], error)
+	RenewGrant(context.Context, *connect.Request[v1.RenewGrantRequest]) (*connect.Response[v1.RenewGrantResponse], error)
 	FetchBlob(context.Context, *connect.Request[v1.FetchBlobRequest]) (*connect.ServerStreamForClient[v1.FetchBlobResponse], error)
 	UploadBlob(context.Context) *connect.ClientStreamForClient[v1.UploadBlobRequest, v1.UploadBlobResponse]
 	RemoveBlob(context.Context, *connect.Request[v1.RemoveBlobRequest]) (*connect.Response[v1.RemoveBlobResponse], error)
@@ -134,6 +147,12 @@ func NewControlServiceClient(httpClient connect.HTTPClient, baseURL string, opts
 	baseURL = strings.TrimRight(baseURL, "/")
 	controlServiceMethods := v1.File_pollen_control_v1_control_proto.Services().ByName("ControlService").Methods()
 	return &controlServiceClient{
+		handshake: connect.NewClient[v1.HandshakeRequest, v1.HandshakeResponse](
+			httpClient,
+			baseURL+ControlServiceHandshakeProcedure,
+			connect.WithSchema(controlServiceMethods.ByName("Handshake")),
+			connect.WithClientOptions(opts...),
+		),
 		shutdown: connect.NewClient[v1.ShutdownRequest, v1.ShutdownResponse](
 			httpClient,
 			baseURL+ControlServiceShutdownProcedure,
@@ -212,10 +231,16 @@ func NewControlServiceClient(httpClient connect.HTTPClient, baseURL string, opts
 			connect.WithSchema(controlServiceMethods.ByName("CallWorkload")),
 			connect.WithClientOptions(opts...),
 		),
-		issueCert: connect.NewClient[v1.IssueCertRequest, v1.IssueCertResponse](
+		upgradePeer: connect.NewClient[v1.UpgradePeerRequest, v1.UpgradePeerResponse](
 			httpClient,
-			baseURL+ControlServiceIssueCertProcedure,
-			connect.WithSchema(controlServiceMethods.ByName("IssueCert")),
+			baseURL+ControlServiceUpgradePeerProcedure,
+			connect.WithSchema(controlServiceMethods.ByName("UpgradePeer")),
+			connect.WithClientOptions(opts...),
+		),
+		renewGrant: connect.NewClient[v1.RenewGrantRequest, v1.RenewGrantResponse](
+			httpClient,
+			baseURL+ControlServiceRenewGrantProcedure,
+			connect.WithSchema(controlServiceMethods.ByName("RenewGrant")),
 			connect.WithClientOptions(opts...),
 		),
 		fetchBlob: connect.NewClient[v1.FetchBlobRequest, v1.FetchBlobResponse](
@@ -265,6 +290,7 @@ func NewControlServiceClient(httpClient connect.HTTPClient, baseURL string, opts
 
 // controlServiceClient implements ControlServiceClient.
 type controlServiceClient struct {
+	handshake         *connect.Client[v1.HandshakeRequest, v1.HandshakeResponse]
 	shutdown          *connect.Client[v1.ShutdownRequest, v1.ShutdownResponse]
 	getBootstrapInfo  *connect.Client[v1.GetBootstrapInfoRequest, v1.GetBootstrapInfoResponse]
 	getStatus         *connect.Client[v1.GetStatusRequest, v1.GetStatusResponse]
@@ -278,7 +304,8 @@ type controlServiceClient struct {
 	seedWorkload      *connect.Client[v1.SeedWorkloadRequest, v1.SeedWorkloadResponse]
 	unseedWorkload    *connect.Client[v1.UnseedWorkloadRequest, v1.UnseedWorkloadResponse]
 	callWorkload      *connect.Client[v1.CallWorkloadRequest, v1.CallWorkloadResponse]
-	issueCert         *connect.Client[v1.IssueCertRequest, v1.IssueCertResponse]
+	upgradePeer       *connect.Client[v1.UpgradePeerRequest, v1.UpgradePeerResponse]
+	renewGrant        *connect.Client[v1.RenewGrantRequest, v1.RenewGrantResponse]
 	fetchBlob         *connect.Client[v1.FetchBlobRequest, v1.FetchBlobResponse]
 	uploadBlob        *connect.Client[v1.UploadBlobRequest, v1.UploadBlobResponse]
 	removeBlob        *connect.Client[v1.RemoveBlobRequest, v1.RemoveBlobResponse]
@@ -286,6 +313,11 @@ type controlServiceClient struct {
 	unseedStatic      *connect.Client[v1.UnseedStaticRequest, v1.UnseedStaticResponse]
 	listStatic        *connect.Client[v1.ListStaticRequest, v1.ListStaticResponse]
 	inspect           *connect.Client[v1.InspectRequest, v1.InspectResponse]
+}
+
+// Handshake calls pollen.control.v1.ControlService.Handshake.
+func (c *controlServiceClient) Handshake(ctx context.Context, req *connect.Request[v1.HandshakeRequest]) (*connect.Response[v1.HandshakeResponse], error) {
+	return c.handshake.CallUnary(ctx, req)
 }
 
 // Shutdown calls pollen.control.v1.ControlService.Shutdown.
@@ -353,9 +385,14 @@ func (c *controlServiceClient) CallWorkload(ctx context.Context, req *connect.Re
 	return c.callWorkload.CallUnary(ctx, req)
 }
 
-// IssueCert calls pollen.control.v1.ControlService.IssueCert.
-func (c *controlServiceClient) IssueCert(ctx context.Context, req *connect.Request[v1.IssueCertRequest]) (*connect.Response[v1.IssueCertResponse], error) {
-	return c.issueCert.CallUnary(ctx, req)
+// UpgradePeer calls pollen.control.v1.ControlService.UpgradePeer.
+func (c *controlServiceClient) UpgradePeer(ctx context.Context, req *connect.Request[v1.UpgradePeerRequest]) (*connect.Response[v1.UpgradePeerResponse], error) {
+	return c.upgradePeer.CallUnary(ctx, req)
+}
+
+// RenewGrant calls pollen.control.v1.ControlService.RenewGrant.
+func (c *controlServiceClient) RenewGrant(ctx context.Context, req *connect.Request[v1.RenewGrantRequest]) (*connect.Response[v1.RenewGrantResponse], error) {
+	return c.renewGrant.CallUnary(ctx, req)
 }
 
 // FetchBlob calls pollen.control.v1.ControlService.FetchBlob.
@@ -395,6 +432,12 @@ func (c *controlServiceClient) Inspect(ctx context.Context, req *connect.Request
 
 // ControlServiceHandler is an implementation of the pollen.control.v1.ControlService service.
 type ControlServiceHandler interface {
+	// Handshake exchanges the client and server protocol-version ranges
+	// before any functional RPC. The server only reports its own
+	// [server_min, server_max]; the client decides compatibility, so a
+	// version mismatch surfaces as an explicit "out of date" message
+	// rather than an opaque transport failure.
+	Handshake(context.Context, *connect.Request[v1.HandshakeRequest]) (*connect.Response[v1.HandshakeResponse], error)
 	Shutdown(context.Context, *connect.Request[v1.ShutdownRequest]) (*connect.Response[v1.ShutdownResponse], error)
 	GetBootstrapInfo(context.Context, *connect.Request[v1.GetBootstrapInfoRequest]) (*connect.Response[v1.GetBootstrapInfoResponse], error)
 	GetStatus(context.Context, *connect.Request[v1.GetStatusRequest]) (*connect.Response[v1.GetStatusResponse], error)
@@ -408,7 +451,8 @@ type ControlServiceHandler interface {
 	SeedWorkload(context.Context, *connect.ClientStream[v1.SeedWorkloadRequest]) (*connect.Response[v1.SeedWorkloadResponse], error)
 	UnseedWorkload(context.Context, *connect.Request[v1.UnseedWorkloadRequest]) (*connect.Response[v1.UnseedWorkloadResponse], error)
 	CallWorkload(context.Context, *connect.Request[v1.CallWorkloadRequest]) (*connect.Response[v1.CallWorkloadResponse], error)
-	IssueCert(context.Context, *connect.Request[v1.IssueCertRequest]) (*connect.Response[v1.IssueCertResponse], error)
+	UpgradePeer(context.Context, *connect.Request[v1.UpgradePeerRequest]) (*connect.Response[v1.UpgradePeerResponse], error)
+	RenewGrant(context.Context, *connect.Request[v1.RenewGrantRequest]) (*connect.Response[v1.RenewGrantResponse], error)
 	FetchBlob(context.Context, *connect.Request[v1.FetchBlobRequest], *connect.ServerStream[v1.FetchBlobResponse]) error
 	UploadBlob(context.Context, *connect.ClientStream[v1.UploadBlobRequest]) (*connect.Response[v1.UploadBlobResponse], error)
 	RemoveBlob(context.Context, *connect.Request[v1.RemoveBlobRequest]) (*connect.Response[v1.RemoveBlobResponse], error)
@@ -425,6 +469,12 @@ type ControlServiceHandler interface {
 // and JSON codecs. They also support gzip compression.
 func NewControlServiceHandler(svc ControlServiceHandler, opts ...connect.HandlerOption) (string, http.Handler) {
 	controlServiceMethods := v1.File_pollen_control_v1_control_proto.Services().ByName("ControlService").Methods()
+	controlServiceHandshakeHandler := connect.NewUnaryHandler(
+		ControlServiceHandshakeProcedure,
+		svc.Handshake,
+		connect.WithSchema(controlServiceMethods.ByName("Handshake")),
+		connect.WithHandlerOptions(opts...),
+	)
 	controlServiceShutdownHandler := connect.NewUnaryHandler(
 		ControlServiceShutdownProcedure,
 		svc.Shutdown,
@@ -503,10 +553,16 @@ func NewControlServiceHandler(svc ControlServiceHandler, opts ...connect.Handler
 		connect.WithSchema(controlServiceMethods.ByName("CallWorkload")),
 		connect.WithHandlerOptions(opts...),
 	)
-	controlServiceIssueCertHandler := connect.NewUnaryHandler(
-		ControlServiceIssueCertProcedure,
-		svc.IssueCert,
-		connect.WithSchema(controlServiceMethods.ByName("IssueCert")),
+	controlServiceUpgradePeerHandler := connect.NewUnaryHandler(
+		ControlServiceUpgradePeerProcedure,
+		svc.UpgradePeer,
+		connect.WithSchema(controlServiceMethods.ByName("UpgradePeer")),
+		connect.WithHandlerOptions(opts...),
+	)
+	controlServiceRenewGrantHandler := connect.NewUnaryHandler(
+		ControlServiceRenewGrantProcedure,
+		svc.RenewGrant,
+		connect.WithSchema(controlServiceMethods.ByName("RenewGrant")),
 		connect.WithHandlerOptions(opts...),
 	)
 	controlServiceFetchBlobHandler := connect.NewServerStreamHandler(
@@ -553,6 +609,8 @@ func NewControlServiceHandler(svc ControlServiceHandler, opts ...connect.Handler
 	)
 	return "/pollen.control.v1.ControlService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
+		case ControlServiceHandshakeProcedure:
+			controlServiceHandshakeHandler.ServeHTTP(w, r)
 		case ControlServiceShutdownProcedure:
 			controlServiceShutdownHandler.ServeHTTP(w, r)
 		case ControlServiceGetBootstrapInfoProcedure:
@@ -579,8 +637,10 @@ func NewControlServiceHandler(svc ControlServiceHandler, opts ...connect.Handler
 			controlServiceUnseedWorkloadHandler.ServeHTTP(w, r)
 		case ControlServiceCallWorkloadProcedure:
 			controlServiceCallWorkloadHandler.ServeHTTP(w, r)
-		case ControlServiceIssueCertProcedure:
-			controlServiceIssueCertHandler.ServeHTTP(w, r)
+		case ControlServiceUpgradePeerProcedure:
+			controlServiceUpgradePeerHandler.ServeHTTP(w, r)
+		case ControlServiceRenewGrantProcedure:
+			controlServiceRenewGrantHandler.ServeHTTP(w, r)
 		case ControlServiceFetchBlobProcedure:
 			controlServiceFetchBlobHandler.ServeHTTP(w, r)
 		case ControlServiceUploadBlobProcedure:
@@ -603,6 +663,10 @@ func NewControlServiceHandler(svc ControlServiceHandler, opts ...connect.Handler
 
 // UnimplementedControlServiceHandler returns CodeUnimplemented from all methods.
 type UnimplementedControlServiceHandler struct{}
+
+func (UnimplementedControlServiceHandler) Handshake(context.Context, *connect.Request[v1.HandshakeRequest]) (*connect.Response[v1.HandshakeResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("pollen.control.v1.ControlService.Handshake is not implemented"))
+}
 
 func (UnimplementedControlServiceHandler) Shutdown(context.Context, *connect.Request[v1.ShutdownRequest]) (*connect.Response[v1.ShutdownResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("pollen.control.v1.ControlService.Shutdown is not implemented"))
@@ -656,8 +720,12 @@ func (UnimplementedControlServiceHandler) CallWorkload(context.Context, *connect
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("pollen.control.v1.ControlService.CallWorkload is not implemented"))
 }
 
-func (UnimplementedControlServiceHandler) IssueCert(context.Context, *connect.Request[v1.IssueCertRequest]) (*connect.Response[v1.IssueCertResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("pollen.control.v1.ControlService.IssueCert is not implemented"))
+func (UnimplementedControlServiceHandler) UpgradePeer(context.Context, *connect.Request[v1.UpgradePeerRequest]) (*connect.Response[v1.UpgradePeerResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("pollen.control.v1.ControlService.UpgradePeer is not implemented"))
+}
+
+func (UnimplementedControlServiceHandler) RenewGrant(context.Context, *connect.Request[v1.RenewGrantRequest]) (*connect.Response[v1.RenewGrantResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("pollen.control.v1.ControlService.RenewGrant is not implemented"))
 }
 
 func (UnimplementedControlServiceHandler) FetchBlob(context.Context, *connect.Request[v1.FetchBlobRequest], *connect.ServerStream[v1.FetchBlobResponse]) error {

@@ -11,17 +11,16 @@ import (
 	"time"
 
 	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
+	factv1 "github.com/sambigeara/pollen/api/genpb/pollen/fact/v1"
+	identityv1 "github.com/sambigeara/pollen/api/genpb/pollen/identity/v1"
 	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
-	"github.com/sambigeara/pollen/pkg/auth"
 	"github.com/sambigeara/pollen/pkg/coords"
+	"github.com/sambigeara/pollen/pkg/fact"
 	"github.com/sambigeara/pollen/pkg/nat"
 	"github.com/sambigeara/pollen/pkg/types"
 )
 
-var (
-	ErrSpecOwnedByPeer = errors.New("spec already published by another peer")
-	ErrInvalidDigest   = errors.New("invalid manifest digest")
-)
+var ErrInvalidDigest = errors.New("invalid manifest digest")
 
 type Event interface{ stateEvent() }
 
@@ -36,7 +35,7 @@ type (
 	TopologyChanged  struct{ Peer types.PeerKey }
 	AddressesChanged struct{ Peer types.PeerKey }
 	StaticChanged    struct{ Name string }
-	CertChanged      struct{ Peer types.PeerKey }
+	GrantChanged     struct{ Peer types.PeerKey }
 )
 
 func (PeerJoined) stateEvent()       {}
@@ -46,17 +45,17 @@ func (WorkloadChanged) stateEvent()  {}
 func (TopologyChanged) stateEvent()  {}
 func (AddressesChanged) stateEvent() {}
 func (StaticChanged) stateEvent()    {}
-func (CertChanged) stateEvent()      {}
+func (GrantChanged) stateEvent()     {}
 
 type LocalSigner interface {
-	IssueSpecAuth(resource *admissionv1.ResourceID, body auth.SpecBody, policy *admissionv1.Predicate, deleted bool) (*admissionv1.SpecAuth, error)
+	IssueFact(resource *admissionv1.ResourceID, body fact.Body, policy *admissionv1.Predicate, deleted bool) (*factv1.Fact, error)
 }
 
 type MutationValidator func(*statev1.SpecChange) error
 
 type StateStore interface {
 	Snapshot() Snapshot
-	ApplyDelta(from types.PeerKey, data []byte) ([]Event, []byte, error)
+	ApplyDelta(data []byte) ([]Event, []byte, error)
 	EncodeDelta(since Digest) []byte
 	EncodeFull() []byte
 	PendingNotify() <-chan struct{}
@@ -70,7 +69,9 @@ type StateStore interface {
 	SetLocalObservedAddress(ip string, port uint32) []Event
 
 	PublishWorkload(spec WorkloadSpec, policy *admissionv1.Predicate) ([]Event, error)
+	PublishWorkloadPresigned(spec WorkloadSpec, presignedFact *factv1.Fact) ([]Event, error)
 	DeleteWorkloadSpec(hash string) ([]Event, error)
+	DeleteWorkloadSpecPresigned(hash string, presignedFact *factv1.Fact) ([]Event, error)
 	ClaimWorkload(hash string) []Event
 	MarkWorkloadDraining(hash string) []Event
 	ReleaseWorkload(hash string) []Event
@@ -80,22 +81,26 @@ type StateStore interface {
 	SetLocalBlobs(digests []string) []Event
 
 	SetStaticSpec(spec StaticSpec, policy *admissionv1.Predicate) ([]Event, error)
+	SetStaticSpecPresigned(spec StaticSpec, presignedFact *factv1.Fact) ([]Event, error)
 	DeleteStaticSpec(name string) ([]Event, error)
-	ClaimStatic(name string) []Event
-	ReleaseStatic(name string) []Event
+	DeleteStaticSpecPresigned(name string, presignedFact *factv1.Fact) ([]Event, error)
+	ClaimStatic(name string, authority types.PeerKey) []Event
+	ReleaseStatic(name string, authority types.PeerKey) []Event
 
 	SetBlobSpec(spec BlobSpec, policy *admissionv1.Predicate) ([]Event, error)
+	SetBlobSpecPresigned(spec BlobSpec, presignedFact *factv1.Fact) ([]Event, error)
 	DeleteBlobSpec(digest string) ([]Event, error)
+	DeleteBlobSpecPresigned(digest string, presignedFact *factv1.Fact) ([]Event, error)
 
-	SetBlobWrapping(wrapping *statev1.BlobWrappingChange) []Event
+	SetBlobWrapping(wrapping *factv1.BlobWrapping) []Event
 
 	SetService(port uint32, name string, protocol statev1.ServiceProtocol, policy *admissionv1.Predicate) ([]Event, error)
 	RemoveService(name string) ([]Event, error)
-	RevokeOwnSpecs() ([]Event, error)
+	RevokeOwnSpecs(retain *identityv1.Capabilities) ([]Event, error)
 	SetLocalTraffic(peer types.PeerKey, in, out uint64) []Event
 
 	EmitHeartbeatIfNeeded() []Event
-	LoadGossipState(data []byte) error
+	RestoreFromDisk(data []byte) error
 
 	SetPeerLastAddr(pk types.PeerKey, addr string)
 	SetPublic()
@@ -103,7 +108,10 @@ type StateStore interface {
 	ClearAdmin()
 	SetStaticCapable()
 	SetNodeName(name string)
-	SetLocalDelegationCert(cert *admissionv1.DelegationCert, subjectSig []byte) []Event
+	SetControlAddr(addr string)
+	SetGatewayDomain(domain string)
+	SetLocalGrant(grant *identityv1.Grant, subjectSig []byte) []Event
+	RegisterPeerGrant(peer types.PeerKey, grant *identityv1.Grant, subjectSig []byte) []Event
 	SetLocalSigner(signer LocalSigner)
 	SetMutationValidator(v MutationValidator)
 	ExportLastAddrs() map[types.PeerKey]string
@@ -152,6 +160,10 @@ func New(self types.PeerKey, rootPub []byte) StateStore {
 	return s
 }
 
+// Snapshot must stay lock-free (a plain atomic load): the admission
+// pipeline is wired as the mutation validator and calls Snapshot()
+// while the store lock is held (gossip apply and the local self-signed
+// seam), so taking s.mu here would deadlock the apply path.
 func (s *store) Snapshot() Snapshot {
 	return *s.snap.Load()
 }
@@ -196,7 +208,9 @@ func (s *store) EmitHeartbeatIfNeeded() []Event {
 	})
 }
 
-func (s *store) LoadGossipState(data []byte) error {
+// RestoreFromDisk reloads state.pb written by this same node on its
+// last shutdown. See restoreFromDiskLocked for the contract.
+func (s *store) RestoreFromDisk(data []byte) error {
 	var batch statev1.GossipEventBatch
 	if err := batch.UnmarshalVT(data); err != nil {
 		return err
@@ -205,13 +219,7 @@ func (s *store) LoadGossipState(data []byte) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.applyBatchLocked(batch.Events, false)
-
-	// Derive the denied set from the freshly-loaded cert + deny graph.
-	// applyBatchLocked skips this when live=false (replay/restore path),
-	// so we trigger it explicitly here.
-	s.recomputeDeniedLocked()
-
+	s.restoreFromDiskLocked(batch.Events)
 	s.updateSnapshotLocked()
 	return nil
 }

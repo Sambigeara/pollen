@@ -14,8 +14,8 @@ import (
 	"testing"
 	"time"
 
-	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
-	"github.com/sambigeara/pollen/pkg/auth"
+	identityv1 "github.com/sambigeara/pollen/api/genpb/pollen/identity/v1"
+	"github.com/sambigeara/pollen/pkg/identity"
 	"github.com/sambigeara/pollen/pkg/state"
 	"github.com/sambigeara/pollen/pkg/supervisor"
 	"github.com/sambigeara/pollen/pkg/types"
@@ -29,6 +29,8 @@ type TestNodeConfig struct {
 	Addr           *net.UDPAddr
 	Name           string
 	Role           NodeRole
+	Parent         string
+	Caps           *identityv1.Capabilities
 	EnableNATPunch bool
 	IsRoot         bool
 }
@@ -45,26 +47,22 @@ type TestNode struct {
 
 func NewTestNode(t testing.TB, cfg TestNodeConfig) *TestNode { //nolint:thelper
 	var priv ed25519.PrivateKey
-	var dc = (*admissionv1.DelegationCert)(nil)
+	var creds *identity.Credentials
 	if cfg.IsRoot {
 		priv = cfg.Auth.RootKey()
-		_, dc = cfg.Auth.RootNodeCredentials()
+		creds = cfg.Auth.RootCredentials(cfg.Name)
 	} else {
 		_, p, err := ed25519.GenerateKey(rand.Reader)
 		require.NoError(t, err)
 		priv = p
-		_, dc = cfg.Auth.NodeCredentials(priv)
+		creds = cfg.Auth.MemberCredentials(cfg.Name, priv, cfg.Parent, cfg.Caps)
 	}
 	pub := priv.Public().(ed25519.PublicKey) //nolint:forcetypeassert
 	peerKey := types.PeerKeyFromBytes(pub)
 
 	pollenDir := t.TempDir()
-	identityDir := auth.IdentityPath(pollenDir)
-	creds := auth.NewNodeCredentials(cfg.Auth.RootPub(), dc)
-	require.NoError(t, auth.SaveNodeCredentials(identityDir, creds))
-	signer, err := auth.NewDelegationSigner(identityDir, priv)
-	require.NoError(t, err)
-	creds.SetDelegationKey(signer)
+	identityDir := identity.IdentityPath(pollenDir)
+	require.NoError(t, identity.SaveCredentials(identityDir, creds))
 
 	vconn := cfg.Switch.Bind(cfg.Addr, cfg.Role)
 
@@ -80,7 +78,7 @@ func NewTestNode(t testing.TB, cfg TestNodeConfig) *TestNode { //nolint:thelper
 		BootstrapPublic:  cfg.Role == Public,
 	}
 
-	n, err := supervisor.New(opts, creds, auth.NewInviteConsumer(nil))
+	n, err := supervisor.New(opts, creds, identity.NewInviteConsumer(nil))
 	require.NoError(t, err)
 
 	ctx, cancel := context.WithCancel(cfg.Context)

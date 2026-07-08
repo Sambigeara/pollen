@@ -6,6 +6,8 @@ package main
 import (
 	"errors"
 	"fmt"
+
+	"connectrpc.com/connect"
 )
 
 const (
@@ -57,4 +59,16 @@ func exitCodeOf(err error) int {
 		return ee.code
 	}
 	return exitGeneric
+}
+
+// errorLine renders err for the operator as "Error: <message>". For a
+// daemon status (a *connect.Error) it prints the message without the
+// transport-level gRPC code; local errors print verbatim.
+func errorLine(err error) string {
+	msg := err.Error()
+	var ce *connect.Error
+	if errors.As(err, &ce) {
+		msg = ce.Message()
+	}
+	return "Error: " + msg
 }

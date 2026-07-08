@@ -14,11 +14,9 @@ import (
 )
 
 const (
-	nameCertExpirySeconds  = "pollen.node.cert.expiry.seconds"
-	nameCertRenewals       = "pollen.node.cert.renewals"
-	nameCertRenewalsFailed = "pollen.node.cert.renewals.failed"
-	namePunchAttempts      = "pollen.node.punch.attempts"
-	namePunchFailures      = "pollen.node.punch.failures"
+	nameCertExpirySeconds = "pollen.node.cert.expiry.seconds"
+	namePunchAttempts     = "pollen.node.punch.attempts"
+	namePunchFailures     = "pollen.node.punch.failures"
 )
 
 type metricReader interface {
@@ -69,11 +67,9 @@ func (p *Provider) Shutdown(ctx context.Context) error {
 }
 
 type MetricSnapshot struct {
-	CertExpirySeconds  float64
-	CertRenewals       int64
-	CertRenewalsFailed int64
-	PunchAttempts      int64
-	PunchFailures      int64
+	CertExpirySeconds float64
+	PunchAttempts     int64
+	PunchFailures     int64
 }
 
 func (p *Provider) CollectSnapshot(ctx context.Context) (MetricSnapshot, error) {
@@ -90,10 +86,6 @@ func (p *Provider) CollectSnapshot(ctx context.Context) (MetricSnapshot, error) 
 			case metricdata.Sum[int64]:
 				for _, dp := range data.DataPoints {
 					switch met.Name {
-					case nameCertRenewals:
-						snap.CertRenewals += dp.Value
-					case nameCertRenewalsFailed:
-						snap.CertRenewalsFailed += dp.Value
 					case namePunchAttempts:
 						snap.PunchAttempts += dp.Value
 					case namePunchFailures:

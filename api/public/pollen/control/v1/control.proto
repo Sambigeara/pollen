@@ -8,11 +8,19 @@ package pollen.control.v1;
 import "buf/validate/validate.proto";
 import "google/protobuf/struct.proto";
 import "pollen/admission/v1/admission.proto";
+import "pollen/fact/v1/fact.proto";
+import "pollen/identity/v1/identity.proto";
 import "pollen/state/v1/state.proto";
 
 option go_package = "github.com/sambigeara/pollen/api/genpb/pollen/control/v1;controlv1";
 
 service ControlService {
+  // Handshake exchanges the client and server protocol-version ranges
+  // before any functional RPC. The server only reports its own
+  // [server_min, server_max]; the client decides compatibility, so a
+  // version mismatch surfaces as an explicit "out of date" message
+  // rather than an opaque transport failure.
+  rpc Handshake(HandshakeRequest) returns (HandshakeResponse);
   rpc Shutdown(ShutdownRequest) returns (ShutdownResponse);
   rpc GetBootstrapInfo(GetBootstrapInfoRequest) returns (GetBootstrapInfoResponse);
   rpc GetStatus(GetStatusRequest) returns (GetStatusResponse);
@@ -26,7 +34,8 @@ service ControlService {
   rpc SeedWorkload(stream SeedWorkloadRequest) returns (SeedWorkloadResponse);
   rpc UnseedWorkload(UnseedWorkloadRequest) returns (UnseedWorkloadResponse);
   rpc CallWorkload(CallWorkloadRequest) returns (CallWorkloadResponse);
-  rpc IssueCert(IssueCertRequest) returns (IssueCertResponse);
+  rpc UpgradePeer(UpgradePeerRequest) returns (UpgradePeerResponse);
+  rpc RenewGrant(RenewGrantRequest) returns (RenewGrantResponse);
   rpc FetchBlob(FetchBlobRequest) returns (stream FetchBlobResponse);
   rpc UploadBlob(stream UploadBlobRequest) returns (UploadBlobResponse);
   rpc RemoveBlob(RemoveBlobRequest) returns (RemoveBlobResponse);
@@ -34,6 +43,16 @@ service ControlService {
   rpc UnseedStatic(UnseedStaticRequest) returns (UnseedStaticResponse);
   rpc ListStatic(ListStaticRequest) returns (ListStaticResponse);
   rpc Inspect(InspectRequest) returns (InspectResponse);
+}
+
+message HandshakeRequest {
+  uint32 client_min = 1;
+  uint32 client_max = 2;
+}
+
+message HandshakeResponse {
+  uint32 server_min = 1;
+  uint32 server_max = 2;
 }
 
 message NodeRef {
@@ -84,6 +103,9 @@ message GetBootstrapInfoRequest {}
 message BootstrapPeerInfo {
   NodeRef peer = 1;
   repeated string addrs = 2;
+  // host:port of this peer's TLS+mTLS control listener. Empty if the
+  // peer has no wire listener configured.
+  string wire_endpoint = 3;
 }
 
 message GetBootstrapInfoResponse {
@@ -100,20 +122,24 @@ enum CertHealth {
   CERT_HEALTH_OK = 1;
   CERT_HEALTH_EXPIRING_SOON = 2;
   CERT_HEALTH_EXPIRED = 3;
-  CERT_HEALTH_RENEWING = 4;
+  reserved 4;
+  reserved "CERT_HEALTH_RENEWING";
 }
 
 message CertInfo {
   int64 not_before_unix = 1;
-  int64 not_after_unix = 2;
+  int64 grant_deadline_unix = 2;
   uint64 serial = 3;
   CertHealth health = 4;
   bool can_delegate = 5;
   bool can_admit = 6;
   uint32 max_depth = 7;
-  int64 access_deadline_unix = 8;
+  reserved 8;
+  reserved "access_deadline_unix";
   google.protobuf.Struct attributes = 9;
   bool can_publish = 10;
+  bool denied = 11;
+  bool is_workspace_admin = 12;
 }
 
 message GetStatusResponse {
@@ -126,6 +152,12 @@ message GetStatusResponse {
   repeated WorkloadSummary workloads = 7;
   repeated StaticSummary sites = 8;
   repeated BlobSummary blobs = 9;
+  // Public DNS base for the anonymous HTTP gateway, e.g. "pln.sh" or
+  // "staging.pln.sh". Empty when the daemon hasn't been told (no
+  // gateway listener configured). `pln share` reads this so the
+  // composed URL matches the cluster's actual gateway hostname
+  // instead of a hardcoded CLI default.
+  string gateway_domain = 10;
 }
 
 message BlobSummary {
@@ -157,6 +189,11 @@ message WorkloadSummary {
   float spread = 8;
   reserved 9, 10;
   reserved "effective_target", "pressure";
+  // Body fields below mirror WorkloadSpec so wire-mode callers can
+  // reconstruct the body byte-for-byte and sign matching tombstones.
+  uint64 memory_bytes = 11;
+  uint32 timeout_ms = 12;
+  NodeRef publisher = 13;
 }
 
 message ConnectionSummary {
@@ -257,15 +294,29 @@ message SeedWorkloadHeader {
   reserved 6, 7;
   reserved "latency_slo_ms", "properties";
   pollen.admission.v1.Predicate policy = 8;
+  // pre_signed_fact lets a wire-mode caller publish under their own
+  // authority key without delegating signing to the daemon. The daemon
+  // validates the Fact against the cluster root, ensures the authority
+  // matches the caller's grant subject, and gossips the spec as-is.
+  optional pollen.fact.v1.Fact pre_signed_fact = 9;
 }
 
 message SeedWorkloadResponse {
   string hash = 1;
   string name = 2;
+  // public_url is the canonical gateway URL the workload is reachable
+  // at when the daemon has `static-http-domain` configured, rendered
+  // as `https://fn.<domain>/<slug>/<name>`. Anonymous callers need the
+  // spec's policy to be public to reach it; cert-bearing callers
+  // always do.
+  string public_url = 3;
 }
 
 message UnseedWorkloadRequest {
   string hash = 1 [(buf.validate.field).string = {min_len: 1}];
+  // pre_signed_fact carries a tenant-signed tombstone for wire-mode
+  // unseeds; the daemon re-wraps against the live spec body.
+  optional pollen.fact.v1.Fact pre_signed_fact = 2;
 }
 
 message UnseedWorkloadResponse {}
@@ -303,8 +354,8 @@ message GetMetricsResponse {
   uint64 events_stale = 6;
   double vivaldi_error = 7;
   double cert_expiry_seconds = 8;
-  uint64 cert_renewals = 9;
-  uint64 cert_renewals_failed = 10;
+  reserved 9, 10;
+  reserved "cert_renewals", "cert_renewals_failed";
   uint64 punch_attempts = 11;
   uint64 punch_failures = 12;
   HealthStatus health = 13;
@@ -313,14 +364,39 @@ message GetMetricsResponse {
   uint64 eager_sync_failures = 16;
 }
 
-message IssueCertRequest {
+// UpgradePeerRequest asks the local admin daemon to mint a fresh grant
+// for peer_pub with the supplied capabilities and budget, then deliver it
+// to that peer's daemon over the mesh. Subject-PoP gossip is performed by
+// the receiving peer, not by the issuer, so the cluster CRDT invariant
+// holds end-to-end.
+message UpgradePeerRequest {
   bytes peer_pub = 1 [(buf.validate.field).bytes = {len: 32}];
-  reserved 2, 3;
-  reserved "admin", "attributes";
-  pollen.admission.v1.Capabilities cert_caps = 4 [(buf.validate.field).required = true];
+  reserved 2, 3, 5;
+  reserved "admin", "attributes", "mint_only";
+  pollen.identity.v1.Capabilities capabilities = 4 [(buf.validate.field).required = true];
+  // budget is the per-Principal quota baked into the issued grant. Unset
+  // (or zero per dimension) means unlimited. A delegating caller cannot
+  // grant a budget exceeding its own.
+  pollen.identity.v1.Budget budget = 6;
 }
 
-message IssueCertResponse {}
+message UpgradePeerResponse {
+  // delivered reports whether the receiving peer adopted the new grant.
+  // false means the peer is offline, unreachable, or rejected the offer;
+  // reason carries one-line operator-readable detail.
+  bool delivered = 1;
+  string reason = 2;
+}
+
+// RenewGrant carries nothing: the authenticated session already proves
+// which subject is asking, so the request body is empty by design.
+message RenewGrantRequest {}
+
+message RenewGrantResponse {
+  // grant is the caller's own grant re-minted with a fresh horizon. The
+  // caller hot-swaps it locally and re-gossips; no session round-trip.
+  pollen.identity.v1.Grant grant = 1;
+}
 
 message FetchBlobRequest {
   string hash = 1 [(buf.validate.field).string = {
@@ -351,10 +427,19 @@ message UploadBlobHeader {
   reserved "properties";
   bool anchor = 3;
   pollen.admission.v1.Predicate policy = 4;
+  // pre_signed_fact lets a wire-mode caller publish the named blob
+  // spec under their own authority key. Only meaningful when name is
+  // set; anchor-only uploads carry no spec.
+  optional pollen.fact.v1.Fact pre_signed_fact = 5;
 }
 
 message UploadBlobResponse {
   string hash = 1;
+  // public_url is the canonical gateway URL a named blob is reachable
+  // at when the daemon has `static-http-domain` configured, rendered
+  // as `https://blob.<domain>/<slug>/<name>`. Anonymous blobs (no
+  // name) have no canonical URL and rely on bearer tokens.
+  string public_url = 2;
 }
 
 message RemoveBlobRequest {
@@ -362,6 +447,9 @@ message RemoveBlobRequest {
     pattern: "^[a-fA-F0-9]{64}$"
     len: 64
   }];
+  // pre_signed_fact carries a tenant-signed tombstone for wire-mode
+  // removals; the daemon re-wraps against the live spec body.
+  optional pollen.fact.v1.Fact pre_signed_fact = 2;
 }
 
 message RemoveBlobResponse {}
@@ -375,15 +463,28 @@ message SeedStaticRequest {
   reserved 3, 4;
   reserved "min_replicas", "properties";
   pollen.admission.v1.Predicate policy = 5;
+  // pre_signed_fact lets a wire-mode caller publish under their own
+  // authority key without delegating signing to the daemon. The daemon
+  // validates the Fact against the cluster root, ensures the authority
+  // matches the caller's grant subject, and gossips the spec as-is.
+  optional pollen.fact.v1.Fact pre_signed_fact = 6;
 }
 
-message SeedStaticResponse {}
+message SeedStaticResponse {
+  // public_url is the externally-reachable URL the seeded site will
+  // serve at, derived from the daemon's `static-http-domain` config
+  // and the publisher's slug. Empty when no domain is set.
+  string public_url = 1;
+}
 
 message UnseedStaticRequest {
   string name = 1 [(buf.validate.field).string = {
     min_len: 1
     max_len: 255
   }];
+  // pre_signed_fact carries a tenant-signed tombstone for wire-mode
+  // unseeds; the daemon re-wraps against the live spec body.
+  optional pollen.fact.v1.Fact pre_signed_fact = 2;
 }
 
 message UnseedStaticResponse {}
@@ -399,6 +500,10 @@ message StaticSummary {
   NodeRef publisher = 5;
   bool local = 6;
   uint32 serving_capacity = 7;
+  // public_url is set when the responding node has a configured
+  // static_http_domain; the URL is rendered server-side as
+  // `<name>-<slug>.<domain>` so the CLI can show it verbatim.
+  string public_url = 8;
 }
 
 message ListStaticResponse {

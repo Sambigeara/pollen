@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/sambigeara/pollen/pkg/cas"
+	"github.com/sambigeara/pollen/pkg/state"
 	"github.com/sambigeara/pollen/pkg/transport"
 	"github.com/sambigeara/pollen/pkg/types"
 	"github.com/stretchr/testify/require"
@@ -74,6 +75,14 @@ func (f *fakeStore) Has(string) bool                             { return false 
 func (f *fakeStore) Remove(string) error                         { return nil }
 func (f *fakeStore) Entries() ([]cas.Entry, error)               { return nil, nil }
 
+// fetchState satisfies blobState for the Fetch path, which only needs
+// Snapshot() to order candidates by locality. An empty snapshot means
+// no peer has a coordinate, exercising the realistic no-locality
+// fallback (deterministic PeerKey order).
+type fetchState struct{ blobState }
+
+func (fetchState) Snapshot() state.Snapshot { return state.Snapshot{} }
+
 func peerKey(b byte) types.PeerKey {
 	var k types.PeerKey
 	k[0] = b
@@ -96,7 +105,7 @@ func TestFetchFrom_TimeoutCoversEntireFetch(t *testing.T) {
 
 func TestFetch_AllPeersFail_ReturnsError(t *testing.T) {
 	hs := newHangingStream()
-	svc := &Service{store: &fakeStore{}, mesh: &hangingOpener{stream: hs}, timeout: 200 * time.Millisecond}
+	svc := &Service{store: &fakeStore{}, mesh: &hangingOpener{stream: hs}, state: fetchState{}, timeout: 200 * time.Millisecond}
 
 	hash := strings.Repeat("ab", 32)
 	err := svc.Fetch(t.Context(), hash, []types.PeerKey{peerKey(1), peerKey(2)})

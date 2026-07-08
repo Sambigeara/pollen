@@ -15,6 +15,7 @@ import (
 	"time"
 
 	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
+	factv1 "github.com/sambigeara/pollen/api/genpb/pollen/fact/v1"
 	"github.com/sambigeara/pollen/pkg/state"
 	"github.com/sambigeara/pollen/pkg/types"
 	"go.uber.org/zap"
@@ -32,22 +33,28 @@ type StaticAPI interface {
 	Signal()
 	Events() <-chan state.Event
 	SeedStatic(name string, manifestDigest []byte, policy *admissionv1.Predicate) error
+	SeedStaticPresigned(name string, manifestDigest []byte, presignedFact *factv1.Fact) error
 	UnseedStatic(name string) error
+	UnseedStaticPresigned(name string, presignedFact *factv1.Fact) error
 	StaticBlobs() map[string]struct{}
 }
 
 type stateStore interface {
 	Snapshot() state.Snapshot
 	SetStaticSpec(spec state.StaticSpec, policy *admissionv1.Predicate) ([]state.Event, error)
+	SetStaticSpecPresigned(spec state.StaticSpec, presignedFact *factv1.Fact) ([]state.Event, error)
 	DeleteStaticSpec(name string) ([]state.Event, error)
-	ClaimStatic(name string) []state.Event
-	ReleaseStatic(name string) []state.Event
+	DeleteStaticSpecPresigned(name string, presignedFact *factv1.Fact) ([]state.Event, error)
+	ClaimStatic(name string, authority types.PeerKey) []state.Event
+	ReleaseStatic(name string, authority types.PeerKey) []state.Event
 }
 
 type blobStore interface {
 	Has(hash string) bool
 	Get(hash string) (io.ReadCloser, error)
 	Fetch(ctx context.Context, hash string, peers []types.PeerKey) error
+	ManifestPaths(digest string) (map[string]struct{}, bool)
+	IssueWrappingsFor(hashes []string, recipients []types.PeerKey) error
 }
 
 type Service struct {
@@ -58,6 +65,7 @@ type Service struct {
 	trigger       chan struct{}
 	events        chan state.Event
 	cancel        context.CancelFunc
+	domain        string
 	wg            sync.WaitGroup
 	localID       types.PeerKey
 	canServe      bool
@@ -77,6 +85,15 @@ func New(localID types.PeerKey, store stateStore, blobs blobStore, canServe bool
 		trigger:       make(chan struct{}, 1),
 		events:        make(chan state.Event, eventBufferSize),
 	}
+}
+
+// SetDomain sets the public DNS suffix this listener resolves Host
+// against (Host = `<name>-<slug>.<domain>`). Empty means Host equals
+// the bare spec name. Input must be the canonical leading-dot,
+// lower-case form (supervisor normalises). Call before Start: handlers
+// read it from spawned goroutines.
+func (s *Service) SetDomain(d string) {
+	s.domain = d
 }
 
 func (s *Service) Start(ctx context.Context) error {
@@ -117,12 +134,23 @@ func (s *Service) forwardEvents(events []state.Event) {
 // principal to evaluate against and would be silently ignored.
 var ErrPolicyOnStatic = errors.New("static sites are served via plain HTTP; caller policies have no principal to evaluate against")
 
+// ErrNoServingCapacity rejects a seed against a cluster where no node
+// has gossiped StaticCapable. Without --static-addr somewhere the spec
+// would land but never be claimed; failing here turns a silent drop
+// into a clean operator-facing error.
+var ErrNoServingCapacity = errors.New("no nodes in this cluster have static serving enabled (--static-addr); spec would never be served")
+
 func (s *Service) SeedStatic(name string, manifestDigest []byte, policy *admissionv1.Predicate) error {
 	if policy != nil {
 		return ErrPolicyOnStatic
 	}
 	if len(manifestDigest) != digestSize {
 		return fmt.Errorf("manifest digest must be %d bytes", digestSize)
+	}
+	snap := s.store.Snapshot()
+	serving := snap.StaticServingPeers()
+	if len(serving) == 0 {
+		return ErrNoServingCapacity
 	}
 	events, err := s.store.SetStaticSpec(state.StaticSpec{
 		Name:           name,
@@ -132,24 +160,78 @@ func (s *Service) SeedStatic(name string, manifestDigest []byte, policy *admissi
 		return err
 	}
 	s.forwardEvents(events)
+	s.fanoutWrappingsForServingSet(name, hex.EncodeToString(manifestDigest), serving)
 	return nil
 }
 
-func (s *Service) UnseedStatic(name string) error {
+// SeedStaticPresigned stores a tenant-signed static spec without
+// re-signing. Used by the wire-mode caller flow where the daemon acts
+// as a relay: the Fact is validated against the cluster root and
+// gossipped as-is.
+func (s *Service) SeedStaticPresigned(name string, manifestDigest []byte, presignedFact *factv1.Fact) error {
+	if presignedFact.GetPolicy() != nil {
+		return ErrPolicyOnStatic
+	}
+	if len(manifestDigest) != digestSize {
+		return fmt.Errorf("manifest digest must be %d bytes", digestSize)
+	}
 	snap := s.store.Snapshot()
-	sv, ok := snap.StaticSpecs[name]
+	serving := snap.StaticServingPeers()
+	if len(serving) == 0 {
+		return ErrNoServingCapacity
+	}
+	events, err := s.store.SetStaticSpecPresigned(state.StaticSpec{
+		Name:           name,
+		ManifestDigest: hex.EncodeToString(manifestDigest),
+	}, presignedFact)
+	if err != nil {
+		return err
+	}
+	s.forwardEvents(events)
+	s.fanoutWrappingsForServingSet(name, hex.EncodeToString(manifestDigest), serving)
+	return nil
+}
+
+// fanoutWrappingsForServingSet issues a wrapping for every serving
+// peer against the manifest and every file digest it references.
+// Failures are best-effort: reconcile and lazy-wrap remain the
+// fallback.
+func (s *Service) fanoutWrappingsForServingSet(name, manifestDigestHex string, serving []types.PeerKey) {
+	paths, ok := s.blobs.ManifestPaths(manifestDigestHex)
 	if !ok {
-		return fmt.Errorf("static site %q not published", name)
+		s.log.Warnw("static seed: manifest unreadable for wrap fanout", "name", name)
+		return
 	}
-	if sv.Publisher != s.localID {
-		return fmt.Errorf("static site %q is owned by peer %s; run unseed on that node", name, sv.Publisher.Short())
+	digests := make([]string, 0, 1+len(paths))
+	digests = append(digests, manifestDigestHex)
+	for d := range paths {
+		digests = append(digests, d)
 	}
+	if err := s.blobs.IssueWrappingsFor(digests, serving); err != nil {
+		s.log.Warnw("static seed: issue wrappings for serving set", "name", name, "err", err)
+	}
+}
+
+func (s *Service) UnseedStatic(name string) error {
 	events, err := s.store.DeleteStaticSpec(name)
 	if err != nil {
 		return err
 	}
 	s.forwardEvents(events)
-	s.forwardEvents(s.store.ReleaseStatic(name))
+	s.forwardEvents(s.store.ReleaseStatic(name, s.localID))
+	return nil
+}
+
+// UnseedStaticPresigned applies a tenant-signed tombstone for the
+// static spec named name. The daemon re-wraps the auth against the
+// live body in its slot before gossiping.
+func (s *Service) UnseedStaticPresigned(name string, presignedFact *factv1.Fact) error {
+	events, err := s.store.DeleteStaticSpecPresigned(name, presignedFact)
+	if err != nil {
+		return err
+	}
+	s.forwardEvents(events)
+	s.forwardEvents(s.store.ReleaseStatic(name, types.PeerKeyFromBytes(presignedFact.GetAuthorityPub())))
 	return nil
 }
 
@@ -170,17 +252,20 @@ func (s *Service) run(ctx context.Context) {
 
 func (s *Service) reconcile(ctx context.Context) {
 	snap := s.store.Snapshot()
-	for name, spec := range snap.StaticSpecs {
-		if err := s.ensureReplicated(ctx, snap, name, spec.Spec); err != nil {
-			s.log.Debugw("static replication pending", "name", name, "err", err)
+	// Iterate the per-publisher StaticSpecsAll, not the deduped StaticSpecs
+	// (see Snapshot.SpecsAll): the deduped view would drop a co-named
+	// publisher, so its bytes would never replicate.
+	for _, sv := range snap.StaticSpecsAll {
+		if err := s.ensureReplicated(ctx, snap, sv.Spec, sv.Publisher); err != nil {
+			s.log.Debugw("static replication pending", "name", sv.Spec.Name, "publisher", sv.Publisher.Short(), "err", err)
 		}
 	}
 }
 
 func (s *Service) StaticBlobs() map[string]struct{} {
 	snap := s.store.Snapshot()
-	out := make(map[string]struct{}, len(snap.StaticSpecs))
-	for _, spec := range snap.StaticSpecs {
+	out := make(map[string]struct{}, len(snap.StaticSpecsAll))
+	for _, spec := range snap.StaticSpecsAll {
 		digest := spec.Spec.ManifestDigest
 		out[digest] = struct{}{}
 		manifest, err := s.loadManifest(digest)
@@ -194,7 +279,7 @@ func (s *Service) StaticBlobs() map[string]struct{} {
 	return out
 }
 
-func (s *Service) ensureReplicated(ctx context.Context, snap state.Snapshot, name string, spec state.StaticSpec) error {
+func (s *Service) ensureReplicated(ctx context.Context, snap state.Snapshot, spec state.StaticSpec, authority types.PeerKey) error {
 	if err := s.ensureLocal(ctx, snap, spec.ManifestDigest); err != nil {
 		return fmt.Errorf("manifest: %w", err)
 	}
@@ -214,11 +299,11 @@ func (s *Service) ensureReplicated(ctx context.Context, snap state.Snapshot, nam
 		}
 	}
 
-	if _, alreadyClaimed := snap.StaticClaims[name][s.localID]; alreadyClaimed {
+	if _, alreadyClaimed := snap.StaticClaims[state.StaticClaimKey{Authority: authority, Name: spec.Name}][s.localID]; alreadyClaimed {
 		return nil
 	}
-	s.forwardEvents(s.store.ClaimStatic(name))
-	s.log.Infow("claimed static site", "name", name, "paths", len(manifest.paths))
+	s.forwardEvents(s.store.ClaimStatic(spec.Name, authority))
+	s.log.Infow("claimed static site", "name", spec.Name, "publisher", authority.Short(), "paths", len(manifest.paths))
 	return nil
 }
 

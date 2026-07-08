@@ -30,7 +30,7 @@ type replicaCountConfig struct {
 // Elections filter out peers whose cert doesn't satisfy the spec's
 // host policy: without the filter, the lex-min loop perpetually elects
 // an ineligible peer, the reconciler releases the claim on the next
-// tick, and the cycle continues — masking the apparent replica count
+// tick, and the cycle continues, masking the apparent replica count
 // at MinReplicas while no eligible peer ever gets a chance to claim.
 type replicaCountLoop struct {
 	store    WorkloadState
@@ -125,16 +125,15 @@ func (r *replicaCountLoop) evaluate(snap state.Snapshot, seed string, backed map
 }
 
 // eligibilityPredicate returns a function reporting whether a peer's
-// cert satisfies the seed's host policy. A nil gate (test path) leaves
+// grant satisfies the seed's host policy. A nil gate (test path) leaves
 // every peer eligible; otherwise the decision delegates to the gate,
-// which rejects a nil cert in production.
+// which rejects a nil grant in production.
 func (r *replicaCountLoop) eligibilityPredicate(snap state.Snapshot, seed string) func(types.PeerKey) bool {
 	if r.gate == nil {
 		return func(types.PeerKey) bool { return true }
 	}
-	specAuth := snap.Specs[seed].Auth
 	return func(p types.PeerKey) bool {
-		return r.gate.MayHost(snap.Nodes[p].Cert, specAuth) == nil
+		return r.gate.MayHostByHash(snap.Nodes[p].Grant, seed) == nil
 	}
 }
 
@@ -170,8 +169,8 @@ func (r *replicaCountLoop) tryFillFloor(snap state.Snapshot, seed string, replic
 
 // tryScaleUp picks the heaviest non-replica caller as the new
 // claimant when one exists (load-led growth toward demand). When every
-// caller is already a replica — the common case for chain heads under
-// direct load — saturation still demands capacity, so fall through to
+// caller is already a replica (the common case for chain heads under
+// direct load), saturation still demands capacity, so fall through to
 // the lex-min non-replica election. Without the fallback, autoscale
 // freezes at MinReplicas whenever traffic enters at the replicas
 // themselves.
@@ -246,7 +245,7 @@ func saturationOf(replicas []types.PeerKey, backed map[types.PeerKey]struct{}) f
 // ties so every node converges on the same candidate. Peers in backoff
 // are excluded so saturated nodes can't be elected to take more load.
 // Peers that fail the eligibility predicate (host-policy mismatch) are
-// also excluded — see replicaCountLoop's doc comment.
+// also excluded. See replicaCountLoop's doc comment.
 func heaviestUnservedSource(sources []sourceCount, localCount uint64, self types.PeerKey, replicas []types.PeerKey, backed map[types.PeerKey]struct{}, eligible func(types.PeerKey) bool) (types.PeerKey, bool) {
 	if eligible == nil {
 		eligible = func(types.PeerKey) bool { return true }

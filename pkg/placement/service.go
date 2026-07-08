@@ -4,6 +4,7 @@
 package placement
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -14,6 +15,11 @@ import (
 	"time"
 
 	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
+	factv1 "github.com/sambigeara/pollen/api/genpb/pollen/fact/v1"
+	identityv1 "github.com/sambigeara/pollen/api/genpb/pollen/identity/v1"
+	"github.com/sambigeara/pollen/pkg/admission"
+	"github.com/sambigeara/pollen/pkg/auth"
+	"github.com/sambigeara/pollen/pkg/route"
 	"github.com/sambigeara/pollen/pkg/state"
 	"github.com/sambigeara/pollen/pkg/transport"
 	"github.com/sambigeara/pollen/pkg/types"
@@ -30,12 +36,12 @@ const (
 	//
 	// Canonical timeout stack (outermost wins):
 	//   1. Caller deadline (e.g. `pln call --timeout`, upstream workload's ctx)
-	//   2. gRPC server — honours caller deadline on CallWorkload
-	//   3. placement.Call — inherits caller ctx; forwards it to Runtime.Call
+	//   2. gRPC server: honours caller deadline on CallWorkload
+	//   3. placement.Call: inherits caller ctx; forwards it to Runtime.Call
 	//      and to forwardCall, which opens a stream to the target peer
-	//   4. Target peer stream handler — this ceiling (min() with caller's
+	//   4. Target peer stream handler: this ceiling (min() with caller's
 	//      deadline once wire-level deadline propagation lands)
-	//   5. wasm.Runtime.Call — inherits; Extism enforces its own per-workload
+	//   5. wasm.Runtime.Call: inherits; Extism enforces its own per-workload
 	//      timeout from the seed config as a further cap
 	//
 	// Never introduce a timeout above this layer that's shorter than the
@@ -64,7 +70,9 @@ type PlacementAPI interface {
 	Stop() error
 
 	Seed(binary []byte, spec state.WorkloadSpec, policy *admissionv1.Predicate) error
+	SeedPresigned(binary []byte, spec state.WorkloadSpec, presignedFact *factv1.Fact) error
 	Unseed(hash string) error
+	UnseedPresigned(hash string, presignedFact *factv1.Fact) error
 	Call(ctx context.Context, hash, function string, input []byte) ([]byte, error)
 	Status() []WorkloadSummary
 
@@ -86,7 +94,9 @@ var _ PlacementAPI = (*Service)(nil)
 type WorkloadState interface {
 	Snapshot() state.Snapshot
 	PublishWorkload(spec state.WorkloadSpec, policy *admissionv1.Predicate) ([]state.Event, error)
+	PublishWorkloadPresigned(spec state.WorkloadSpec, presignedFact *factv1.Fact) ([]state.Event, error)
 	DeleteWorkloadSpec(hash string) ([]state.Event, error)
+	DeleteWorkloadSpecPresigned(hash string, presignedFact *factv1.Fact) ([]state.Event, error)
 	ClaimWorkload(hash string) []state.Event
 	MarkWorkloadDraining(hash string) []state.Event
 	ReleaseWorkload(hash string) []state.Event
@@ -100,18 +110,20 @@ type StreamOpener interface {
 }
 
 // Gate authorises invocations, host placement, and publish decisions.
-// Invoke returns the cert-bound CallerInfo to plumb into the seed's
+// Invoke returns the grant-bound CallerInfo to plumb into the seed's
 // execution context whenever a call is dispatched inbound or outbound.
 // MayHost decides whether the local node is entitled to run the workload
 // at all, gating the reconciler's claim before any blob fetch or memory
 // reservation. MayPublish gates Seed against orphaning a spec: if the
-// publisher's cert doesn't satisfy the workload's policy, the local
+// publisher's grant doesn't satisfy the workload's policy, the local
 // self-claim is released on the next reconcile and only unseed+seed
 // can clear the stranded spec.
 type Gate interface {
-	Invoke(peerKey types.PeerKey, hash string) (wasm.CallerInfo, error)
-	MayHost(hostCert *admissionv1.DelegationCert, specAuth *admissionv1.SpecAuth) error
-	MayPublish(cert *admissionv1.DelegationCert, policy *admissionv1.Predicate) error
+	Invoke(caller *identityv1.Grant, pub *admission.Publication, hash string) (wasm.CallerInfo, error)
+	InvokeByToken(token *admissionv1.AccessToken, hash string) (wasm.CallerInfo, error)
+	MayHostByHash(hostGrant *identityv1.Grant, hash string) error
+	MayPublish(grant *identityv1.Grant, policy *admissionv1.Predicate) error
+	LookupGrant(peerKey types.PeerKey) *identityv1.Grant
 }
 
 type Service struct {
@@ -125,11 +137,12 @@ type Service struct {
 	cancel       context.CancelFunc
 	dispatcher   *dispatcher
 	backoff      *backoff
-	budget       *budget
+	memGuard     *nodeMemoryGuard
 	calls        *callTracker
 	placement    *placementLoop
 	replicaCount *replicaCountLoop
 	gate         Gate
+	costs        route.Costs
 	wg           sync.WaitGroup
 	localID      types.PeerKey
 }
@@ -148,6 +161,10 @@ func WithGate(g Gate) Option {
 	return func(s *Service) { s.gate = g }
 }
 
+func WithCosts(c route.Costs) Option {
+	return func(s *Service) { s.costs = c }
+}
+
 func New(self types.PeerKey, store WorkloadState, blobs blobsAPI, wasmRT WASMRuntime, opts ...Option) *Service {
 	s := &Service{
 		ctx:     context.Background(),
@@ -164,11 +181,11 @@ func New(self types.PeerKey, store WorkloadState, blobs blobsAPI, wasmRT WASMRun
 	s.backoff = newBackoff(backoffConfig{ttl: backoffTTL}, func(ttl time.Duration) {
 		store.SetBackoffTTL(time.Now().Add(ttl))
 	})
-	s.budget = newBudget(detectMemoryBudget())
+	s.memGuard = newNodeMemoryGuard(detectNodeMemoryCeiling())
 	s.calls = newCallTracker(callTrackerWindow, func(counts map[string]uint64) {
 		store.SetPerSeedCallCounts(counts)
 	})
-	s.dispatcher = newDispatcher(store, self)
+	s.dispatcher = newDispatcher(store, self, s.costs)
 	s.placement = newPlacementLoop(self, placementConfig{
 		tick:             placementTickInterval,
 		migrateThreshold: placementMigrateThreshold,
@@ -193,7 +210,7 @@ func (s *Service) Start(ctx context.Context) error {
 		s.store,
 		s.manager,
 		s.blobs,
-		s.budget,
+		s.memGuard,
 		s.backoff,
 		s.gate,
 		s.log.Named("scheduler"),
@@ -267,11 +284,44 @@ func (s *Service) publishResources() {
 	})
 }
 
+// UnseedPresigned applies a tenant-signed workload tombstone. Local
+// hosting (if any) is torn down and the budget is released; the
+// underlying tombstone is signed by the publisher, not the daemon.
+func (s *Service) UnseedPresigned(hash string, presignedFact *factv1.Fact) error {
+	if s.manager.IsRunning(hash) {
+		_ = s.manager.Unseed(hash)
+		s.memGuard.Release(hash)
+	}
+	s.store.ReleaseWorkload(hash)
+	_, err := s.store.DeleteWorkloadSpecPresigned(hash, presignedFact)
+	return err
+}
+
+// SeedPresigned lands a tenant-signed workload spec via the relay
+// path. The daemon stores the binary in CAS so reconcilers on hosts
+// (which match the spec's policy) can fetch it, then publishes the
+// presigned spec. Compilation is deferred to the reconciler if/when
+// the daemon decides to host; for pure-relay daemons it never happens.
+func (s *Service) SeedPresigned(binary []byte, spec state.WorkloadSpec, presignedFact *factv1.Fact) error {
+	if _, err := s.blobs.Put(bytes.NewReader(binary)); err != nil {
+		return fmt.Errorf("workload: %w: %w", ErrStore, err)
+	}
+	// Don't rebase MinReplicas here: the publisher signed a body with a
+	// specific MinReplicas, and the spec we gossip must match the body
+	// hash they committed to. The CLI applies the sensible default at
+	// signing time (cmd/pln/seed.go); rebasing post-sign would split
+	// the body hash from what every other peer validates against.
+	if _, err := s.store.PublishWorkloadPresigned(spec, presignedFact); err != nil {
+		return err
+	}
+	return nil
+}
+
 func (s *Service) Seed(binary []byte, spec state.WorkloadSpec, policy *admissionv1.Predicate) error {
 	hash, name := spec.Hash, spec.Name
 	snap := s.store.Snapshot()
 	if s.gate != nil {
-		if err := s.gate.MayPublish(snap.LocalCert(), policy); err != nil {
+		if err := s.gate.MayPublish(snap.LocalGrant(), policy); err != nil {
 			return fmt.Errorf("%w: %w", ErrPublishDenied, err)
 		}
 	}
@@ -279,7 +329,7 @@ func (s *Service) Seed(binary []byte, spec state.WorkloadSpec, policy *admission
 		if oldHash != hash {
 			if s.manager.IsRunning(oldHash) {
 				_ = s.manager.Unseed(oldHash)
-				s.budget.Release(oldHash)
+				s.memGuard.Release(oldHash)
 			}
 			s.store.ReleaseWorkload(oldHash)
 			if _, err := s.store.DeleteWorkloadSpec(oldHash); err != nil {
@@ -290,13 +340,13 @@ func (s *Service) Seed(binary []byte, spec state.WorkloadSpec, policy *admission
 			if old.MemoryBytes != spec.MemoryBytes || old.Timeout != spec.Timeout {
 				if s.manager.IsRunning(oldHash) {
 					_ = s.manager.Unseed(oldHash)
-					s.budget.Release(oldHash)
+					s.memGuard.Release(oldHash)
 				}
 			}
 		}
 	}
 
-	if !s.budget.Reserve(hash, replicaMemoryBytes(spec.MemoryBytes)) {
+	if !s.memGuard.Reserve(hash, replicaMemoryBytes(spec.MemoryBytes)) {
 		s.backoff.SignalRefusal()
 		return newOverload(ErrOverloaded, "memory budget exhausted")
 	}
@@ -305,14 +355,14 @@ func (s *Service) Seed(binary []byte, spec state.WorkloadSpec, policy *admission
 	gotHash, err := s.manager.Seed(s.ctx, binary, cfg)
 	alreadyRunning := errors.Is(err, ErrAlreadyRunning)
 	if err != nil && !alreadyRunning {
-		s.budget.Release(hash)
+		s.memGuard.Release(hash)
 		return err
 	}
 	if gotHash != hash {
 		if !alreadyRunning {
 			_ = s.manager.Unseed(gotHash)
 		}
-		s.budget.Release(hash)
+		s.memGuard.Release(hash)
 		return fmt.Errorf("hash mismatch: expected %s, got %s", hash, gotHash)
 	}
 	if spec.MinReplicas == 0 {
@@ -325,7 +375,7 @@ func (s *Service) Seed(binary []byte, spec state.WorkloadSpec, policy *admission
 		if !alreadyRunning {
 			_ = s.manager.Unseed(hash)
 		}
-		s.budget.Release(hash)
+		s.memGuard.Release(hash)
 		return err
 	}
 	return nil
@@ -335,32 +385,25 @@ func (s *Service) Unseed(hash string) error {
 	_, hash = s.resolveLocalFirst(hash)
 
 	snap := s.store.Snapshot()
-	sv, specExists := snap.Specs[hash]
+	publishedHere := snap.LocalPublishesWorkload(hash, s.localID)
 	locallyRunning := s.manager.IsRunning(hash)
 
-	if !specExists && !locallyRunning {
+	if !publishedHere && !locallyRunning {
 		return fmt.Errorf("%w: %s", ErrNotRunning, types.ShortHash(hash))
 	}
-
-	// Tombstones from non-publishers are ignored by gossip.
-	if specExists && sv.Publisher != s.localID {
-		return fmt.Errorf("workload %s is owned by peer %s; run unseed on that node", types.ShortHash(hash), sv.Publisher.Short())
+	if !publishedHere {
+		return fmt.Errorf("workload %s not published by this node", types.ShortHash(hash))
 	}
 
 	if locallyRunning {
 		if err := s.manager.Unseed(hash); err != nil {
 			return err
 		}
-		s.budget.Release(hash)
+		s.memGuard.Release(hash)
 	}
 	s.store.ReleaseWorkload(hash)
-	if _, err := s.store.DeleteWorkloadSpec(hash); err != nil {
-		return err
-	}
-	if err := s.blobs.Remove(hash); err != nil {
-		s.log.Warnw("evict wasm blob failed after unseed", "hash", types.ShortHash(hash), "err", err)
-	}
-	return nil
+	_, err := s.store.DeleteWorkloadSpec(hash)
+	return err
 }
 
 type firstHopMode uint8
@@ -415,12 +458,15 @@ func (s *Service) callFirstLocalHop(ctx context.Context, hash, function string, 
 		return ctx, nil, fmt.Errorf("%w: %s", ErrCycle, types.ShortHash(hash))
 	}
 	ctx = withChain(ctx, hash)
+	// A relayed seed run here may itself tail-call; its delegation must
+	// resolve in this seed's publisher namespace, not the caller's.
+	ctx = wasm.WithExecutingSeed(ctx, hash)
 	out, err := local(ctx, hash, function, input)
 	return ctx, out, err
 }
 
 func (s *Service) callDispatchedHop(ctx context.Context, hash, function string, input []byte, tailHop bool, local localCall) (context.Context, string, []byte, error) {
-	resolved, found := s.resolveGlobal(hash)
+	resolved, pub, found := s.resolveGlobal(ctx, hash, s.resolveAuthority(ctx))
 	if !found {
 		if tailHop {
 			return ctx, hash, nil, fmt.Errorf("%w: tail call target %q not found", ErrWorkloadFailed, hash)
@@ -431,10 +477,11 @@ func (s *Service) callDispatchedHop(ctx context.Context, hash, function string, 
 
 	if s.gate != nil {
 		info, _ := wasm.CallerInfoFromContext(ctx)
-		gated, err := s.gate.Invoke(info.PeerKey, hash)
+		gated, resolvedPub, err := s.gateInvoke(ctx, pub, hash)
 		if err != nil {
 			return ctx, hash, nil, fmt.Errorf("invoke %s: %w", types.ShortHash(hash), wasm.ErrTargetNotFound)
 		}
+		pub = resolvedPub
 		gated.DeadlineUnixMs = info.DeadlineUnixMs
 		ctx = wasm.WithCallerInfo(ctx, gated)
 	}
@@ -443,10 +490,73 @@ func (s *Service) callDispatchedHop(ctx context.Context, hash, function string, 
 		return ctx, hash, nil, fmt.Errorf("%w: %s", ErrCycle, types.ShortHash(hash))
 	}
 	ctx = withChain(ctx, hash)
+	// Carry this seed's publication forward so a tail call it emits
+	// resolves the target name in this seed's publisher namespace, not
+	// the original caller's, and so the executing authority is the
+	// invoked publication's rather than the deduped artefact winner's.
+	if pub != nil {
+		ctx = admission.WithInvokedPublication(ctx, pub)
+	}
+	ctx = wasm.WithExecutingSeed(ctx, hash)
 	s.calls.RecordCall(hash)
 
 	out, err := s.callHop(ctx, hash, function, input, local)
 	return ctx, hash, out, err
+}
+
+// gateInvoke runs the gate for one dispatch hop and returns the
+// publication to carry forward. The token path authorises by token and
+// adopts the token's own publication for downstream name resolution;
+// the grant path authorises the resolved publication and keeps it.
+func (s *Service) gateInvoke(ctx context.Context, pub *admission.Publication, hash string) (wasm.CallerInfo, *admission.Publication, error) {
+	if token, ok := admission.AccessTokenFromContext(ctx); ok {
+		gated, err := s.gate.InvokeByToken(token, hash)
+		if tp, ok := admission.PublicationFromToken(token); ok {
+			return gated, tp, err
+		}
+		return gated, pub, err
+	}
+	info, _ := wasm.CallerInfoFromContext(ctx)
+	gated, err := s.gate.Invoke(s.callerGrant(ctx, info.PeerKey), pub, hash)
+	return gated, pub, err
+}
+
+// callerGrant resolves the grant authorising the current call. For the
+// first hop, control RPCs inject the caller as a resolved
+// identity.Principal; for downstream hops (wasm-to-wasm or relayed mesh
+// streams) the grant lives in the gossiped snapshot keyed on peerKey.
+func (s *Service) callerGrant(ctx context.Context, peerKey types.PeerKey) *identityv1.Grant {
+	if p, ok := auth.CallerFromContext(ctx); ok && p.Grant != nil {
+		return p.Grant
+	}
+	if s.gate == nil {
+		return nil
+	}
+	return s.gate.LookupGrant(peerKey)
+}
+
+// resolveAuthority returns the Principal a workload name resolves
+// under. An executing seed (a tail call it returned, or a seed:// host
+// call it made) resolves names in its own invoked publication's
+// namespace, threaded on at dispatch, so a caller cannot redirect a
+// shared seed's internal delegation (confused-deputy safe); a bare hash
+// that named no publication falls back to the deduped artefact winner.
+// A genuine first hop (`pln call`, the gateway) has no executing seed
+// and resolves under the caller's own authority. The zero key resolves
+// nothing by name, correct because that path arrives pre-resolved to a
+// content hash.
+func (s *Service) resolveAuthority(ctx context.Context) types.PeerKey {
+	if execHash := wasm.ExecutingSeedFromContext(ctx); execHash != "" {
+		if p, ok := admission.InvokedPublicationFromContext(ctx); ok {
+			return types.PeerKeyFromBytes(p.AuthorityPub)
+		}
+		return s.store.Snapshot().Specs[execHash].Publisher
+	}
+	info, _ := wasm.CallerInfoFromContext(ctx)
+	if g := s.callerGrant(ctx, info.PeerKey); g != nil {
+		return types.PeerKeyFromBytes(g.GetClaims().GetSubjectPub())
+	}
+	return types.PeerKey{}
 }
 
 func (s *Service) callHop(ctx context.Context, hash, function string, input []byte, local localCall) ([]byte, error) {
@@ -511,7 +621,7 @@ func preferStructured(first, second error) error {
 }
 
 func (s *Service) callLocal(ctx context.Context, hash, function string, input []byte) ([]byte, error) {
-	release, ok := s.budget.ReserveCall(hash)
+	release, ok := s.memGuard.ReserveCall(hash)
 	if !ok {
 		s.backoff.SignalRefusal()
 		return nil, newOverload(ErrOverloaded, "node memory budget exhausted")
@@ -571,14 +681,23 @@ func (s *Service) Status() []WorkloadSummary {
 // Serve handles an inbound workload call. peerKey must be the
 // transport-authenticated identity; wire-reported caller attributes
 // are replaced by the gate's cert-bound view before the seed runs.
+// When the inbound envelope carries an AccessToken the gate switches
+// to token-based authorisation (the upstream is relaying an anonymous
+// call from the HTTP gateway).
 func (s *Service) Serve(stream io.ReadWriteCloser, peerKey types.PeerKey) {
 	defer stream.Close()
-	info, chain, hash, function, err := ReadHeader(stream, peerKey)
+	info, chain, token, pub, hash, function, err := ReadHeader(stream, peerKey)
 	if err != nil {
 		return
 	}
 	if s.gate != nil {
-		gated, err := s.gate.Invoke(peerKey, hash)
+		var gated wasm.CallerInfo
+		var err error
+		if token != nil {
+			gated, err = s.gate.InvokeByToken(token, hash)
+		} else {
+			gated, err = s.gate.Invoke(s.gate.LookupGrant(peerKey), pub, hash)
+		}
 		if err != nil {
 			return
 		}
@@ -588,6 +707,12 @@ func (s *Service) Serve(stream io.ReadWriteCloser, peerKey types.PeerKey) {
 
 	ctx := withChainSnapshot(s.ctx, chain)
 	ctx = wasm.WithCallerInfo(ctx, info)
+	if token != nil {
+		ctx = admission.WithAccessToken(ctx, token)
+	}
+	if pub != nil {
+		ctx = admission.WithInvokedPublication(ctx, pub)
+	}
 	ctx, deadlineCancel := withCallerDeadline(ctx, info)
 	defer deadlineCancel()
 
@@ -624,17 +749,15 @@ func (s *Service) Signal() {
 	s.reconciler.Signal()
 }
 
-// resolveLocalFirst resolves for operator-facing operations: local
-// matches win so operators manage their own seeds; remote falls
-// through so non-publishers still get the ownership error.
+// resolveLocalFirst resolves for operator-facing operations. It matches
+// a name this node itself published, or a content-hash prefix. It does
+// not resolve another tenant's name: publication identity is
+// per-authority, so a bare name an operator did not publish is simply
+// not found here rather than resolving to a peer's spec.
 func (s *Service) resolveLocalFirst(identifier string) (string, string) {
 	snap := s.store.Snapshot()
 
 	if hash, ok := snap.LocalSpecByName(identifier, s.localID); ok {
-		return identifier, hash
-	}
-
-	if hash, _, ok := snap.SpecByName(identifier); ok {
 		return identifier, hash
 	}
 
@@ -649,16 +772,40 @@ func (s *Service) resolveLocalFirst(identifier string) (string, string) {
 	return name, hash
 }
 
-func (s *Service) resolveGlobal(identifier string) (string, bool) {
+// resolveGlobal resolves identifier to a content hash and, when the
+// resolution names a single (authority, name) publication, that
+// publication. A non-nil publication makes the gate decision exact; a
+// nil one (a bare hash prefix, deliberately cross-tenant) falls to the
+// union path. The entry hop may carry an invoked-publication selector
+// (an anonymous named URL the gateway resolved): it is honoured only
+// when no seed is executing, so a tail or host call inside a shared
+// seed resolves its target name within the executing authority instead
+// of being redirected by the original selector.
+func (s *Service) resolveGlobal(ctx context.Context, identifier string, authority types.PeerKey) (string, *admission.Publication, bool) {
 	snap := s.store.Snapshot()
 
-	if hash, _, ok := snap.SpecByName(identifier); ok {
-		return hash, true
+	if wasm.ExecutingSeedFromContext(ctx) == "" {
+		if p, ok := admission.InvokedPublicationFromContext(ctx); ok {
+			h, sv, ok := snap.SpecByName(p.Name, types.PeerKeyFromBytes(p.AuthorityPub))
+			if !ok || sv.Fact == nil {
+				return "", nil, false
+			}
+			return h, p, true
+		}
 	}
 
-	return s.resolveHashPrefix(identifier, snap)
+	if hash, sv, ok := snap.SpecByName(identifier, authority); ok {
+		return hash, &admission.Publication{AuthorityPub: sv.Publisher.Bytes(), Name: sv.Spec.Name}, true
+	}
+
+	h, ok := s.resolveHashPrefix(identifier, snap)
+	return h, nil, ok
 }
 
+// resolveHashPrefix resolves a content-hash prefix. A hash is the
+// artefact identity and is deliberately cross-tenant: two tenants
+// publishing identical bytes share one hash, so this stays global and
+// is not authority-scoped.
 func (s *Service) resolveHashPrefix(prefix string, snap state.Snapshot) (string, bool) {
 	// Gossip-only: trusting the local manager would let a stale
 	// in-process module shadow a peer-published workload.

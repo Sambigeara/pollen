@@ -6,6 +6,7 @@ package placement
 import (
 	"context"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,6 +14,9 @@ import (
 	"math"
 	"time"
 
+	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
+	"github.com/sambigeara/pollen/pkg/admission"
+	"github.com/sambigeara/pollen/pkg/auth"
 	"github.com/sambigeara/pollen/pkg/types"
 	"github.com/sambigeara/pollen/pkg/wasm"
 )
@@ -27,8 +31,12 @@ const (
 	callerInfoLenSize = 2
 	hashLen           = 64
 	maxFuncLen        = 255
-	maxInputLen       = 4 << 20 // 4 MiB
 )
+
+// MaxInputLen is the ceiling on a single workload invocation's input,
+// enforced on the mesh wire here and at the anonymous HTTP gateway edge so
+// the body is rejected before it is buffered into memory.
+const MaxInputLen = 4 << 20 // 4 MiB
 
 var errInputTooLarge = errors.New("input too large")
 
@@ -43,51 +51,61 @@ type workloadInvoker interface {
 // shape with CallChain. Protobuf+vtprotobuf would halve the PeerKey hex
 // bloat and remove json.Marshal cost from the hot dispatch path.
 type workloadCallerJSON struct {
-	Attributes     map[string]any `json:"attributes,omitempty"`
-	PeerKey        string         `json:"peerKey,omitempty"`
-	CallChain      []string       `json:"callChain,omitempty"`
-	DeadlineUnixMs int64          `json:"deadlineUnixMs,omitempty"`
+	Attributes       map[string]any `json:"attributes,omitempty"`
+	PeerKey          string         `json:"peerKey,omitempty"`
+	Cap              string         `json:"cap,omitempty"`
+	InvokedAuthority string         `json:"invokedAuthority,omitempty"`
+	InvokedName      string         `json:"invokedName,omitempty"`
+	CallChain        []string       `json:"callChain,omitempty"`
+	DeadlineUnixMs   int64          `json:"deadlineUnixMs,omitempty"`
 }
 
-// ReadHeader reads the caller-info envelope, call chain, seed hash, and
-// function name. CallerInfo.PeerKey is overridden with the
-// transport-authenticated peer; wire values would be spoofable.
-func ReadHeader(r io.Reader, peer types.PeerKey) (wasm.CallerInfo, []string, string, string, error) {
+// ReadHeader reads the caller-info envelope, call chain, optional
+// access token, seed hash, and function name. CallerInfo.PeerKey is
+// overridden with the transport-authenticated peer; wire values would
+// be spoofable. The access token (if present) authorises an anonymous
+// invocation chain: the receiver gates with InvokeByToken instead of
+// the peer's cert.
+func ReadHeader(r io.Reader, peer types.PeerKey) (wasm.CallerInfo, []string, *admissionv1.AccessToken, *admission.Publication, string, string, error) {
 	info := wasm.CallerInfo{PeerKey: peer}
 	var chain []string
+	var token *admissionv1.AccessToken
+	var pub *admission.Publication
 
 	var callerLenBuf [callerInfoLenSize]byte
 	if _, err := io.ReadFull(r, callerLenBuf[:]); err != nil {
-		return info, nil, "", "", err
+		return info, nil, nil, nil, "", "", err
 	}
 	if callerLen := binary.BigEndian.Uint16(callerLenBuf[:]); callerLen > 0 {
 		callerBuf := make([]byte, callerLen)
 		if _, err := io.ReadFull(r, callerBuf); err != nil {
-			return info, nil, "", "", err
+			return info, nil, nil, nil, "", "", err
 		}
 		if wireInfo, ok := wasm.CallerInfoFromJSON(callerBuf); ok {
 			info.Attributes = wireInfo.Attributes
 			info.DeadlineUnixMs = wireInfo.DeadlineUnixMs
 		}
 		chain = callChainFromJSON(callerBuf)
+		token = accessTokenFromJSON(callerBuf)
+		pub = invokedPublicationFromJSON(callerBuf)
 	}
 
 	var hashBuf [hashLen]byte
 	if _, err := io.ReadFull(r, hashBuf[:]); err != nil {
-		return info, nil, "", "", err
+		return info, nil, nil, nil, "", "", err
 	}
 
 	var funcLenBuf [1]byte
 	if _, err := io.ReadFull(r, funcLenBuf[:]); err != nil {
-		return info, nil, "", "", err
+		return info, nil, nil, nil, "", "", err
 	}
 
 	funcName := make([]byte, funcLenBuf[0])
 	if _, err := io.ReadFull(r, funcName); err != nil && len(funcName) > 0 {
-		return info, nil, "", "", err
+		return info, nil, nil, nil, "", "", err
 	}
 
-	return info, chain, string(hashBuf[:]), string(funcName), nil
+	return info, chain, token, pub, string(hashBuf[:]), string(funcName), nil
 }
 
 func handleWorkloadStream(ctx context.Context, stream io.ReadWriteCloser, info wasm.CallerInfo, hash, function string, invoker workloadInvoker, timeout time.Duration) {
@@ -137,8 +155,10 @@ func invokeOverStream(ctx context.Context, stream io.ReadWriteCloser, hash, func
 	if dl, ok := ctx.Deadline(); ok {
 		info.DeadlineUnixMs = dl.UnixMilli()
 	}
+	token, _ := admission.AccessTokenFromContext(ctx)
+	pub, _ := admission.InvokedPublicationFromContext(ctx)
 	var callerJSON []byte
-	marshaled := marshalWorkloadCallerInfo(info, chainForForward(ctx, hash))
+	marshaled := marshalWorkloadCallerInfo(info, chainForForward(ctx, hash), token, pub)
 	if len(marshaled) > math.MaxUint16 {
 		return nil, fmt.Errorf("invoke: caller metadata too large (%d > %d)", len(marshaled), math.MaxUint16)
 	}
@@ -247,7 +267,7 @@ func readWorkloadInput(r io.Reader) ([]byte, error) {
 		return nil, err
 	}
 	inputLen := binary.BigEndian.Uint32(inputLenBuf[:])
-	if inputLen > maxInputLen {
+	if inputLen > MaxInputLen {
 		return nil, errInputTooLarge
 	}
 
@@ -266,14 +286,28 @@ func decodeOverload(body []byte, sentinel error) error {
 	return &OverloadError{Sentinel: sentinel, Reason: string(body)}
 }
 
-func marshalWorkloadCallerInfo(info wasm.CallerInfo, chain []string) []byte {
-	if info.PeerKey == (types.PeerKey{}) && info.Attributes == nil && info.DeadlineUnixMs == 0 && len(chain) == 0 {
+func marshalWorkloadCallerInfo(info wasm.CallerInfo, chain []string, token *admissionv1.AccessToken, pub *admission.Publication) []byte {
+	var tokenStr string
+	if token != nil {
+		if s, err := auth.EncodeAccessToken(token); err == nil {
+			tokenStr = s
+		}
+	}
+	var invokedAuth, invokedName string
+	if pub != nil && len(pub.AuthorityPub) > 0 && pub.Name != "" {
+		invokedAuth = hex.EncodeToString(pub.AuthorityPub)
+		invokedName = pub.Name
+	}
+	if info.PeerKey == (types.PeerKey{}) && info.Attributes == nil && info.DeadlineUnixMs == 0 && len(chain) == 0 && tokenStr == "" && invokedAuth == "" {
 		return nil
 	}
 	j := workloadCallerJSON{
-		Attributes:     info.Attributes,
-		CallChain:      chain,
-		DeadlineUnixMs: info.DeadlineUnixMs,
+		Attributes:       info.Attributes,
+		CallChain:        chain,
+		DeadlineUnixMs:   info.DeadlineUnixMs,
+		Cap:              tokenStr,
+		InvokedAuthority: invokedAuth,
+		InvokedName:      invokedName,
 	}
 	if info.PeerKey != (types.PeerKey{}) {
 		j.PeerKey = info.PeerKey.String()
@@ -291,4 +325,34 @@ func callChainFromJSON(data []byte) []string {
 		return nil
 	}
 	return j.CallChain
+}
+
+func accessTokenFromJSON(data []byte) *admissionv1.AccessToken {
+	var j workloadCallerJSON
+	if err := json.Unmarshal(data, &j); err != nil {
+		return nil
+	}
+	if j.Cap == "" {
+		return nil
+	}
+	token, err := auth.DecodeAccessToken(j.Cap)
+	if err != nil {
+		return nil
+	}
+	return token
+}
+
+func invokedPublicationFromJSON(data []byte) *admission.Publication {
+	var j workloadCallerJSON
+	if err := json.Unmarshal(data, &j); err != nil {
+		return nil
+	}
+	if j.InvokedAuthority == "" || j.InvokedName == "" {
+		return nil
+	}
+	authorityPub, err := hex.DecodeString(j.InvokedAuthority)
+	if err != nil || len(authorityPub) == 0 {
+		return nil
+	}
+	return &admission.Publication{AuthorityPub: authorityPub, Name: j.InvokedName}
 }

@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strconv"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -44,12 +45,25 @@ func settableKeys() []settableKey {
 			clear:       func(c *config.Config) { c.StaticHTTP = "" },
 		},
 		{
-			name:        "control-addr",
-			description: "TCP address for the control API (requires $PLN_DIR/control.token)",
-			defaultVal:  config.DefaultControlAddr,
-			apply:       func(c *config.Config, v string) (string, error) { return setAddr(&c.ControlAddr, v) },
-			clear:       func(c *config.Config) { c.ControlAddr = "" },
-			hidden:      true,
+			name:        "static-http-domain",
+			description: "Public DNS suffix served by the static listener (e.g. pln.sh); enables `<name>-<slug>.<domain>` routing",
+			apply: func(c *config.Config, v string) (string, error) {
+				c.StaticHTTPDomain = strings.ToLower(v)
+				return v, nil
+			},
+			clear: func(c *config.Config) { c.StaticHTTPDomain = "" },
+		},
+		{
+			name:        "control-tls",
+			description: "TLS+mTLS address for the public control RPC (e.g. :7443)",
+			apply:       func(c *config.Config, v string) (string, error) { return setAddr(&c.ControlTLS, v) },
+			clear:       func(c *config.Config) { c.ControlTLS = "" },
+		},
+		{
+			name:        "gateway",
+			description: "HTTP address for the anonymous share-URL gateway (e.g. :8088)",
+			apply:       func(c *config.Config, v string) (string, error) { return setAddr(&c.Gateway, v) },
+			clear:       func(c *config.Config) { c.Gateway = "" },
 		},
 		{
 			name:        "log-level",
@@ -160,11 +174,7 @@ func setLogLevel(dst *string, value string) (string, error) {
 }
 
 func setAddr(dst *string, value string) (string, error) {
-	normalised := value
-	if _, err := strconv.Atoi(value); err == nil {
-		normalised = ":" + value
-	}
-	host, port, err := net.SplitHostPort(normalised)
+	host, port, err := splitListenAddr(value)
 	if err != nil {
 		return "", fmt.Errorf("invalid address %q: %w", value, err)
 	}
@@ -174,4 +184,13 @@ func setAddr(dst *string, value string) (string, error) {
 	canonical := net.JoinHostPort(host, port)
 	*dst = canonical
 	return canonical, nil
+}
+
+// splitListenAddr normalises a bind addr and returns (host, port).
+// Accepts "7443" (bare port), ":7443" (port-only), and "host:7443".
+func splitListenAddr(value string) (host, port string, err error) {
+	if _, err := strconv.Atoi(value); err == nil {
+		value = ":" + value
+	}
+	return net.SplitHostPort(value)
 }

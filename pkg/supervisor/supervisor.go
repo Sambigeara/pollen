@@ -14,20 +14,22 @@ import (
 	"net/netip"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	promexporter "go.opentelemetry.io/otel/exporters/prometheus"
 
-	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
+	identityv1 "github.com/sambigeara/pollen/api/genpb/pollen/identity/v1"
 	meshv1 "github.com/sambigeara/pollen/api/genpb/pollen/mesh/v1"
 	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
-	"github.com/sambigeara/pollen/pkg/auth"
+	"github.com/sambigeara/pollen/pkg/admission"
 	"github.com/sambigeara/pollen/pkg/blobs"
 	"github.com/sambigeara/pollen/pkg/config"
 	"github.com/sambigeara/pollen/pkg/control"
-	"github.com/sambigeara/pollen/pkg/gate"
+	"github.com/sambigeara/pollen/pkg/fact"
+	"github.com/sambigeara/pollen/pkg/identity"
 	"github.com/sambigeara/pollen/pkg/membership"
 	"github.com/sambigeara/pollen/pkg/nat"
 	"github.com/sambigeara/pollen/pkg/observability/metrics"
@@ -53,7 +55,7 @@ const (
 	maxRouteDelay         = time.Second
 	loopIntervalJitter    = 0.1
 	maxConcurrentPunches  = 8
-	blobPruneInterval     = 5 * time.Minute
+	blobPruneInterval     = 2 * time.Minute
 	// blobPruneGrace must comfortably exceed the worst-case duration of a
 	// directory seed so a janitor tick mid-seed can't race the spec
 	// publish that claims the just-uploaded file blobs.
@@ -61,7 +63,7 @@ const (
 )
 
 type Supervisor struct {
-	inviteConsumer   auth.InviteConsumer
+	inviteConsumer   identity.InviteConsumer
 	membership       membership.MembershipAPI
 	placement        placement.PlacementAPI
 	tunneling        tunneling.TunnelingAPI
@@ -75,7 +77,7 @@ type Supervisor struct {
 	wasmRuntime      *wasm.Runtime
 	log              *zap.SugaredLogger
 	router           *atomicRouter
-	gate             *gate.Gate
+	gate             *admission.Pipeline
 	peerCache        *peercache.Store
 	nonTargetStreak  map[types.PeerKey]int
 	vivaldiErr       *metrics.EWMA
@@ -89,23 +91,39 @@ type Supervisor struct {
 	ready            chan struct{}
 	punchSem         chan struct{}
 	metricsProviders *metrics.Provider
-	creds            *auth.NodeCredentials
+	creds            *identity.Credentials
 	shutdownCh       chan struct{}
+	runCancel        context.CancelFunc
 	staticAddr       string
 	httpAddr         string
 	socketPath       string
-	controlAddr      string
+	controlTLSAddr   string
+	gatewayAddr      string
 	pollenDir        string
 	signPriv         ed25519.PrivateKey
 	wg               sync.WaitGroup
 	peerTickInterval time.Duration
-	reconnectWindow  time.Duration
 	membershipTTL    time.Duration
 	localID          types.PeerKey
 	useHMACNearest   bool
 }
 
-func New(opts Options, creds *auth.NodeCredentials, inviteConsumer auth.InviteConsumer) (*Supervisor, error) {
+// canonicalGatewayDomain normalises a configured gateway domain to the
+// leading-dot, lower-case wire form used by both the static HTTP
+// listener (for Host-suffix matching) and the gossiped node attribute
+// (for cluster-wide URL composition). Empty stays empty.
+func canonicalGatewayDomain(d string) string {
+	if d == "" {
+		return ""
+	}
+	if d[0] != '.' {
+		d = "." + d
+	}
+	return strings.ToLower(d)
+}
+
+func New(opts Options, creds *identity.Credentials, inviteConsumer identity.InviteConsumer) (*Supervisor, error) {
+	staticDomain := canonicalGatewayDomain(opts.StaticDomain)
 	log := zap.S().Named("supervisor")
 	privKey := opts.SigningKey
 	pubKey := privKey.Public().(ed25519.PublicKey) //nolint:forcetypeassert
@@ -122,17 +140,24 @@ func New(opts Options, creds *auth.NodeCredentials, inviteConsumer auth.InviteCo
 	}
 
 	stateStore := state.New(self, creds.RootPub())
-	runtimeGate := gate.New(creds.RootPub(), stateStore)
+	runtimeGate := admission.New(creds.RootPub(), stateStore)
 	stateStore.SetMutationValidator(runtimeGate.Admit)
-	hasSigner := false
-	if signer := creds.SpecSigner(); signer != nil {
-		stateStore.SetLocalSigner(signer)
-		hasSigner = true
+	// One fact signer for the node's lifetime: facts are named by
+	// pubkey and their authority's Grant is resolved from gossip, so
+	// the signer never changes when capabilities change: only the
+	// gossiped Grant does. The sequence high-water is durable so seq
+	// stays monotonic across daemon restarts.
+	signer, err := fact.NewDurableSigner(privKey, identity.FactSeqPath(identity.IdentityPath(pollenDir)))
+	if err != nil {
+		return nil, fmt.Errorf("open fact signer: %w", err)
 	}
+	stateStore.SetLocalSigner(signer)
+	caps := creds.Grant().GetClaims().GetCapabilities()
+	canPublishSvcs := caps.GetPublish().GetServices()
 	if opts.BootstrapPublic {
 		stateStore.SetPublic()
 	}
-	if creds.DelegationKey() != nil {
+	if caps.GetCanDelegate() {
 		stateStore.SetAdmin()
 	}
 	if opts.StaticAddr != "" {
@@ -140,7 +165,7 @@ func New(opts Options, creds *auth.NodeCredentials, inviteConsumer auth.InviteCo
 	}
 	if rs := opts.RuntimeState; rs != nil {
 		if gs := rs.GetGossipState(); len(gs) > 0 {
-			if err := stateStore.LoadGossipState(gs); err != nil {
+			if err := stateStore.RestoreFromDisk(gs); err != nil {
 				log.Warnw("failed to restore gossip state from disk", zap.Error(err))
 			}
 		}
@@ -152,10 +177,10 @@ func New(opts Options, creds *auth.NodeCredentials, inviteConsumer auth.InviteCo
 		}
 		stateStore.LoadLastAddrs(lastAddrs)
 	}
-	if !hasSigner && len(opts.InitialServices) > 0 {
-		log.Warnw("ignoring configured services: node lacks publish capability", "count", len(opts.InitialServices))
+	if !canPublishSvcs && len(opts.InitialServices) > 0 {
+		log.Warnw("ignoring configured services: node grant lacks service publish capability", "count", len(opts.InitialServices))
 	}
-	if hasSigner {
+	if canPublishSvcs {
 		for _, svc := range opts.InitialServices {
 			if _, err := stateStore.SetService(svc.Port, svc.Name, svc.Protocol, nil); err != nil {
 				return nil, err
@@ -164,6 +189,12 @@ func New(opts Options, creds *auth.NodeCredentials, inviteConsumer auth.InviteCo
 	}
 	if opts.NodeName != "" {
 		stateStore.SetNodeName(opts.NodeName)
+	}
+	if opts.ControlTLSAddr != "" {
+		stateStore.SetControlAddr(opts.ControlTLSAddr)
+	}
+	if staticDomain != "" {
+		stateStore.SetGatewayDomain(staticDomain)
 	}
 
 	if err := initLocalAddresses(stateStore, opts); err != nil {
@@ -191,11 +222,13 @@ func New(opts Options, creds *auth.NodeCredentials, inviteConsumer auth.InviteCo
 		transport.WithSigningKey(privKey),
 		transport.WithTLSIdentityTTL(config.DefaultTLSIdentityTTL),
 		transport.WithMembershipTTL(config.DefaultMembershipTTL),
-		transport.WithReconnectWindow(config.DefaultReconnectWindow),
 		transport.WithMaxConnectionAge(opts.MaxConnectionAge),
 		transport.WithPeerTickInterval(opts.PeerTickInterval),
 		transport.WithIsDenied(func(pk types.PeerKey) bool {
 			return slices.Contains(stateStore.Snapshot().DeniedPeers(), pk)
+		}),
+		transport.WithRelayPermit(func(upstream types.PeerKey) bool {
+			return identity.MayRelay(creds.Grant(), stateStore.Snapshot().GrantFor(upstream[:]))
 		}),
 		transport.WithMetrics(metrics.NewMeshMetrics(mp.Meter())),
 		transport.WithTracer(tp.Tracer()),
@@ -219,7 +252,7 @@ func New(opts Options, creds *auth.NodeCredentials, inviteConsumer auth.InviteCo
 
 	streamAdapter := &streamOpenAdapter{t: m}
 
-	blobsSvc, err := blobs.New(pollenDir, self, streamAdapter, stateStore, runtimeGate, creds, privKey)
+	blobsSvc, err := blobs.New(pollenDir, self, streamAdapter, stateStore, router, runtimeGate, signer, privKey)
 	if err != nil {
 		return nil, fmt.Errorf("create blob store: %w", err)
 	}
@@ -242,10 +275,8 @@ func New(opts Options, creds *auth.NodeCredentials, inviteConsumer auth.InviteCo
 		signPriv:         privKey,
 		pollenDir:        pollenDir,
 		socketPath:       opts.SocketPath,
-		controlAddr:      opts.ControlAddr,
 		peerTickInterval: opts.PeerTickInterval,
 		peerCache:        peerCache,
-		reconnectWindow:  config.DefaultReconnectWindow,
 		punchSem:         make(chan struct{}, maxConcurrentPunches),
 		ready:            make(chan struct{}),
 		shutdownCh:       shutdownCh,
@@ -267,13 +298,11 @@ func New(opts Options, creds *auth.NodeCredentials, inviteConsumer auth.InviteCo
 	}
 
 	m.SetInviteForwarder(n.forwardInviteToAdmin)
-
-	capTrans := &capTransitioner{
-		mesh:               m,
-		store:              stateStore,
-		fwd:                n.forwardInviteToAdmin,
-		supervisorConsumer: &n.inviteConsumer,
-	}
+	// The issuer redeems its own invites locally. Without this the
+	// fast path is dead and every redeem is forwarded; a redeem that
+	// lands on the issuing node then forwards to itself, which is
+	// unreachable (a node holds no mesh session to itself).
+	m.SetInviteIssuer(n.creds)
 
 	n.tunneling = tunneling.New(
 		self, stateStore, streamAdapter, m, router,
@@ -295,11 +324,9 @@ func New(opts Options, creds *auth.NodeCredentials, inviteConsumer auth.InviteCo
 		membership.Config{
 			Streams:          m,
 			RTT:              m,
-			Certs:            m,
 			PeerAddrs:        m,
 			SessionCloser:    m,
 			RoutedSender:     m,
-			CapTransition:    capTrans,
 			SmoothedErr:      vivaldiErr,
 			TracerProvider:   tp.Tracer(),
 			NATDetector:      n.natDetector,
@@ -310,7 +337,6 @@ func New(opts Options, creds *auth.NodeCredentials, inviteConsumer auth.InviteCo
 			Port:             opts.ListenPort,
 			TLSIdentityTTL:   config.DefaultTLSIdentityTTL,
 			MembershipTTL:    config.DefaultMembershipTTL,
-			ReconnectWindow:  config.DefaultReconnectWindow,
 			GossipInterval:   opts.GossipInterval,
 			GossipJitter:     gossipJitter,
 			PeerTickInterval: opts.PeerTickInterval,
@@ -367,19 +393,23 @@ func New(opts Options, creds *auth.NodeCredentials, inviteConsumer auth.InviteCo
 			placement.WithMesh(placementOpener),
 			placement.WithLogger(log.Named("placement")),
 			placement.WithGate(runtimeGate),
+			placement.WithCosts(router),
 		)
 	}
 
 	n.gate = runtimeGate
 
 	staticSvc := static.New(self, stateStore, blobsSvc, opts.StaticAddr != "", log.Named("static"))
+	staticSvc.SetDomain(staticDomain)
 	n.static = staticSvc
 	n.staticSvc = staticSvc
 	n.staticAddr = opts.StaticAddr
 
 	controlOpts := []control.Option{
 		control.WithCredentials(creds),
+		control.WithSignPriv(privKey),
 		control.WithTransportInfo(n),
+		control.WithPeerDelivery(n.mesh),
 		control.WithMetricsSource(n),
 		control.WithMeshConnector(n),
 		control.WithOperatorGate(runtimeGate),
@@ -389,9 +419,8 @@ func New(opts Options, creds *auth.NodeCredentials, inviteConsumer auth.InviteCo
 	}
 
 	n.controlSrv = control.New(n.membership, n.placement, n.tunneling, n.blobs, n.static, stateStore, controlOpts...)
-	if opts.ControlToken != "" {
-		n.controlSrv.SetToken(opts.ControlToken)
-	}
+	n.controlTLSAddr = opts.ControlTLSAddr
+	n.gatewayAddr = opts.GatewayAddr
 
 	for _, conn := range opts.InitialConnections {
 		n.AddDesiredConnection(conn.PeerKey, conn.RemotePort, conn.LocalPort, conn.Protocol)
@@ -440,6 +469,13 @@ func initLocalAddresses(store state.StateStore, opts Options) error {
 }
 
 func (n *Supervisor) Run(ctx context.Context) error {
+	// Derive a cancellable context so an internally-driven shutdown
+	// (e.g. grant expiry signalled via shutdownCh) can unblock
+	// spawned goroutines that listen on ctx.Done. Without this, the
+	// SIGTERM-bound parent stays alive and shutdown's wg.Wait
+	// deadlocks past the deadline.
+	ctx, cancel := context.WithCancel(ctx)
+	n.runCancel = cancel
 	defer n.shutdown()
 
 	if err := n.mesh.Start(ctx); err != nil {
@@ -464,10 +500,10 @@ func (n *Supervisor) Run(ctx context.Context) error {
 		}
 	})
 
-	if n.controlAddr != "" {
+	if n.controlTLSAddr != "" {
 		n.spawn(func() {
-			if err := n.controlSrv.StartTCP(n.controlAddr); err != nil {
-				n.log.Warnw("control tcp server failed", zap.Error(err))
+			if err := n.controlSrv.StartTLS(n.controlTLSAddr); err != nil {
+				n.log.Warnw("control tls listener failed", zap.Error(err), "addr", n.controlTLSAddr)
 			}
 		})
 	}
@@ -484,6 +520,14 @@ func (n *Supervisor) Run(ctx context.Context) error {
 		n.spawn(func() {
 			if err := n.startStaticHTTP(ctx, n.staticAddr); err != nil {
 				n.log.Warnw("static http server failed", zap.Error(err))
+			}
+		})
+	}
+
+	if n.gatewayAddr != "" {
+		n.spawn(func() {
+			if err := n.startGatewayHTTP(ctx, n.gatewayAddr); err != nil {
+				n.log.Warnw("gateway http server failed", zap.Error(err))
 			}
 		})
 	}
@@ -524,7 +568,7 @@ func (n *Supervisor) Run(ctx context.Context) error {
 		case <-ctx.Done():
 			return nil
 		case <-n.shutdownCh:
-			return membership.ErrCertExpired
+			return membership.ErrGrantExpired
 		case <-peerTicker.C:
 			n.syncPeersFromState(ctx, n.store.Snapshot())
 		case ev := <-n.membership.Events():
@@ -573,7 +617,7 @@ func (n *Supervisor) dispatchAuthorisedBlobStream(stream io.ReadWriteCloser, pee
 		stream.Close() //nolint:errcheck
 		return
 	}
-	if err := n.gate.Fetch(peerKey, hash); err != nil {
+	if err := n.gate.Fetch(n.gate.LookupGrant(peerKey), hash); err != nil {
 		stream.Close() //nolint:errcheck
 		return
 	}
@@ -588,7 +632,7 @@ func (n *Supervisor) dispatchServiceConnect(stream io.ReadWriteCloser, peerKey t
 		stream.Close() //nolint:errcheck
 		return
 	}
-	if err := n.gate.Connect(peerKey, n.localID, port); err != nil {
+	if err := n.gate.Connect(n.gate.LookupGrant(peerKey), n.localID, port); err != nil {
 		stream.Close() //nolint:errcheck
 		return
 	}
@@ -597,6 +641,23 @@ func (n *Supervisor) dispatchServiceConnect(stream io.ReadWriteCloser, peerKey t
 
 func (n *Supervisor) dispatchWorkloadCall(stream io.ReadWriteCloser, peerKey types.PeerKey) {
 	n.placement.Serve(stream, peerKey)
+}
+
+// dispatchGrantOffer terminates an inbound admin-initiated upgrade
+// push. Reads the offered grant, runs it through the membership's
+// verify-adopt-revoke-gossip pipeline, and writes the typed response
+// back so the issuer's CLI surfaces a clear outcome.
+func (n *Supervisor) dispatchGrantOffer(stream transport.Stream, peerKey types.PeerKey) {
+	defer stream.Close() //nolint:errcheck
+	req, err := transport.ReadGrantOfferRequest(stream)
+	if err != nil {
+		n.log.Debugw("grant-offer stream read failed", "peer", peerKey.Short(), "err", err)
+		return
+	}
+	resp := n.membership.ReceiveGrantOffer(req)
+	if err := transport.WriteGrantOfferResponse(stream, resp); err != nil {
+		n.log.Debugw("grant-offer response write failed", "peer", peerKey.Short(), "err", err)
+	}
 }
 
 func (n *Supervisor) streamDispatchLoop(ctx context.Context) {
@@ -627,6 +688,8 @@ func (n *Supervisor) streamDispatchLoop(ctx context.Context) {
 		case transport.StreamTypeWorkload:
 			s := transport.WrapTrafficStream(stream, n.trafficRecorder, peerKey)
 			n.spawn(func() { n.dispatchWorkloadCall(s, peerKey) })
+		case transport.StreamTypeGrantOffer:
+			n.spawn(func() { n.dispatchGrantOffer(stream, peerKey) })
 		default:
 			n.log.Warnw("unknown stream type", "type", uint8(stype))
 			stream.Close()
@@ -684,7 +747,7 @@ func (n *Supervisor) dispatchEvents(ctx context.Context, events []state.Event) {
 			n.static.Signal()
 		case state.ServiceChanged:
 			n.handleServiceChanged(e)
-		case state.CertChanged:
+		case state.GrantChanged:
 			n.placement.Signal()
 		}
 	}
@@ -767,7 +830,11 @@ func (n *Supervisor) recomputeRoutes() {
 			Coord:     c,
 		})
 	}
-	n.router.set(routing.Build(snap.LocalID, topology, n.mesh.ConnectedPeers()))
+	localGrant := n.creds.Grant()
+	permitTransit := func(c types.PeerKey) bool {
+		return identity.MayRelay(snap.GrantFor(c[:]), localGrant)
+	}
+	n.router.set(routing.Build(snap.LocalID, topology, n.mesh.ConnectedPeers(), permitTransit))
 }
 
 func (n *Supervisor) saveState() {
@@ -813,6 +880,9 @@ func (n *Supervisor) pruneOrphanBlobs() {
 }
 
 func (n *Supervisor) shutdown() {
+	if n.runCancel != nil {
+		n.runCancel()
+	}
 	n.controlSrv.Stop()
 
 	// Stream handlers block on reads that only unblock when sessions close.
@@ -856,7 +926,7 @@ func (n *Supervisor) PeerStateCounts() transport.PeerStateCounts { return n.mesh
 func (n *Supervisor) GetActivePeerAddress(pk types.PeerKey) (*net.UDPAddr, bool) {
 	return n.mesh.GetActivePeerAddress(pk)
 }
-func (n *Supervisor) ReconnectWindowDuration() time.Duration { return n.reconnectWindow }
+
 func (n *Supervisor) PeerRTT(pk types.PeerKey) (time.Duration, bool) {
 	conn, ok := n.mesh.GetConn(pk)
 	if !ok {
@@ -877,8 +947,6 @@ func (n *Supervisor) ControlMetrics() control.Metrics {
 	cm := n.membership.ControlMetrics()
 	return control.Metrics{
 		CertExpirySeconds:  snap.CertExpirySeconds,
-		CertRenewals:       uint64(snap.CertRenewals),
-		CertRenewalsFailed: uint64(snap.CertRenewalsFailed),
 		PunchAttempts:      uint64(snap.PunchAttempts),
 		PunchFailures:      uint64(snap.PunchFailures),
 		SmoothedVivaldiErr: cm.SmoothedErr,
@@ -891,11 +959,11 @@ func (n *Supervisor) ControlMetrics() control.Metrics {
 func (n *Supervisor) RouteRequest(ctx context.Context, uri wasm.URI, input []byte) ([]byte, error) {
 	info, ok := wasm.CallerInfoFromContext(ctx)
 	if !ok {
-		if cert := n.creds.Cert(); cert != nil {
+		if grant := n.creds.Grant(); grant != nil {
 			info = wasm.CallerInfo{
-				PeerKey: types.PeerKeyFromBytes(cert.GetClaims().GetSubjectPub()),
+				PeerKey: types.PeerKeyFromBytes(grant.GetClaims().GetSubjectPub()),
 			}
-			if attrs := cert.GetClaims().GetCapabilities().GetAttributes(); attrs != nil {
+			if attrs := grant.GetClaims().GetCapabilities().GetAttributes(); attrs != nil {
 				info.Attributes = attrs.AsMap()
 			}
 		}
@@ -925,8 +993,8 @@ func (n *Supervisor) routeServiceRequest(ctx context.Context, callerKey types.Pe
 		return nil, fmt.Errorf("no provider for service %q: %w", name, wasm.ErrTargetNotFound)
 	}
 
-	svc := pickNearestService(snap, candidates)
-	if err := n.gate.Connect(callerKey, svc.Peer, svc.Port); err != nil {
+	svc := pickNearestService(snap, n.router, candidates)
+	if err := n.gate.Connect(n.gate.LookupGrant(callerKey), svc.Peer, svc.Port); err != nil {
 		return nil, fmt.Errorf("connect %s: %w", name, wasm.ErrTargetNotFound)
 	}
 	if svc.Peer == snap.LocalID {
@@ -958,9 +1026,9 @@ func (n *Supervisor) SeedWorkload(wasmBytes []byte, spec state.WorkloadSpec) (st
 	return hash, nil
 }
 func (n *Supervisor) UnseedWorkload(hash string) error   { return n.placement.Unseed(hash) }
-func (n *Supervisor) Credentials() *auth.NodeCredentials { return n.creds }
-func (n *Supervisor) JoinWithInvite(ctx context.Context, token *admissionv1.InviteToken) (*admissionv1.JoinToken, error) {
-	return n.mesh.JoinWithInvite(ctx, token)
+func (n *Supervisor) Credentials() *identity.Credentials { return n.creds }
+func (n *Supervisor) JoinWithInvite(ctx context.Context, ticket *identityv1.InviteTicket) (*identityv1.GrantToken, error) {
+	return n.mesh.JoinWithInvite(ctx, ticket)
 }
 
 func (n *Supervisor) AddDesiredConnection(pk types.PeerKey, remotePort, localPort uint32, protocol statev1.ServiceProtocol) {

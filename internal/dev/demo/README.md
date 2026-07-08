@@ -46,9 +46,8 @@ pln ctx rm demo
 exerciser → ingest seed → terminal seed → pln://service/sink → ./sink (laptop)
 ```
 
-The exerciser dials each pollen node's TCP control endpoint (bound at
-bootstrap) authenticated with the per-node token at
-`/var/lib/pln/control.token`, then invokes `pln://seed/ingest/handle`.
+The exerciser dials each pollen node's control endpoint and invokes
+`pln://seed/ingest/handle`.
 
 ## Dashboard
 

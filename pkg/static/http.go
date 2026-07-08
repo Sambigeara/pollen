@@ -15,6 +15,7 @@ import (
 	"time"
 
 	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
+	"github.com/sambigeara/pollen/pkg/state"
 	"github.com/sambigeara/pollen/pkg/types"
 )
 
@@ -49,9 +50,9 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	host := hostOnly(r.Host)
+	host := strings.ToLower(hostOnly(r.Host))
 	snap := s.store.Snapshot()
-	spec, ok := snap.StaticSpecs[host]
+	spec, ok := s.lookupSpec(snap, host)
 	if !ok {
 		http.NotFound(w, r)
 		return
@@ -71,6 +72,11 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	digest, ok := manifest.paths[reqPath]
 	if !ok {
+		// Log path-misses at debug only and emit the manifest's path
+		// count instead of the full list; a probing scanner can
+		// otherwise generate unbounded log volume against a public
+		// listener.
+		s.log.Debugw("static path miss", "host", host, "req_path", reqPath, "manifest_paths", len(manifest.paths))
 		http.NotFound(w, r)
 		return
 	}
@@ -123,6 +129,40 @@ func (s *Service) loadManifest(digest string) (*parsedManifest, error) {
 	}
 	s.manifestCache.store(digest, pm)
 	return pm, nil
+}
+
+// lookupSpec resolves a Host header to a StaticSpec. With a configured
+// domain the Host is `<name>-<slug>.<domain>` where slug is the
+// publisher's PublisherSlug, so it carries the authority and resolves
+// per-(authority,name) from the publication source. Without a domain
+// the Host is a bare name with no authority channel: this mode is
+// inherently single-tenant, and when two tenants name a site the same
+// the deduped view's lowest-publisher tie-break wins. Multi-tenant
+// static hosting requires a configured domain.
+func (s *Service) lookupSpec(snap state.Snapshot, host string) (state.StaticSpecView, bool) {
+	if s.domain == "" {
+		spec, ok := snap.StaticSpecs[host]
+		return spec, ok
+	}
+	if !strings.HasSuffix(host, s.domain) {
+		return state.StaticSpecView{}, false
+	}
+	prefix := strings.TrimSuffix(host, s.domain)
+	dash := strings.LastIndexByte(prefix, '-')
+	if dash <= 0 {
+		return state.StaticSpecView{}, false
+	}
+	name := prefix[:dash]
+	slug := prefix[dash+1:]
+	if !types.IsValidSlug(slug) {
+		return state.StaticSpecView{}, false
+	}
+	for _, sv := range snap.StaticSpecsAll {
+		if sv.Spec.Name == name && sv.Publisher.Slug() == slug {
+			return sv, true
+		}
+	}
+	return state.StaticSpecView{}, false
 }
 
 // hostOnly strips :port, handling IPv6 bracketed literals.

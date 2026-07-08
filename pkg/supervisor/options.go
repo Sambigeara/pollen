@@ -23,8 +23,9 @@ type Options struct {
 	NodeName           string
 	HTTPAddr           string
 	StaticAddr         string
-	ControlAddr        string
-	ControlToken       string
+	StaticDomain       string
+	ControlTLSAddr     string
+	GatewayAddr        string
 	InitialServices    []ServiceEntry
 	InitialConnections []ConnectionEntry
 	AdvertisedIPs      []string

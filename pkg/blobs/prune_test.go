@@ -14,17 +14,18 @@ import (
 
 	"github.com/sambigeara/pollen/pkg/cas"
 	"github.com/sambigeara/pollen/pkg/state"
+	"github.com/sambigeara/pollen/pkg/types"
 	"github.com/stretchr/testify/require"
 )
 
 func TestKeepSet_UnionsSpecsBlobSpecsAndExtras(t *testing.T) {
 	snap := state.Snapshot{
-		Specs: map[string]state.WorkloadSpecView{
-			"wasm1": {},
-			"wasm2": {},
+		SpecsAll: []state.WorkloadSpecView{
+			{Spec: state.WorkloadSpec{Hash: "wasm1", Name: "fn1"}},
+			{Spec: state.WorkloadSpec{Hash: "wasm2", Name: "fn2"}},
 		},
-		BlobSpecs: map[string]state.BlobSpecView{
-			"named1": {},
+		BlobSpecsAll: []state.BlobSpecView{
+			{Spec: state.BlobSpec{Digest: "named1", Name: "b1"}},
 		},
 	}
 	staticBlobs := map[string]struct{}{
@@ -39,8 +40,37 @@ func TestKeepSet_UnionsSpecsBlobSpecsAndExtras(t *testing.T) {
 }
 
 func TestKeepSet_NoExtras(t *testing.T) {
-	snap := state.Snapshot{Specs: map[string]state.WorkloadSpecView{"w": {}}}
+	snap := state.Snapshot{SpecsAll: []state.WorkloadSpecView{{Spec: state.WorkloadSpec{Hash: "w", Name: "fn"}}}}
 	require.ElementsMatch(t, []string{"w"}, slices.Collect(maps.Keys(KeepSet(snap))))
+}
+
+// A content hash is pinned while any owner's (authority, name) spec
+// references it. KeepSet reads the un-deduped sources, so a tie-break
+// loser's reference still pins bytes the co-owner serves; the hash only
+// drops once every owner has tombstoned.
+func TestKeepSet_MultiOwnerCoOwnerStillPins(t *testing.T) {
+	ownerA := state.WorkloadSpecView{Spec: state.WorkloadSpec{Hash: "wasmX", Name: "a-fn"}, Publisher: types.PeerKey{0xaa}}
+	ownerB := state.WorkloadSpecView{Spec: state.WorkloadSpec{Hash: "wasmX", Name: "b-fn"}, Publisher: types.PeerKey{0xbb}}
+	blobA := state.BlobSpecView{Spec: state.BlobSpec{Digest: "blobX", Name: "a-b"}, Publisher: types.PeerKey{0xaa}}
+	blobB := state.BlobSpecView{Spec: state.BlobSpec{Digest: "blobX", Name: "b-b"}, Publisher: types.PeerKey{0xbb}}
+
+	both := KeepSet(state.Snapshot{
+		SpecsAll:     []state.WorkloadSpecView{ownerA, ownerB},
+		BlobSpecsAll: []state.BlobSpecView{blobA, blobB},
+	})
+	require.Contains(t, both, "wasmX")
+	require.Contains(t, both, "blobX")
+
+	onlyB := KeepSet(state.Snapshot{
+		SpecsAll:     []state.WorkloadSpecView{ownerB},
+		BlobSpecsAll: []state.BlobSpecView{blobB},
+	})
+	require.Contains(t, onlyB, "wasmX")
+	require.Contains(t, onlyB, "blobX")
+
+	none := KeepSet(state.Snapshot{})
+	require.NotContains(t, none, "wasmX")
+	require.NotContains(t, none, "blobX")
 }
 
 func TestPrune_EvictsOrphansKeepsReferenced(t *testing.T) {

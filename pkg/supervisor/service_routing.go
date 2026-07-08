@@ -7,13 +7,13 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"math"
 	"math/rand/v2"
 	"net"
 	"strconv"
 
-	"github.com/sambigeara/pollen/pkg/coords"
+	"github.com/sambigeara/pollen/pkg/route"
 	"github.com/sambigeara/pollen/pkg/state"
+	"github.com/sambigeara/pollen/pkg/types"
 )
 
 func dialLocalService(ctx context.Context, port uint32, input []byte) ([]byte, error) {
@@ -32,35 +32,24 @@ func dialLocalService(ctx context.Context, port uint32, input []byte) ([]byte, e
 	return resp, nil
 }
 
-func pickNearestService(snap state.Snapshot, candidates []state.ServiceInfo) state.ServiceInfo {
-	if len(candidates) == 1 {
-		return candidates[0]
-	}
+// serviceK caps the candidate set after locality narrowing. It
+// matches placement dispatch's dispatchK so service routing and seed
+// dispatch make the same locality-aware choice through the one selector.
+const serviceK = 2
 
-	localNV, ok := snap.Nodes[snap.LocalID]
-	if !ok || localNV.VivaldiCoord == nil {
-		return candidates[rand.IntN(len(candidates))] //nolint:gosec
+// pickNearestService selects a provider for one service name through the
+// shared locality selector. Callers guarantee a non-empty candidate set,
+// so the selector always yields a peer.
+func pickNearestService(snap state.Snapshot, costs route.Costs, candidates []state.ServiceInfo) state.ServiceInfo {
+	byPeer := make(map[types.PeerKey]state.ServiceInfo, len(candidates))
+	peers := make([]types.PeerKey, 0, len(candidates))
+	for _, c := range candidates {
+		if _, seen := byPeer[c.Peer]; !seen {
+			peers = append(peers, c.Peer)
+		}
+		byPeer[c.Peer] = c
 	}
-
-	i := rand.IntN(len(candidates))     //nolint:gosec
-	j := rand.IntN(len(candidates) - 1) //nolint:gosec
-	if j >= i {
-		j++
-	}
-
-	distI := serviceDistance(snap, *localNV.VivaldiCoord, candidates[i])
-	distJ := serviceDistance(snap, *localNV.VivaldiCoord, candidates[j])
-
-	if distI <= distJ {
-		return candidates[i]
-	}
-	return candidates[j]
-}
-
-func serviceDistance(snap state.Snapshot, local coords.Coord, svc state.ServiceInfo) float64 {
-	nv, ok := snap.Nodes[svc.Peer]
-	if !ok || nv.VivaldiCoord == nil {
-		return math.MaxFloat64
-	}
-	return coords.Distance(local, *nv.VivaldiCoord)
+	pick, _ := route.NewSelector(snap, snap.LocalID, costs).PowerOfTwo(peers, serviceK, nil,
+		rand.IntN) //nolint:gosec
+	return byPeer[pick]
 }

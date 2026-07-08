@@ -4,7 +4,6 @@
 package blobs
 
 import (
-	"errors"
 	"strings"
 	"testing"
 
@@ -12,16 +11,11 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestRemove_NotLocal_ReturnsErrNotLocal(t *testing.T) {
-	store, err := cas.New(t.TempDir())
-	require.NoError(t, err)
-
-	svc := &Service{store: store, local: map[string]struct{}{}}
-	err = svc.Remove(strings.Repeat("ab", 32))
-	require.True(t, errors.Is(err, ErrNotLocal), "expected ErrNotLocal, got %v", err)
-}
-
-func TestRemove_Local_Succeeds(t *testing.T) {
+// Remove tombstones the spec and leaves the bytes for the keep-set
+// janitor: a digest may still be referenced by another owner's live
+// spec, so synchronous erasure here would strand a co-owner. Byte
+// reclamation is proved in the Prune tests.
+func TestRemove_LeavesBytesForJanitor(t *testing.T) {
 	store, err := cas.New(t.TempDir())
 	require.NoError(t, err)
 
@@ -30,5 +24,5 @@ func TestRemove_Local_Succeeds(t *testing.T) {
 
 	svc := &Service{store: store, local: map[string]struct{}{hash: {}}}
 	require.NoError(t, svc.Remove(hash))
-	require.False(t, store.Has(hash))
+	require.True(t, store.Has(hash), "Remove must defer byte eviction to the janitor")
 }

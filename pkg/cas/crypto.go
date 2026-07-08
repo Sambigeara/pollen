@@ -8,11 +8,10 @@ import (
 	"crypto/cipher"
 	"crypto/ed25519"
 	"crypto/rand"
-	"crypto/sha512"
 	"errors"
 	"fmt"
 
-	"filippo.io/edwards25519"
+	"github.com/sambigeara/pollen/pkg/identity"
 	"golang.org/x/crypto/nacl/box"
 )
 
@@ -43,6 +42,14 @@ func Encrypt(plaintext, dek []byte) ([]byte, error) {
 	return aead.Seal(envelope, nonce, plaintext, nil), nil
 }
 
+// ErrAEADAuth signals the AEAD authentication tag did not match the
+// envelope under the supplied DEK. Almost always means the local
+// envelope was Put under one DEK while the wrapping the caller
+// unwrapped was minted under another (a pre-idempotent-Put re-publish
+// cycle could leave this stale state). Callers that hold both sides
+// can recover by evicting the envelope + wrapping and re-fetching.
+var ErrAEADAuth = errors.New("cas: aead authentication failed")
+
 func Decrypt(envelope, dek []byte) ([]byte, error) {
 	aead, err := newAEAD(dek)
 	if err != nil {
@@ -54,7 +61,8 @@ func Decrypt(envelope, dek []byte) ([]byte, error) {
 	nonce, ct := envelope[:aead.NonceSize()], envelope[aead.NonceSize():]
 	plaintext, err := aead.Open(nil, nonce, ct, nil)
 	if err != nil {
-		return nil, fmt.Errorf("cas: open envelope: %w", err)
+		// Wrap both so callers can match ErrAEADAuth or the underlying error.
+		return nil, fmt.Errorf("%w: %w", ErrAEADAuth, err)
 	}
 	return plaintext, nil
 }
@@ -74,18 +82,18 @@ func newAEAD(dek []byte) (cipher.AEAD, error) {
 	return aead, nil
 }
 
-// WrapDEK seals dek under NaCl's anonymous sealed box. The recipient's
-// Ed25519 identity key is converted to X25519 via the standard
-// birational map so the same key that signs certs also receives DEKs.
+// WrapDEK seals dek under NaCl's anonymous sealed box, keyed to the
+// recipient's X25519-mapped identity key so the same key that signs certs
+// also receives DEKs.
 func WrapDEK(dek []byte, recipientEdPub ed25519.PublicKey) ([]byte, error) {
 	if len(dek) != DEKSize {
 		return nil, fmt.Errorf("cas: dek must be %d bytes, got %d", DEKSize, len(dek))
 	}
-	xPub, err := edPubToX25519Pub(recipientEdPub)
+	xPub, err := identity.EdPubToX25519(recipientEdPub)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("cas: %w", err)
 	}
-	wrapped, err := box.SealAnonymous(nil, dek, xPub, rand.Reader)
+	wrapped, err := box.SealAnonymous(nil, dek, (*[32]byte)(xPub), rand.Reader)
 	if err != nil {
 		return nil, fmt.Errorf("cas: seal dek: %w", err)
 	}
@@ -93,45 +101,17 @@ func WrapDEK(dek []byte, recipientEdPub ed25519.PublicKey) ([]byte, error) {
 }
 
 func UnwrapDEK(wrapped []byte, recipientEdPub ed25519.PublicKey, recipientEdPriv ed25519.PrivateKey) ([]byte, error) {
-	xPub, err := edPubToX25519Pub(recipientEdPub)
+	xPub, err := identity.EdPubToX25519(recipientEdPub)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("cas: %w", err)
 	}
-	xPriv, err := edPrivToX25519Priv(recipientEdPriv)
+	xPriv, err := identity.EdPrivToX25519(recipientEdPriv)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("cas: %w", err)
 	}
-	dek, ok := box.OpenAnonymous(nil, wrapped, xPub, xPriv)
+	dek, ok := box.OpenAnonymous(nil, wrapped, (*[32]byte)(xPub), (*[32]byte)(xPriv))
 	if !ok {
 		return nil, errors.New("cas: open sealed dek")
 	}
 	return dek, nil
-}
-
-func edPubToX25519Pub(edPub ed25519.PublicKey) (*[32]byte, error) {
-	if len(edPub) != ed25519.PublicKeySize {
-		return nil, fmt.Errorf("cas: ed25519 pub must be %d bytes, got %d", ed25519.PublicKeySize, len(edPub))
-	}
-	pt, err := new(edwards25519.Point).SetBytes(edPub)
-	if err != nil {
-		return nil, fmt.Errorf("cas: parse ed25519 pub: %w", err)
-	}
-	var out [32]byte
-	copy(out[:], pt.BytesMontgomery())
-	return &out, nil
-}
-
-func edPrivToX25519Priv(edPriv ed25519.PrivateKey) (*[32]byte, error) {
-	if len(edPriv) != ed25519.PrivateKeySize {
-		return nil, fmt.Errorf("cas: ed25519 priv must be %d bytes, got %d", ed25519.PrivateKeySize, len(edPriv))
-	}
-	// RFC 7748 / ed25519 spec: the curve25519 scalar is the first 32
-	// bytes of SHA-512(seed) with the standard clamp applied.
-	h := sha512.Sum512(edPriv.Seed())
-	var out [32]byte
-	copy(out[:], h[:32])
-	out[0] &= 248
-	out[31] &= 127
-	out[31] |= 64
-	return &out, nil
 }

@@ -12,21 +12,19 @@ import (
 	"time"
 
 	meshv1 "github.com/sambigeara/pollen/api/genpb/pollen/mesh/v1"
-	"github.com/sambigeara/pollen/pkg/auth"
-	"github.com/sambigeara/pollen/pkg/state"
 	"github.com/sambigeara/pollen/pkg/transport"
 	"github.com/sambigeara/pollen/pkg/types"
 )
 
 const (
 	forwardedInviteTimeout        = 10 * time.Second
-	maxForwardedInviteMessageSize = 64 * 1024 // TODO(saml) arbitrary, probably not required?
+	maxForwardedInviteMessageSize = 64 * 1024
 )
 
 func (n *Supervisor) forwardInviteToAdmin(ctx context.Context, joinerKey types.PeerKey, req *meshv1.InviteRedeemRequest) (*meshv1.InviteRedeemResponse, error) {
-	issuerPub := req.GetToken().GetClaims().GetIssuerPub()
+	issuerPub := req.GetTicket().GetClaims().GetIssuerPub()
 	if len(issuerPub) != ed25519.PublicKeySize {
-		return nil, errors.New("invite token missing issuer pub")
+		return nil, errors.New("invite ticket missing issuer pub")
 	}
 	issuerKey := types.PeerKeyFromBytes(issuerPub)
 
@@ -107,15 +105,14 @@ func (n *Supervisor) adminForwardCandidates(issuer types.PeerKey) []types.PeerKe
 }
 
 func (n *Supervisor) processForwardedInviteRequest(req *meshv1.ForwardedInviteRedeemRequest) *meshv1.ForwardedInviteRedeemResponse {
-	signer := n.creds.DelegationKey()
-	if signer == nil {
+	if !n.creds.Grant().GetClaims().GetCapabilities().GetCanDelegate() {
 		return &meshv1.ForwardedInviteRedeemResponse{JoinerPub: req.GetJoinerPub(), Inner: &meshv1.InviteRedeemResponse{
-			Reason: "this node is not an admin",
+			Reason: "this node has no delegation authority",
 		}}
 	}
 
 	joinerKey := types.PeerKeyFromBytes(req.GetJoinerPub())
-	resp := transport.ProcessInviteRedeem(signer, n.inviteConsumer, n.membershipTTL, joinerKey, req.GetInner())
+	resp := transport.ProcessInviteRedeem(n.creds, n.inviteConsumer, joinerKey, req.GetInner())
 	return &meshv1.ForwardedInviteRedeemResponse{JoinerPub: req.GetJoinerPub(), Inner: resp}
 }
 
@@ -149,43 +146,4 @@ func (n *Supervisor) handleMembershipStream(_ context.Context, stream transport.
 		return
 	}
 	_, _ = stream.Write(data)
-}
-
-type capTransitioner struct {
-	mesh               transport.Transport
-	store              state.StateStore
-	fwd                transport.InviteForwarder
-	supervisorConsumer *auth.InviteConsumer // points to Supervisor.inviteConsumer; set once at construction, value immutable after startup
-}
-
-func (t *capTransitioner) UpgradeToAdmin(signer *auth.DelegationSigner) {
-	t.mesh.SetInviteConsumer(*t.supervisorConsumer)
-	t.mesh.SetInviteSigner(signer)
-	t.mesh.SetInviteForwarder(t.fwd)
-	t.store.SetAdmin()
-	// The signer captures its issuer cert by value at construction, so
-	// the store needs the freshly rebuilt signer rather than the
-	// pre-upgrade one for subsequent publishes to carry the new
-	// admin-anchored cert as their SpecAuth publisher.
-	t.store.SetLocalSigner(signer)
-}
-
-// DowngradeFromAdmin strips admin authority. The invite mesh loses its
-// signer and the store clears its admin marker. The store's spec signer
-// is replaced with specSigner: nil for a true leaf, a publisher's spec
-// signer for an admin→publisher downgrade. Cap-based enforcement lives
-// at the control RPC layer (canPublish/canDelegate/canAdmit) and at the
-// publish path (signer must be non-nil to issue a SpecAuth). The
-// admission gate only validates cryptographic chain integrity, so this
-// downgrade alone does not cause peers to reject anything we managed to
-// gossip before; it simply gates what we can sign next.
-func (t *capTransitioner) DowngradeFromAdmin(specSigner *auth.SpecSigner) {
-	t.mesh.SetInviteForwarder(t.fwd)
-	t.mesh.SetInviteSigner(nil)
-	t.store.ClearAdmin()
-	if specSigner != nil {
-		t.store.SetLocalSigner(specSigner)
-	} else {
-		t.store.SetLocalSigner(nil)
-	}
 }

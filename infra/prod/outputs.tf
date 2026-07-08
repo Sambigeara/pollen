@@ -5,7 +5,7 @@ output "node_ips" {
 
 output "node_hostnames" {
   description = "Map of node name → public hostname (grey-cloud DNS record)."
-  value       = { for k, s in hcloud_server.node : k => "${s.name}.${var.zone_name}" }
+  value       = { for k, s in hcloud_server.node : k => "${s.name}.${local.zone_name}" }
 }
 
 output "bootstrap_targets" {

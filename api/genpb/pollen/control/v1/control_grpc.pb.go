@@ -22,6 +22,7 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
+	ControlService_Handshake_FullMethodName         = "/pollen.control.v1.ControlService/Handshake"
 	ControlService_Shutdown_FullMethodName          = "/pollen.control.v1.ControlService/Shutdown"
 	ControlService_GetBootstrapInfo_FullMethodName  = "/pollen.control.v1.ControlService/GetBootstrapInfo"
 	ControlService_GetStatus_FullMethodName         = "/pollen.control.v1.ControlService/GetStatus"
@@ -35,7 +36,8 @@ const (
 	ControlService_SeedWorkload_FullMethodName      = "/pollen.control.v1.ControlService/SeedWorkload"
 	ControlService_UnseedWorkload_FullMethodName    = "/pollen.control.v1.ControlService/UnseedWorkload"
 	ControlService_CallWorkload_FullMethodName      = "/pollen.control.v1.ControlService/CallWorkload"
-	ControlService_IssueCert_FullMethodName         = "/pollen.control.v1.ControlService/IssueCert"
+	ControlService_UpgradePeer_FullMethodName       = "/pollen.control.v1.ControlService/UpgradePeer"
+	ControlService_RenewGrant_FullMethodName        = "/pollen.control.v1.ControlService/RenewGrant"
 	ControlService_FetchBlob_FullMethodName         = "/pollen.control.v1.ControlService/FetchBlob"
 	ControlService_UploadBlob_FullMethodName        = "/pollen.control.v1.ControlService/UploadBlob"
 	ControlService_RemoveBlob_FullMethodName        = "/pollen.control.v1.ControlService/RemoveBlob"
@@ -49,6 +51,12 @@ const (
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type ControlServiceClient interface {
+	// Handshake exchanges the client and server protocol-version ranges
+	// before any functional RPC. The server only reports its own
+	// [server_min, server_max]; the client decides compatibility, so a
+	// version mismatch surfaces as an explicit "out of date" message
+	// rather than an opaque transport failure.
+	Handshake(ctx context.Context, in *HandshakeRequest, opts ...grpc.CallOption) (*HandshakeResponse, error)
 	Shutdown(ctx context.Context, in *ShutdownRequest, opts ...grpc.CallOption) (*ShutdownResponse, error)
 	GetBootstrapInfo(ctx context.Context, in *GetBootstrapInfoRequest, opts ...grpc.CallOption) (*GetBootstrapInfoResponse, error)
 	GetStatus(ctx context.Context, in *GetStatusRequest, opts ...grpc.CallOption) (*GetStatusResponse, error)
@@ -62,7 +70,8 @@ type ControlServiceClient interface {
 	SeedWorkload(ctx context.Context, opts ...grpc.CallOption) (grpc.ClientStreamingClient[SeedWorkloadRequest, SeedWorkloadResponse], error)
 	UnseedWorkload(ctx context.Context, in *UnseedWorkloadRequest, opts ...grpc.CallOption) (*UnseedWorkloadResponse, error)
 	CallWorkload(ctx context.Context, in *CallWorkloadRequest, opts ...grpc.CallOption) (*CallWorkloadResponse, error)
-	IssueCert(ctx context.Context, in *IssueCertRequest, opts ...grpc.CallOption) (*IssueCertResponse, error)
+	UpgradePeer(ctx context.Context, in *UpgradePeerRequest, opts ...grpc.CallOption) (*UpgradePeerResponse, error)
+	RenewGrant(ctx context.Context, in *RenewGrantRequest, opts ...grpc.CallOption) (*RenewGrantResponse, error)
 	FetchBlob(ctx context.Context, in *FetchBlobRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[FetchBlobResponse], error)
 	UploadBlob(ctx context.Context, opts ...grpc.CallOption) (grpc.ClientStreamingClient[UploadBlobRequest, UploadBlobResponse], error)
 	RemoveBlob(ctx context.Context, in *RemoveBlobRequest, opts ...grpc.CallOption) (*RemoveBlobResponse, error)
@@ -78,6 +87,16 @@ type controlServiceClient struct {
 
 func NewControlServiceClient(cc grpc.ClientConnInterface) ControlServiceClient {
 	return &controlServiceClient{cc}
+}
+
+func (c *controlServiceClient) Handshake(ctx context.Context, in *HandshakeRequest, opts ...grpc.CallOption) (*HandshakeResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(HandshakeResponse)
+	err := c.cc.Invoke(ctx, ControlService_Handshake_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func (c *controlServiceClient) Shutdown(ctx context.Context, in *ShutdownRequest, opts ...grpc.CallOption) (*ShutdownResponse, error) {
@@ -213,10 +232,20 @@ func (c *controlServiceClient) CallWorkload(ctx context.Context, in *CallWorkloa
 	return out, nil
 }
 
-func (c *controlServiceClient) IssueCert(ctx context.Context, in *IssueCertRequest, opts ...grpc.CallOption) (*IssueCertResponse, error) {
+func (c *controlServiceClient) UpgradePeer(ctx context.Context, in *UpgradePeerRequest, opts ...grpc.CallOption) (*UpgradePeerResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(IssueCertResponse)
-	err := c.cc.Invoke(ctx, ControlService_IssueCert_FullMethodName, in, out, cOpts...)
+	out := new(UpgradePeerResponse)
+	err := c.cc.Invoke(ctx, ControlService_UpgradePeer_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *controlServiceClient) RenewGrant(ctx context.Context, in *RenewGrantRequest, opts ...grpc.CallOption) (*RenewGrantResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RenewGrantResponse)
+	err := c.cc.Invoke(ctx, ControlService_RenewGrant_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -309,6 +338,12 @@ func (c *controlServiceClient) Inspect(ctx context.Context, in *InspectRequest, 
 // All implementations must embed UnimplementedControlServiceServer
 // for forward compatibility.
 type ControlServiceServer interface {
+	// Handshake exchanges the client and server protocol-version ranges
+	// before any functional RPC. The server only reports its own
+	// [server_min, server_max]; the client decides compatibility, so a
+	// version mismatch surfaces as an explicit "out of date" message
+	// rather than an opaque transport failure.
+	Handshake(context.Context, *HandshakeRequest) (*HandshakeResponse, error)
 	Shutdown(context.Context, *ShutdownRequest) (*ShutdownResponse, error)
 	GetBootstrapInfo(context.Context, *GetBootstrapInfoRequest) (*GetBootstrapInfoResponse, error)
 	GetStatus(context.Context, *GetStatusRequest) (*GetStatusResponse, error)
@@ -322,7 +357,8 @@ type ControlServiceServer interface {
 	SeedWorkload(grpc.ClientStreamingServer[SeedWorkloadRequest, SeedWorkloadResponse]) error
 	UnseedWorkload(context.Context, *UnseedWorkloadRequest) (*UnseedWorkloadResponse, error)
 	CallWorkload(context.Context, *CallWorkloadRequest) (*CallWorkloadResponse, error)
-	IssueCert(context.Context, *IssueCertRequest) (*IssueCertResponse, error)
+	UpgradePeer(context.Context, *UpgradePeerRequest) (*UpgradePeerResponse, error)
+	RenewGrant(context.Context, *RenewGrantRequest) (*RenewGrantResponse, error)
 	FetchBlob(*FetchBlobRequest, grpc.ServerStreamingServer[FetchBlobResponse]) error
 	UploadBlob(grpc.ClientStreamingServer[UploadBlobRequest, UploadBlobResponse]) error
 	RemoveBlob(context.Context, *RemoveBlobRequest) (*RemoveBlobResponse, error)
@@ -340,6 +376,9 @@ type ControlServiceServer interface {
 // pointer dereference when methods are called.
 type UnimplementedControlServiceServer struct{}
 
+func (UnimplementedControlServiceServer) Handshake(context.Context, *HandshakeRequest) (*HandshakeResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Handshake not implemented")
+}
 func (UnimplementedControlServiceServer) Shutdown(context.Context, *ShutdownRequest) (*ShutdownResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Shutdown not implemented")
 }
@@ -379,8 +418,11 @@ func (UnimplementedControlServiceServer) UnseedWorkload(context.Context, *Unseed
 func (UnimplementedControlServiceServer) CallWorkload(context.Context, *CallWorkloadRequest) (*CallWorkloadResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method CallWorkload not implemented")
 }
-func (UnimplementedControlServiceServer) IssueCert(context.Context, *IssueCertRequest) (*IssueCertResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "method IssueCert not implemented")
+func (UnimplementedControlServiceServer) UpgradePeer(context.Context, *UpgradePeerRequest) (*UpgradePeerResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method UpgradePeer not implemented")
+}
+func (UnimplementedControlServiceServer) RenewGrant(context.Context, *RenewGrantRequest) (*RenewGrantResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method RenewGrant not implemented")
 }
 func (UnimplementedControlServiceServer) FetchBlob(*FetchBlobRequest, grpc.ServerStreamingServer[FetchBlobResponse]) error {
 	return status.Error(codes.Unimplemented, "method FetchBlob not implemented")
@@ -422,6 +464,24 @@ func RegisterControlServiceServer(s grpc.ServiceRegistrar, srv ControlServiceSer
 		t.testEmbeddedByValue()
 	}
 	s.RegisterService(&ControlService_ServiceDesc, srv)
+}
+
+func _ControlService_Handshake_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(HandshakeRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ControlServiceServer).Handshake(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ControlService_Handshake_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ControlServiceServer).Handshake(ctx, req.(*HandshakeRequest))
+	}
+	return interceptor(ctx, in, info, handler)
 }
 
 func _ControlService_Shutdown_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
@@ -647,20 +707,38 @@ func _ControlService_CallWorkload_Handler(srv interface{}, ctx context.Context, 
 	return interceptor(ctx, in, info, handler)
 }
 
-func _ControlService_IssueCert_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(IssueCertRequest)
+func _ControlService_UpgradePeer_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(UpgradePeerRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(ControlServiceServer).IssueCert(ctx, in)
+		return srv.(ControlServiceServer).UpgradePeer(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: ControlService_IssueCert_FullMethodName,
+		FullMethod: ControlService_UpgradePeer_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(ControlServiceServer).IssueCert(ctx, req.(*IssueCertRequest))
+		return srv.(ControlServiceServer).UpgradePeer(ctx, req.(*UpgradePeerRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ControlService_RenewGrant_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RenewGrantRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ControlServiceServer).RenewGrant(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ControlService_RenewGrant_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ControlServiceServer).RenewGrant(ctx, req.(*RenewGrantRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -781,6 +859,10 @@ var ControlService_ServiceDesc = grpc.ServiceDesc{
 	HandlerType: (*ControlServiceServer)(nil),
 	Methods: []grpc.MethodDesc{
 		{
+			MethodName: "Handshake",
+			Handler:    _ControlService_Handshake_Handler,
+		},
+		{
 			MethodName: "Shutdown",
 			Handler:    _ControlService_Shutdown_Handler,
 		},
@@ -829,8 +911,12 @@ var ControlService_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _ControlService_CallWorkload_Handler,
 		},
 		{
-			MethodName: "IssueCert",
-			Handler:    _ControlService_IssueCert_Handler,
+			MethodName: "UpgradePeer",
+			Handler:    _ControlService_UpgradePeer_Handler,
+		},
+		{
+			MethodName: "RenewGrant",
+			Handler:    _ControlService_RenewGrant_Handler,
 		},
 		{
 			MethodName: "RemoveBlob",

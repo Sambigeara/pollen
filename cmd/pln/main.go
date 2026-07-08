@@ -6,6 +6,7 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -14,6 +15,7 @@ import (
 	"os/user"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"strings"
 	"syscall"
 	"time"
@@ -22,9 +24,11 @@ import (
 	"github.com/spf13/cobra"
 	"golang.org/x/net/http2"
 
+	controlv1 "github.com/sambigeara/pollen/api/genpb/pollen/control/v1"
 	"github.com/sambigeara/pollen/api/genpb/pollen/control/v1/controlv1connect"
 	"github.com/sambigeara/pollen/pkg/config"
 	"github.com/sambigeara/pollen/pkg/plnfs"
+	"github.com/sambigeara/pollen/pkg/wire"
 )
 
 const (
@@ -36,18 +40,59 @@ const (
 	osLinux             = "linux"
 	osDarwin            = "darwin"
 	installScriptURL    = "https://pln.sh/install.sh"
+	unknownValue        = "unknown"
+	shortSHALen         = 7
 )
 
 var (
 	version = "dev"
-	commit  = "unknown"
-	date    = "unknown"
+	commit  = ""
+	date    = ""
 )
 
+// buildInfo prefers ldflag-injected values and falls back to debug.BuildInfo
+// VCS metadata so plain `go build` shows the HEAD commit plus a "-dirty"
+// suffix when the working tree differs.
+func buildInfo() (string, string, string) {
+	v, c, d := version, commit, date
+	var dirty bool
+	if info, ok := debug.ReadBuildInfo(); ok {
+		for _, s := range info.Settings {
+			switch s.Key {
+			case "vcs.revision":
+				if c == "" {
+					c = s.Value
+				}
+			case "vcs.time":
+				if d == "" {
+					d = s.Value
+				}
+			case "vcs.modified":
+				dirty = s.Value == "true"
+			}
+		}
+	}
+	if len(c) >= shortSHALen {
+		c = c[:shortSHALen]
+	}
+	if dirty && c != "" {
+		c += "-dirty"
+	}
+	if c == "" {
+		c = unknownValue
+	}
+	if d == "" {
+		d = unknownValue
+	}
+	return v, c, d
+}
+
 type cliEnv struct {
-	client controlv1connect.ControlServiceClient
-	cfg    *config.Config
-	dir    string
+	client    controlv1connect.ControlServiceClient
+	cfg       *config.Config
+	dir       string
+	ctxName   string
+	transport transportSelection
 }
 
 type envConfig struct {
@@ -68,22 +113,45 @@ func withEnv(fn func(*cobra.Command, []string, *cliEnv) error, opts ...envOption
 		opt(&cfg)
 	}
 	return func(cmd *cobra.Command, args []string) error {
+		ctxName := resolveContextName()
+		if f := cmd.Flag("ctx"); f != nil && cmd.Flags().Changed("ctx") {
+			ctxName = f.Value.String()
+		}
 		defaultDir, _ := cmd.Flags().GetString("dir")
-		dir, host, err := resolveTarget(cmd, defaultDir)
+		entry, err := resolveTarget(cmd, ctxName, defaultDir)
 		if err != nil {
 			return err
 		}
+		override := transportOverrideFromFlags(cmd)
 
-		if cfg.localOnly && host != "" {
-			return errRemoteUnsupported
+		var transport transportSelection
+		if cfg.localOnly {
+			if override == overrideWire {
+				return errors.New("--wire is not applicable to commands that run locally")
+			}
+			// SSH-bridge would ship the command to a remote node.
+			if entry.isSSHBridge() {
+				return errRemoteUnsupported
+			}
+			// Force local even when a wire fallback is configured:
+			// http2's DialTLS path has no timeout, so an unreachable
+			// wire endpoint would hang the command for the OS-level TCP
+			// timeout before `pln up` could launch the daemon.
+			transport = transportSelection{kind: transportLocal}
+		} else {
+			transport, err = resolveTransport(entry, override)
+			if err != nil {
+				return err
+			}
 		}
 		if cfg.systemService {
-			if err := ensureSystemServiceContext(); err != nil {
+			if err := ensureSystemServiceContext(ctxName); err != nil {
 				return err
 			}
 		}
 
-		if host == "" {
+		dir := entry.Dir
+		if transport.IsLocal() {
 			plnfs.SetSystemMode(dir == plnfs.SystemDir || strings.HasPrefix(dir, plnfs.SystemDir+"/"))
 			if cfg.wantsRoot {
 				escalateToRoot()
@@ -98,9 +166,23 @@ func withEnv(fn func(*cobra.Command, []string, *cliEnv) error, opts ...envOption
 			cliCfg = &config.Config{}
 		}
 
+		baseURL := "http://unix"
+		if transport.IsWire() {
+			baseURL = "https://" + transport.WireAddr()
+			// Wire callers have no local renewal loop, so renew
+			// opportunistically when the grant is within its lead window.
+			// Best-effort: the command proceeds on the current still-valid
+			// grant and retries next time.
+			if err := wire.MaybeRenewGrant(cmd.Context(), dir, transport.WireAddr()); err != nil {
+				fmt.Fprintf(cmd.ErrOrStderr(), "pln: grant renewal failed: %v\n", err)
+			}
+		}
+
 		env := &cliEnv{
-			dir: dir,
-			cfg: cliCfg,
+			dir:       dir,
+			ctxName:   ctxName,
+			cfg:       cliCfg,
+			transport: transport,
 			// No http.Client.Timeout: per-command deadlines own the budget via
 			// context.WithTimeout on cmd.Context(). A global wall-clock would
 			// otherwise mask real errors and truncate long-lived calls before
@@ -109,27 +191,56 @@ func withEnv(fn func(*cobra.Command, []string, *cliEnv) error, opts ...envOption
 				&http.Client{
 					Transport: &http2.Transport{
 						AllowHTTP: true,
-						DialTLS:   dialTLSFunc(dir, host),
+						DialTLS:   dialTLSFunc(transport, dir),
 					},
 				},
-				"http://unix",
+				baseURL,
 				connect.WithGRPC(),
 			),
 		}
 
+		if err := negotiateProtocol(cmd.Context(), env.client); err != nil {
+			return err
+		}
 		return fn(cmd, args, env)
 	}
 }
 
-func dialTLSFunc(dir, target string) func(string, string, *tls.Config) (net.Conn, error) {
-	if target != "" {
+// negotiateProtocol runs the version handshake before the functional
+// RPC. A version mismatch or a daemon too old to implement Handshake
+// becomes an explicit, typed error. Availability, certificate and
+// transport failures are left for the command to surface with its
+// richer diagnostics rather than masked behind a generic handshake
+// error.
+func negotiateProtocol(ctx context.Context, c controlv1connect.ControlServiceClient) error {
+	resp, err := c.Handshake(ctx, connect.NewRequest(&controlv1.HandshakeRequest{
+		ClientMin: wire.ProtocolMin,
+		ClientMax: wire.ProtocolMax,
+	}))
+	if err != nil {
+		if wire.DaemonLacksHandshake(err) {
+			return wire.ErrDaemonNoHandshake
+		}
+		return nil
+	}
+	return wire.CheckRange(resp.Msg.GetServerMin(), resp.Msg.GetServerMax())
+}
+
+func dialTLSFunc(t transportSelection, dir string) func(string, string, *tls.Config) (net.Conn, error) {
+	switch t.kind {
+	case transportWire:
+		return plnNativeDialer(dir, t.WireAddr())
+	case transportSSHBridge:
+		host := t.SSHHost()
 		return func(_, _ string, _ *tls.Config) (net.Conn, error) {
-			return sshBridgeDial(target)
+			return sshBridgeDial(host)
+		}
+	case transportLocal:
+		return func(_, _ string, _ *tls.Config) (net.Conn, error) {
+			return (&net.Dialer{}).DialContext(context.Background(), "unix", filepath.Join(dir, socketName))
 		}
 	}
-	return func(_, _ string, _ *tls.Config) (net.Conn, error) {
-		return (&net.Dialer{}).DialContext(context.Background(), "unix", filepath.Join(dir, socketName))
-	}
+	panic("dialTLSFunc: unreachable")
 }
 
 func main() {
@@ -151,8 +262,11 @@ Two commands to a cluster:
 
 	rootCmd.PersistentFlags().String("dir", defaultRootDir(), "Directory where Pollen state is persisted (env: PLN_DIR)")
 	rootCmd.PersistentFlags().StringP("host", "H", "", "Target daemon over SSH, e.g. user@host (env: PLN_HOST)")
+	rootCmd.PersistentFlags().Bool("local", false, "Force the local daemon transport; error if its socket is not reachable")
+	rootCmd.PersistentFlags().Bool("wire", false, "Force the wire fallback transport; error if no wire endpoint is configured")
+	rootCmd.MarkFlagsMutuallyExclusive("local", "wire")
 
-	rootCmd.AddCommand(newVersionCmd(), newIDCmd(), newBridgeCmd(), newContextCmds(), newCallCmd(), newInspectCmd())
+	rootCmd.AddCommand(newVersionCmd(), newIDCmd(), newBridgeCmd(), newContextCmds(), newCallCmd(), newInspectCmd(), newShareCmd())
 	rootCmd.AddCommand(newDaemonCmds()...)
 	rootCmd.AddCommand(newClusterCmds()...)
 	rootCmd.AddCommand(newNetworkCmds()...)
@@ -160,7 +274,7 @@ Two commands to a cluster:
 	rootCmd.AddCommand(newSetCmds()...)
 
 	if err := rootCmd.Execute(); err != nil {
-		fmt.Fprintln(os.Stderr, err)
+		fmt.Fprintln(os.Stderr, errorLine(err))
 		os.Exit(exitCodeOf(err))
 	}
 }
@@ -169,15 +283,16 @@ func newVersionCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "version",
 		Short:   "Show Pollen version information",
-		Long:    "Prints the binary version, commit hash, and build date. Use --short for just the version, suitable for scripting.",
+		Long:    "Prints the binary version, commit, and date. Use --short for just the version, suitable for scripting.",
 		Example: "  pln version --short",
 		Args:    cobra.NoArgs,
 		Run: func(cmd *cobra.Command, _ []string) {
+			v, c, d := buildInfo()
 			if short, _ := cmd.Flags().GetBool("short"); short {
-				fmt.Fprintln(cmd.OutOrStdout(), version)
+				fmt.Fprintln(cmd.OutOrStdout(), v)
 				return
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "version: %s\ncommit: %s\ndate: %s\n", version, commit, date)
+			fmt.Fprintf(cmd.OutOrStdout(), "version: %s\ncommit:  %s\ndate:    %s\n", v, c, d)
 		},
 	}
 	cmd.Flags().Bool("short", false, "Print version only")

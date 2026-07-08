@@ -23,6 +23,7 @@ type PeerTopology struct {
 
 type Table struct {
 	routes map[types.PeerKey]types.PeerKey
+	costs  map[types.PeerKey]float64
 }
 
 func (t Table) NextHop(dest types.PeerKey) (types.PeerKey, bool) {
@@ -30,7 +31,24 @@ func (t Table) NextHop(dest types.PeerKey) (types.PeerKey, bool) {
 	return next, ok
 }
 
-func Build(self types.PeerKey, topology []PeerTopology, connected []types.PeerKey) Table {
+// Cost reports the shortest-path cost from the building node to dest,
+// summed over Vivaldi edge weights along the route. A directly-connected
+// dest yields its direct edge weight, which equals the straight-line
+// coordinate distance for peers with a converged coordinate; a
+// relay-only dest yields the higher path cost. ok is false when no path
+// to dest exists.
+func (t Table) Cost(dest types.PeerKey) (float64, bool) {
+	c, ok := t.costs[dest]
+	return c, ok
+}
+
+// Build computes this node's shortest-path next-hop table. permitTransit,
+// when non-nil, gates which peers may serve as intermediate relays: a
+// peer it rejects can still be a destination but is never routed
+// through, so an honest node never attempts to relay through a sibling
+// tenant (the relay would refuse anyway). A nil predicate transits any
+// peer.
+func Build(self types.PeerKey, topology []PeerTopology, connected []types.PeerKey, permitTransit func(types.PeerKey) bool) Table {
 	coordOf := make(map[types.PeerKey]*coords.Coord, len(topology))
 	for i := range topology {
 		coordOf[topology[i].Key] = topology[i].Coord
@@ -54,6 +72,11 @@ func Build(self types.PeerKey, topology []PeerTopology, connected []types.PeerKe
 		if d, seen := dist[cur.node]; seen && cur.dist > d {
 			continue
 		}
+		// A peer we may not transit stays reachable as a destination (its
+		// firstHop is already recorded) but we do not expand paths through it.
+		if cur.node != self && permitTransit != nil && !permitTransit(cur.node) {
+			continue
+		}
 		for _, neighbor := range adj[cur.node] {
 			nd := cur.dist + edgeWeight(coordOf[cur.node], coordOf[neighbor])
 			if d, seen := dist[neighbor]; seen && nd >= d {
@@ -72,7 +95,7 @@ func Build(self types.PeerKey, topology []PeerTopology, connected []types.PeerKe
 	for _, pk := range connected {
 		delete(firstHop, pk)
 	}
-	return Table{routes: firstHop}
+	return Table{routes: firstHop, costs: dist}
 }
 
 func edgeWeight(a, b *coords.Coord) float64 {

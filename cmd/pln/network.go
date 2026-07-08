@@ -53,6 +53,8 @@ const (
 	tablePadding     = 2
 	minDisambigPeers = 2
 	shortHexLen      = 8
+	// Placeholder shown in count columns (REPLICAS) when nothing in scope is countable.
+	noVisibility = "-"
 )
 
 func newNetworkCmds() []*cobra.Command {
@@ -123,11 +125,11 @@ Persists to config.yaml so the tunnel re-establishes after restart.`,
 The peer is denied future re-admission until an admin re-issues credentials.
 Identify by hex peer-id prefix (as shown by ` + "`pln status`" + `).
 
-Authority is bounded by the delegation tree: a delegated admin can only
-deny peers it (transitively) admitted. Denies that fall outside the
-issuer's subtree are gossiped but ignored by other nodes. The root node
-can deny anyone. Revoking an intermediate admin cascades to the entire
-subtree it issued.`,
+Authority follows the delegation tree: a caller can deny any peer beneath
+it. The cluster root reaches every peer; a workspace-admin or delegated
+admin reaches only its own subtree, so even an admin cannot deny a sibling
+or an ancestor. Calls from outside that scope are refused with ` + "`target peer is outside caller's authority`" + `.
+Revoking an intermediate admin cascades to the entire subtree it issued.`,
 		Example: "  pln deny ab12cd34",
 		Args:    cobra.ExactArgs(1),
 		RunE:    withEnv(runDeny),
@@ -150,6 +152,9 @@ func runStatus(cmd *cobra.Command, args []string, env *cliEnv) error {
 		if connect.CodeOf(err) != connect.CodeUnavailable {
 			return err
 		}
+		if env.transport.IsWire() {
+			return unreachableErr(wireCertDiagnosis(env.dir, env.transport.WireAddr(), err))
+		}
 		if socketPermissionDenied(env.dir) {
 			return permissionErr("cannot reach daemon — are you in the pln group?\n  fix: sudo usermod -aG pln $(whoami) && newgrp pln")
 		}
@@ -162,7 +167,7 @@ func runStatus(cmd *cobra.Command, args []string, env *cliEnv) error {
 	if metricsErr == nil {
 		health = metricsResp.Msg
 	}
-	renderStatusHeader(cmd.OutOrStdout(), health, st.GetCertificates(), statusContextLabel(env.dir))
+	renderStatusHeader(cmd.OutOrStdout(), health, st.GetCertificates(), statusContextLabel(env.ctxName, env.dir, env.transport))
 
 	var sections []statusSection
 	switch mode {
@@ -222,6 +227,9 @@ func runStatus(cmd *cobra.Command, args []string, env *cliEnv) error {
 }
 
 func runServe(cmd *cobra.Command, args []string, env *cliEnv) error {
+	if env.transport.IsWire() {
+		return errors.New("pln serve requires the local daemon; run `pln up` on this ctx first")
+	}
 	portStr := args[0]
 	name := ""
 	if len(args) > 1 {
@@ -252,11 +260,11 @@ func runServe(cmd *cobra.Command, args []string, env *cliEnv) error {
 
 	sockPath := filepath.Join(env.dir, socketName)
 	if nodeSocketActive(sockPath) {
-		req := &controlv1.RegisterServiceRequest{Port: uint32(port), Protocol: proto, Policy: policy}
+		req := &controlv1.RegisterServiceRequest{Port: uint32(port), Protocol: proto, Policy: policy} //nolint:gosec
 		if name != "" {
 			req.Name = &name
 		}
-		if _, err = env.client.RegisterService(cmd.Context(), connect.NewRequest(req)); err != nil {
+		if _, err := env.client.RegisterService(cmd.Context(), connect.NewRequest(req)); err != nil {
 			return err
 		}
 	}
@@ -274,6 +282,9 @@ func runServe(cmd *cobra.Command, args []string, env *cliEnv) error {
 }
 
 func runUnserve(cmd *cobra.Command, args []string, env *cliEnv) error {
+	if env.transport.IsWire() {
+		return errors.New("pln unserve requires the local daemon; run `pln up` on this ctx first")
+	}
 	arg := args[0]
 	var port uint32
 	var name string
@@ -581,17 +592,31 @@ func collectServicesSection(st *controlv1.GetStatusResponse, opts statusViewOpts
 }
 
 func collectStaticSection(st *controlv1.GetStatusResponse, opts statusViewOpts) statusSection {
-	sec := statusSection{
-		title:   "STATIC",
-		headers: []string{"NAME", "MANIFEST", "REPLICAS", "LOCAL", "PUBLISHER"},
+	hasURL := false
+	for _, site := range st.GetSites() {
+		if site.GetPublicUrl() != "" {
+			hasURL = true
+			break
+		}
 	}
+	headers := []string{"NAME", "MANIFEST", "REPLICAS", "LOCAL", "PUBLISHER"}
+	if hasURL {
+		headers = append(headers, "URL")
+	}
+	sec := statusSection{title: "STATIC", headers: headers}
 	nameLabels := nodeNameLabels(st.GetSelf(), st.GetNodes(), opts.wide)
+	suffixes := nameCollisionSuffixes(st.GetSites(), func(site *controlv1.StaticSummary) (string, string, bool) {
+		return site.GetName(), peerKeyString(site.GetPublisher().GetPeerPub()), true
+	})
 	for _, site := range st.GetSites() {
 		digest := hex.EncodeToString(site.GetManifestDigest())
 		if !opts.wide && len(digest) > shortHexLen {
 			digest = digest[:shortHexLen]
 		}
-		replicas := fmt.Sprintf("%d/%d", len(site.GetClaimants()), site.GetServingCapacity())
+		replicas := noVisibility
+		if site.GetServingCapacity() > 0 {
+			replicas = fmt.Sprintf("%d/%d", len(site.GetClaimants()), site.GetServingCapacity())
+		}
 		local := ""
 		if site.GetLocal() {
 			local = "*"
@@ -601,7 +626,15 @@ func collectStaticSection(st *controlv1.GetStatusResponse, opts statusViewOpts) 
 		if publisher == "" {
 			publisher = formatPeerID(site.GetPublisher().GetPeerPub(), opts.wide)
 		}
-		sec.rows = append(sec.rows, []string{site.GetName(), digest, replicas, local, publisher})
+		name := site.GetName()
+		if sfx := suffixes[namePeerKey{name, publisherPK}]; sfx != "" {
+			name += "-" + sfx
+		}
+		row := []string{name, digest, replicas, local, publisher}
+		if hasURL {
+			row = append(row, site.GetPublicUrl())
+		}
+		sec.rows = append(sec.rows, row)
 	}
 	return sec
 }
@@ -644,7 +677,7 @@ func collectBlobsSection(st *controlv1.GetStatusResponse, opts statusViewOpts) s
 		}
 		name := b.GetName()
 		switch {
-		case isRemoteOrphan(b):
+		case b.GetOrphan():
 			name = "(orphaned)"
 		case name == "":
 			name = "-"
@@ -653,7 +686,11 @@ func collectBlobsSection(st *controlv1.GetStatusResponse, opts statusViewOpts) s
 				name += "-" + sfx
 			}
 		}
-		sec.rows = append(sec.rows, []string{name, hash, fmt.Sprintf("%d", b.GetReplicas()), local})
+		replicas := fmt.Sprintf("%d", b.GetReplicas())
+		if b.GetReplicas() == 0 && !b.GetLocal() {
+			replicas = noVisibility
+		}
+		sec.rows = append(sec.rows, []string{name, hash, replicas, local})
 	}
 	switch {
 	case len(blobs) > limit:
@@ -674,11 +711,16 @@ func collectSeedsSection(st *controlv1.GetStatusResponse, opts statusViewOpts) s
 
 	now := time.Now()
 	clusterSize := uint32(len(st.GetNodes()) + 1) // +1 for self (not included in Nodes)
+	suffixes := nameCollisionSuffixes(st.GetWorkloads(), func(w *controlv1.WorkloadSummary) (string, string, bool) {
+		return w.GetName(), peerKeyString(w.GetPublisher().GetPeerPub()), true
+	})
 	for _, w := range st.GetWorkloads() {
 		name := w.GetName()
 		hash := w.GetHash()
 		if name == hash || name == "" {
 			name = "-"
+		} else if sfx := suffixes[namePeerKey{name, peerKeyString(w.GetPublisher().GetPeerPub())}]; sfx != "" {
+			name += "-" + sfx
 		}
 		if !opts.wide && len(hash) > shortHexLen {
 			hash = hash[:shortHexLen]
@@ -769,6 +811,8 @@ func renderStatusHeader(w io.Writer, m *controlv1.GetMetricsResponse, certs []*c
 	switch localTier(certs) {
 	case tierAdmin:
 		tierStr, tierColor = "ADMIN", lipgloss.Color("5")
+	case tierWorkspace:
+		tierStr, tierColor = "WORKSPACE", lipgloss.Color("4")
 	case tierPublisher:
 		tierStr, tierColor = "PUBLISHER", lipgloss.Color("6")
 	case tierLeaf:
@@ -800,33 +844,54 @@ func renderStatusHeader(w io.Writer, m *controlv1.GetMetricsResponse, certs []*c
 func localTier(certs []*controlv1.CertInfo) string {
 	best := ""
 	for _, c := range certs {
-		t := tierLabel(c.GetCanAdmit(), c.GetCanPublish())
-		if t == tierAdmin {
-			return t
-		}
-		if best == "" || (t == tierPublisher && best == tierLeaf) {
+		t := tierLabel(c.GetCanAdmit(), c.GetIsWorkspaceAdmin(), c.GetCanPublish())
+		if tierRank(t) > tierRank(best) {
 			best = t
 		}
 	}
 	return best
 }
 
-func statusContextLabel(defaultDir string) string {
-	name := resolveContextName()
+// Tier ranks order localTier's pick from leaf (lowest) to admin
+// (highest); a higher rank wins when a node holds multiple grants.
+const (
+	tierLeafRank = iota
+	tierPublisherRank
+	tierWorkspaceRank
+	tierAdminRank
+)
+
+func tierRank(t string) int {
+	switch t {
+	case tierAdmin:
+		return tierAdminRank
+	case tierWorkspace:
+		return tierWorkspaceRank
+	case tierPublisher:
+		return tierPublisherRank
+	case tierLeaf:
+		return tierLeafRank
+	}
+	return -1
+}
+
+// statusContextLabel names the active context and the transport this
+// command resolved to at runtime. That is not always the ctx's
+// configured target: a ctx with both a local dir and a wire fallback
+// runs local when its socket is up and wire otherwise.
+func statusContextLabel(name, dir string, t transportSelection) string {
 	if name == "" {
 		return ""
 	}
-	dir, host, err := resolveContextBindings(name, defaultDir)
-	if err != nil {
-		return name
-	}
 	switch {
-	case host != "":
-		return name + " (" + host + ")"
+	case t.IsWire():
+		return name + " (wire " + plnTargetScheme + t.WireAddr() + ")"
+	case t.IsSSHBridge():
+		return name + " (ssh " + t.SSHHost() + ")"
 	case name != defaultContextName:
-		return name + " (" + dir + ")"
+		return name + " (local " + dir + ")"
 	default:
-		return name
+		return name + " (local)"
 	}
 }
 
@@ -838,51 +903,40 @@ func renderMetricsDetails(w io.Writer, m *controlv1.GetMetricsResponse) {
 	if m.GetPunchAttempts() > 0 {
 		fmt.Fprintf(w, "punch success:    %d/%d\n", m.GetPunchAttempts()-m.GetPunchFailures(), m.GetPunchAttempts())
 	}
-	if m.GetCertRenewals() > 0 || m.GetCertRenewalsFailed() > 0 {
-		fmt.Fprintf(w, "cert renewals:    %d ok, %d failed\n", m.GetCertRenewals(), m.GetCertRenewalsFailed())
-	}
 	fmt.Fprintln(w)
 }
 
+// certExpiryFooter renders the deadline line for a grant that has one.
+// Only delegated grants (leaf, publisher) carry a deadline; admin and
+// root grants have GrantDeadlineUnix==0 and get no footer at all. A zero
+// unix deadline is time.Unix(0,0) (1970), not the Go zero time, so it
+// must be filtered explicitly rather than via IsZero on the converted
+// value.
 func certExpiryFooter(st *controlv1.GetStatusResponse) string {
 	const certExpirySkew = time.Minute
-	var latest time.Time
+	var deadline time.Time
 	var health controlv1.CertHealth
 	for _, c := range st.GetCertificates() {
-		if t := time.Unix(c.GetNotAfterUnix(), 0); t.After(latest) {
-			latest, health = t, c.GetHealth()
+		dl := c.GetGrantDeadlineUnix()
+		if dl == 0 {
+			continue
+		}
+		if t := time.Unix(dl, 0); t.After(deadline) {
+			deadline, health = t, c.GetHealth()
 		}
 	}
-	if latest.IsZero() {
+	if deadline.IsZero() {
 		return ""
 	}
 
-	remaining := time.Until(latest.Add(certExpirySkew))
-	var latestDeadline int64
-	for _, c := range st.GetCertificates() {
-		if dl := c.GetAccessDeadlineUnix(); dl > latestDeadline {
-			latestDeadline = dl
-		}
-	}
-	hasDeadline := latestDeadline > 0
-
-	if remaining <= 0 || health == controlv1.CertHealth_CERT_HEALTH_EXPIRED {
-		if hasDeadline {
-			return lipgloss.NewStyle().Foreground(lipgloss.Color("1")).Render("temporary access expired — rejoin the cluster or contact a cluster admin")
-		}
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("1")).Render("membership expired — entering degraded mode; will auto-recover when an admin peer is reachable")
+	if time.Until(deadline.Add(certExpirySkew)) <= 0 || health == controlv1.CertHealth_CERT_HEALTH_EXPIRED {
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("1")).Render("temporary access expired — rejoin the cluster or contact a cluster admin")
 	}
 
-	msg := "membership expires in " + humanDuration(remaining)
-	if hasDeadline {
-		msg = "temporary access expires in " + humanDuration(time.Until(time.Unix(latestDeadline, 0)))
-	}
-
+	msg := "temporary access expires in " + humanDuration(time.Until(deadline))
 	switch health { //nolint:exhaustive
 	case controlv1.CertHealth_CERT_HEALTH_EXPIRING_SOON:
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("3")).Render(msg + " — auto-renewal failed — rejoin the cluster or contact a cluster admin")
-	case controlv1.CertHealth_CERT_HEALTH_RENEWING:
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("3")).Render(msg + " — auto-renewal in progress")
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("3")).Render(msg + " — rejoin the cluster or contact a cluster admin")
 	default:
 		return lipgloss.NewStyle().Foreground(lipgloss.Color("2")).Render(msg)
 	}
@@ -964,7 +1018,7 @@ func formatWorkloadStatus(s controlv1.WorkloadStatus) string {
 	if s == controlv1.WorkloadStatus_WORKLOAD_STATUS_RUNNING {
 		return "running"
 	}
-	return "unknown"
+	return unknownValue
 }
 
 func humanDuration(d time.Duration) string {

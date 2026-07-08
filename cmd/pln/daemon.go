@@ -27,8 +27,8 @@ import (
 	"google.golang.org/protobuf/types/known/structpb"
 
 	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
-	"github.com/sambigeara/pollen/pkg/auth"
 	"github.com/sambigeara/pollen/pkg/config"
+	"github.com/sambigeara/pollen/pkg/identity"
 	"github.com/sambigeara/pollen/pkg/observability/logging"
 	"github.com/sambigeara/pollen/pkg/peercache"
 	"github.com/sambigeara/pollen/pkg/supervisor"
@@ -36,7 +36,27 @@ import (
 )
 
 func newDaemonCmds() []*cobra.Command {
-	upCmd := &cobra.Command{
+	daemonGroup := &cobra.Command{
+		Use:   "daemon",
+		Short: "Manage the pln background service",
+		Long: `Daemon lifecycle and platform integration. ` + "`pln up`" + `, ` + "`pln down`" + `,
+` + "`pln restart`" + `, ` + "`pln logs`" + `, and ` + "`pln upgrade`" + ` are top-level aliases
+for the same handlers — use whichever feels natural.`,
+	}
+	daemonGroup.AddCommand(
+		newUpCmd(),
+		newDownCmd(),
+		newRestartCmd(),
+		newLogsCmd(),
+		newDaemonInstallCmd(),
+		newDaemonUninstallCmd(),
+		newUpgradeCmd(),
+	)
+	return []*cobra.Command{newUpCmd(), newDownCmd(), newRestartCmd(), newLogsCmd(), newUpgradeCmd(), daemonGroup}
+}
+
+func newUpCmd() *cobra.Command {
+	cmd := &cobra.Command{
 		Use:   "up",
 		Short: "Start a Pollen node (foreground by default, -d for background service)",
 		Long: `Brings the local Pollen node online. By default runs in the foreground
@@ -48,29 +68,38 @@ cluster — equivalent to running ` + "`pln init`" + ` first.`,
 		Example: "  pln up                        # foreground\n  pln up -d                     # detached\n  pln up --public --name relay  # advertise as a relay",
 		RunE:    withEnv(runUp, localOnly()),
 	}
-	upCmd.Flags().Int("port", config.DefaultBootstrapPort, "Listening port")
-	upCmd.Flags().IPSlice("ips", []net.IP{}, "Advertised IPs")
-	upCmd.Flags().Bool("public", false, "Hint that this node is publicly reachable; the mesh may use it as a relay (verified at runtime)")
-	upCmd.Flags().BoolP("detach", "d", false, "Run as a background service")
-	upCmd.Flags().Bool("metrics", false, "Log metrics and trace output at debug level")
-	upCmd.Flags().String("name", "", "Human-readable node name")
+	cmd.Flags().Int("port", config.DefaultBootstrapPort, "Listening port")
+	cmd.Flags().IPSlice("ips", []net.IP{}, "Advertised IPs")
+	cmd.Flags().Bool("public", false, "Hint that this node is publicly reachable; the mesh may use it as a relay (verified at runtime)")
+	cmd.Flags().BoolP("detach", "d", false, "Run as a background service")
+	cmd.Flags().Bool("metrics", false, "Log metrics and trace output at debug level")
+	cmd.Flags().String("name", "", "Human-readable node name")
+	cmd.Flags().String("ctx", "", "Bring this named ctx up (sugar for PLN_CONTEXT=<name>)")
+	return cmd
+}
 
-	downCmd := &cobra.Command{
+func newDownCmd() *cobra.Command {
+	return &cobra.Command{
 		Use:   "down",
 		Short: "Stop the background service",
 		Long:  "Stops the launchd (macOS) or systemd (Linux) unit. Local state and credentials are preserved — a subsequent `pln up -d` restarts the same node.",
 		Args:  cobra.NoArgs,
 		RunE:  withEnv(runDown, localOnly(), systemService()),
 	}
-	restartCmd := &cobra.Command{
+}
+
+func newRestartCmd() *cobra.Command {
+	return &cobra.Command{
 		Use:   "restart",
 		Short: "Restart the background service",
 		Long:  "Restarts the background service so config changes (`pln set`, `pln serve`, etc.) take effect on listeners and bind addresses.",
 		Args:  cobra.NoArgs,
 		RunE:  withEnv(runRestart, localOnly(), systemService()),
 	}
+}
 
-	logsCmd := &cobra.Command{
+func newLogsCmd() *cobra.Command {
+	cmd := &cobra.Command{
 		Use:   "logs",
 		Short: "Show daemon logs",
 		Long: `Tails the background service log: ` + "`tail`" + ` against the Homebrew log file
@@ -80,19 +109,9 @@ control how many lines to show.`,
 		Args:    cobra.NoArgs,
 		RunE:    withEnv(runLogs, localOnly(), systemService()),
 	}
-	logsCmd.Flags().BoolP("follow", "f", false, "Stream logs in real time")
-	logsCmd.Flags().IntP("lines", "n", 50, "Number of lines to show") //nolint:mnd
-
-	return []*cobra.Command{upCmd, downCmd, restartCmd, logsCmd, newUpgradeCmd(), newDaemonGroupCmd()}
-}
-
-func newDaemonGroupCmd() *cobra.Command {
-	root := &cobra.Command{
-		Use:   "daemon",
-		Short: "Manage the pln background service (install/uninstall/upgrade)",
-	}
-	root.AddCommand(newDaemonInstallCmd(), newDaemonUninstallCmd(), newUpgradeCmd())
-	return root
+	cmd.Flags().BoolP("follow", "f", false, "Stream logs in real time")
+	cmd.Flags().IntP("lines", "n", 50, "Number of lines to show") //nolint:mnd
+	return cmd
 }
 
 func newUpgradeCmd() *cobra.Command {
@@ -116,7 +135,7 @@ also bounce the background service and pick up the new binary.`,
 func runUp(cmd *cobra.Command, _ []string, env *cliEnv) error {
 	detach, _ := cmd.Flags().GetBool("detach")
 	if detach {
-		if err := ensureSystemServiceContext(); err != nil {
+		if err := ensureSystemServiceContext(env.ctxName); err != nil {
 			return err
 		}
 		if cmd.Flags().Changed("port") {
@@ -127,7 +146,7 @@ func runUp(cmd *cobra.Command, _ []string, env *cliEnv) error {
 
 	cfgDirty := false
 	if public {
-		if _, _, err := auth.LoadAdminKey(auth.IdentityPath(env.dir)); err != nil {
+		if _, _, err := identity.LoadAdminKey(identity.IdentityPath(env.dir)); err != nil {
 			return errors.New("--public requires admin keys; run `pln init` to create a root cluster")
 		}
 		env.cfg.Public = true
@@ -167,8 +186,8 @@ func runNode(cmd *cobra.Command, env *cliEnv) error {
 	ctx, stopFunc := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stopFunc()
 
-	identityDir := auth.IdentityPath(env.dir)
-	privKey, pubKey, err := auth.EnsureIdentityKey(identityDir)
+	identityDir := identity.IdentityPath(env.dir)
+	privKey, pubKey, err := identity.EnsureIdentityKey(identityDir)
 	if err != nil {
 		return fmt.Errorf("failed to load signing keys: %w", err)
 	}
@@ -181,38 +200,40 @@ func runNode(cmd *cobra.Command, env *cliEnv) error {
 		}
 	}
 
-	creds, err := auth.LoadNodeCredentials(identityDir)
-	if err != nil && !errors.Is(err, auth.ErrCredentialsNotFound) {
+	creds, err := identity.LoadCredentials(identityDir)
+	if err != nil && !errors.Is(err, identity.ErrCredentialsNotFound) {
 		return err
 	}
 
-	_, isRoot, err := auth.LocalRootAuthority(identityDir, creds)
-	if err != nil {
-		return err
+	isRoot := false
+	if creds != nil {
+		if _, adminPub, adminErr := identity.LoadAdminKey(identityDir); adminErr == nil {
+			isRoot = bytes.Equal(adminPub, creds.Grant().GetClaims().GetIssuerPub())
+		}
 	}
 
 	switch {
 	case creds == nil:
+		if reason, occupied := identity.PriorEnrollmentArtifact(identityDir); occupied {
+			return fmt.Errorf("refusing to auto-initialize a root cluster in %s: %s; this looks like a node already enrolled in another cluster. Run `pln purge` to clear it then `pln join <token>`, or restore the missing grant file", identityDir, reason)
+		}
 		logger.Info("node is not initialized; auto-initializing root cluster")
-		creds, err = auth.EnsureLocalRootCredentials(identityDir, pubKey, nodeProps, time.Now(), auth.DefaultDelegationTTL)
+		creds, err = identity.EnsureLocalRootGrant(identityDir, pubKey, nodeProps, time.Now())
 		if err != nil {
 			return fmt.Errorf("auto-init failed: %w", err)
 		}
 	case isRoot:
-		// Re-issue so property changes apply and the cert refreshes ahead
-		// of expiry without peer-routed renewal.
-		creds, err = auth.EnsureLocalRootCredentials(identityDir, pubKey, nodeProps, time.Now(), auth.DefaultDelegationTTL)
+		// Re-issue so property changes apply. Root grants carry no
+		// horizon, so there is no expiry refresh concern.
+		creds, err = identity.EnsureLocalRootGrant(identityDir, pubKey, nodeProps, time.Now())
 		if err != nil {
-			return fmt.Errorf("root cert refresh: %w", err)
+			return fmt.Errorf("root grant refresh: %w", err)
 		}
-	case auth.IsCertExpired(creds.Cert(), time.Now()):
-		logger.Warnw("delegation certificate has expired — starting in degraded mode, will attempt renewal", "expired_at", auth.CertExpiresAt(creds.Cert()))
-	}
-
-	if delSigner, err := auth.NewDelegationSigner(identityDir, privKey); err == nil {
-		creds.SetDelegationKey(delSigner)
-	} else if specSigner, specErr := auth.NewSpecSigner(identityDir, privKey); specErr == nil {
-		creds.SetSpecSigner(specSigner)
+	default:
+		if chk := identity.CheckGrant(creds.Grant(), creds.RootPub(), time.Now(), nil, nil); !chk.Status.Valid() {
+			logger.Warnw("node grant no longer valid — starting in degraded mode; rejoin with `pln join <token>`",
+				"status", chk.Status, "reason", chk.Reason)
+		}
 	}
 
 	var runtimeState *statev1.RuntimeState
@@ -224,7 +245,7 @@ func runNode(cmd *cobra.Command, env *cliEnv) error {
 	if runtimeState != nil {
 		consumedEntries = runtimeState.GetConsumedInvites()
 	}
-	inviteConsumer := auth.NewInviteConsumer(consumedEntries)
+	inviteConsumer := identity.NewInviteConsumer(consumedEntries)
 
 	peerCache, err := peercache.Open(env.dir)
 	if err != nil {
@@ -238,16 +259,6 @@ func runNode(cmd *cobra.Command, env *cliEnv) error {
 	}
 	staticAddr := env.cfg.StaticHTTP
 	port, _ := cmd.Flags().GetInt("port")
-
-	controlAddr := env.cfg.ControlAddr
-	var controlToken string
-	if controlAddr != "" {
-		t, err := ensureControlToken(env.dir)
-		if err != nil {
-			return fmt.Errorf("load control token: %w", err)
-		}
-		controlToken = t
-	}
 
 	var addrs []string
 	if cmd.Flags().Changed("ips") {
@@ -290,8 +301,9 @@ func runNode(cmd *cobra.Command, env *cliEnv) error {
 		MetricsEnabled:     metricsEnabled,
 		HTTPAddr:           httpAddr,
 		StaticAddr:         staticAddr,
-		ControlAddr:        controlAddr,
-		ControlToken:       controlToken,
+		StaticDomain:       env.cfg.StaticHTTPDomain,
+		ControlTLSAddr:     env.cfg.ControlTLS,
+		GatewayAddr:        env.cfg.Gateway,
 		IdleInstanceTTL:    env.cfg.Placement.IdleInstanceTTL,
 		RelayOnly:          env.cfg.RelayOnly,
 	}, creds, inviteConsumer)
@@ -322,7 +334,7 @@ func runLogs(cmd *cobra.Command, _ []string, env *cliEnv) error {
 	var bin string
 
 	switch {
-	case runtime.GOOS == osDarwin && resolveContextName() != defaultContextName:
+	case runtime.GOOS == osDarwin && env.ctxName != defaultContextName:
 		bin = "tail"
 		args = []string{"-n", strconv.Itoa(lines)}
 		if follow {
@@ -451,7 +463,7 @@ func linuxUpgradeInstallMethodForExecutable(executable string) (string, error) {
 
 func servicectl(action string, cmd *cobra.Command, env *cliEnv) error {
 	ctx := cmd.Context()
-	name := resolveContextName()
+	name := env.ctxName
 
 	if runtime.GOOS == osDarwin && name != defaultContextName {
 		cf, err := loadContexts()

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/sambigeara/pollen/pkg/coords"
+	"github.com/sambigeara/pollen/pkg/identity"
 	"github.com/sambigeara/pollen/pkg/membership"
 	"github.com/sambigeara/pollen/pkg/nat"
 	"github.com/sambigeara/pollen/pkg/peercache"
@@ -50,6 +51,13 @@ func (r *atomicRouter) NextHop(dest types.PeerKey) (types.PeerKey, bool) {
 	t := r.table
 	r.mu.RUnlock()
 	return t.NextHop(dest)
+}
+
+func (r *atomicRouter) Cost(dest types.PeerKey) (float64, bool) {
+	r.mu.RLock()
+	t := r.table
+	r.mu.RUnlock()
+	return t.Cost(dest)
 }
 
 func (r *atomicRouter) Changed() <-chan struct{} {
@@ -264,6 +272,10 @@ func (n *Supervisor) syncPeersFromState(_ context.Context, snap state.Snapshot) 
 	params.CurrentOutbound = currentOutbound
 	params.LocalNATType = n.natDetector.Type()
 	params.UseHMACNearest = n.useHMACNearest
+	localGrant := n.creds.Grant()
+	params.AnchorPermitted = func(pk types.PeerKey) bool {
+		return identity.MayRelay(snap.GrantFor(pk[:]), localGrant)
+	}
 	targets := membership.ComputeTargetPeers(snap.LocalID, cm.LocalCoord, peerInfos, params)
 
 	ctx := context.Background()

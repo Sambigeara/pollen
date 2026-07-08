@@ -1,11 +1,23 @@
+variable "ssh_key_name" {
+  description = "Name of an existing Hetzner SSH key to attach to prod nodes. Hetzner enforces uniqueness on key material; the key is looked up by name rather than re-registered to avoid resource-replace cascades on state drift."
+  type        = string
+  default     = "pln-prod"
+}
+
+variable "ssh_source_ips" {
+  description = "CIDRs permitted to reach prod nodes on :22. Defaults to all source IPs so the current operator workflow keeps working; harden by overriding with [\"X.X.X.X/32\"] in a tfvars file or `-var 'ssh_source_ips=[...]'` once an operator IP is committed."
+  type        = list(string)
+  default     = ["0.0.0.0/0", "::/0"]
+}
+
 variable "zone_name" {
-  description = "Apex domain managed in Cloudflare."
+  description = "Apex Cloudflare zone fronting the cluster."
   type        = string
   default     = "pln.sh"
 }
 
-variable "ssh_public_key_path" {
-  description = "Path to the SSH public key that gets installed as root@ on each node."
+variable "staging_subdomain" {
+  description = "Subdomain under zone_name fronting the staging cluster. Used in the origin-port ruleset expressions that route staging hosts."
   type        = string
-  default     = "~/.ssh/id_ed25519.pub"
+  default     = "staging"
 }

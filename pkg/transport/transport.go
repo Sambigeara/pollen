@@ -18,9 +18,9 @@ import (
 	"time"
 
 	"github.com/quic-go/quic-go"
-	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
+	identityv1 "github.com/sambigeara/pollen/api/genpb/pollen/identity/v1"
 	meshv1 "github.com/sambigeara/pollen/api/genpb/pollen/mesh/v1"
-	"github.com/sambigeara/pollen/pkg/auth"
+	"github.com/sambigeara/pollen/pkg/identity"
 	"github.com/sambigeara/pollen/pkg/nat"
 	"github.com/sambigeara/pollen/pkg/observability/metrics"
 	"github.com/sambigeara/pollen/pkg/types"
@@ -60,14 +60,11 @@ type Transport interface {
 	GetConn(peer types.PeerKey) (*quic.Conn, bool)
 	PeerStateCounts() PeerStateCounts
 
-	UpdateMeshCert(cert tls.Certificate)
-	RequestCertRenewal(ctx context.Context, peer types.PeerKey) (*admissionv1.DelegationCert, error)
-	PeerDelegationCert(peer types.PeerKey) (*admissionv1.DelegationCert, bool)
 	SetInviteForwarder(f InviteForwarder)
-	SetInviteSigner(s *auth.DelegationSigner)
-	SetInviteConsumer(c auth.InviteConsumer)
-	PushCert(ctx context.Context, peer types.PeerKey, cert *admissionv1.DelegationCert) error
-	JoinWithInvite(ctx context.Context, token *admissionv1.InviteToken) (*admissionv1.JoinToken, error)
+	SetInviteIssuer(c *identity.Credentials)
+	SetInviteConsumer(c identity.InviteConsumer)
+	JoinWithInvite(ctx context.Context, ticket *identityv1.InviteTicket) (*identityv1.GrantToken, error)
+	SendGrantOffer(ctx context.Context, peer types.PeerKey, grant *identityv1.Grant) (*meshv1.GrantOfferResponse, error)
 }
 
 var _ Transport = (*QUICTransport)(nil)
@@ -82,6 +79,7 @@ const (
 	StreamTypeWorkload      StreamType = 5
 	StreamTypeMembership    StreamType = 6
 	StreamTypeBlobPlaintext StreamType = 7
+	StreamTypeGrantOffer    StreamType = 8
 )
 
 type DatagramType byte
@@ -149,7 +147,6 @@ const (
 	sessionReapInterval    = 5 * time.Minute
 	streamTypeTimeout      = 5 * time.Second
 	internalConnectTimeout = 2 * time.Second
-	routeHeaderSize        = 66
 	defaultRouteTTL        = 16
 )
 
@@ -174,16 +171,16 @@ type Router interface {
 type transportOptions struct {
 	router           Router
 	packetConn       net.PacketConn
-	inviteConsumer   auth.InviteConsumer
+	inviteConsumer   identity.InviteConsumer
 	tracerProvider   trace.TracerProvider
 	trafficTracker   TrafficRecorder
 	isDenied         func(types.PeerKey) bool
+	relayPermit      func(types.PeerKey) bool
 	metrics          *metrics.MeshMetrics
 	signPriv         ed25519.PrivateKey
 	tlsIdentityTTL   time.Duration
 	maxConnectionAge time.Duration
 	peerTickInterval time.Duration
-	reconnectWindow  time.Duration
 	membershipTTL    time.Duration
 	disableNATPunch  bool
 }
@@ -202,20 +199,24 @@ func WithMembershipTTL(d time.Duration) Option {
 	return func(o *transportOptions) { o.membershipTTL = d }
 }
 
-func WithReconnectWindow(d time.Duration) Option {
-	return func(o *transportOptions) { o.reconnectWindow = d }
-}
-
 func WithMaxConnectionAge(d time.Duration) Option {
 	return func(o *transportOptions) { o.maxConnectionAge = d }
 }
 
-func WithInviteConsumer(c auth.InviteConsumer) Option {
+func WithInviteConsumer(c identity.InviteConsumer) Option {
 	return func(o *transportOptions) { o.inviteConsumer = c }
 }
 
 func WithIsDenied(fn func(types.PeerKey) bool) Option {
 	return func(o *transportOptions) { o.isDenied = fn }
+}
+
+// WithRelayPermit gates whether this node forwards a relayed message
+// for a given cryptographically-verified upstream peer. Returning false
+// drops the message; see identity.MayRelay for the confinement rule.
+// Unset means relay for anyone (tests).
+func WithRelayPermit(fn func(types.PeerKey) bool) Option {
+	return func(o *transportOptions) { o.relayPermit = fn }
 }
 func WithMetrics(m *metrics.MeshMetrics) Option { return func(o *transportOptions) { o.metrics = m } }
 func WithPacketConn(conn net.PacketConn) Option {
@@ -233,16 +234,17 @@ func WithRouter(r Router) Option { return func(o *transportOptions) { o.router =
 
 type QUICTransport struct {
 	bareCert         tls.Certificate
-	inviteConsumer   auth.InviteConsumer
+	signPriv         ed25519.PrivateKey
+	creds            *identity.Credentials
+	inviteCreds      *identity.Credentials
+	inviteConsumer   identity.InviteConsumer
 	router           Router
 	injectedConn     net.PacketConn
 	trafficTracker   TrafficRecorder
 	tracer           trace.Tracer
 	peers            *peerStore
+	routeAuth        *routeAuth
 	listener         *quic.Listener
-	renewalCh        chan *meshv1.CertRenewalResponse
-	certPushCh       chan *meshv1.CertPushResponse
-	inviteSigner     *auth.DelegationSigner
 	inviteForwarder  InviteForwarder
 	recvCh           chan Packet
 	tunnelDatagramCh chan Packet
@@ -251,8 +253,10 @@ type QUICTransport struct {
 	metrics          *metrics.MeshMetrics
 	log              *zap.SugaredLogger
 	isDenied         func(types.PeerKey) bool
+	relayPermit      func(types.PeerKey) bool
 	socks            *sockStoreImpl
 	meshCert         atomic.Pointer[tls.Certificate]
+	curSession       atomic.Pointer[identityv1.Session]
 	supervisorCh     chan PeerEvent
 	peerEventCh      chan PeerEvent
 	waiters          map[types.PeerKey]chan struct{}
@@ -261,17 +265,16 @@ type QUICTransport struct {
 	acceptWG         sync.WaitGroup
 	port             int
 	membershipTTL    time.Duration
-	reconnectWindow  time.Duration
+	tlsIdentityTTL   time.Duration
 	maxConnectionAge time.Duration
 	peerTickInterval time.Duration
 	sessionsMu       sync.RWMutex
 	inviteHandlerMu  sync.RWMutex
-	certPushMu       sync.Mutex
 	localKey         types.PeerKey
 	disableNATPunch  bool
 }
 
-func New(self types.PeerKey, creds *auth.NodeCredentials, listenAddr string, opts ...Option) (*QUICTransport, error) {
+func New(self types.PeerKey, creds *identity.Credentials, listenAddr string, opts ...Option) (*QUICTransport, error) {
 	o := transportOptions{}
 	for _, opt := range opts {
 		opt(&o)
@@ -295,7 +298,12 @@ func New(self types.PeerKey, creds *auth.NodeCredentials, listenAddr string, opt
 		}
 	}
 
-	meshCert, err := GenerateIdentityCert(o.signPriv, creds.Cert(), o.tlsIdentityTTL)
+	session, err := creds.EnsureFreshSession(time.Now(), o.tlsIdentityTTL, o.tlsIdentityTTL/2) //nolint:mnd
+	if err != nil {
+		return nil, fmt.Errorf("mint session: %w", err)
+	}
+
+	meshCert, err := GenerateIdentityCert(o.signPriv, session, o.tlsIdentityTTL)
 	if err != nil {
 		return nil, fmt.Errorf("generate mesh cert: %w", err)
 	}
@@ -320,14 +328,16 @@ func New(self types.PeerKey, creds *auth.NodeCredentials, listenAddr string, opt
 	m := &QUICTransport{
 		log:              zap.S().Named("mesh"),
 		bareCert:         bareCert,
-		rootPub:          creds.RootPub(),
-		inviteSigner:     creds.DelegationKey(),
+		signPriv:         o.signPriv,
+		creds:            creds,
+		rootPub:          []byte(creds.RootPub()),
 		inviteConsumer:   o.inviteConsumer,
 		isDenied:         o.isDenied,
+		relayPermit:      o.relayPermit,
 		localKey:         self,
 		port:             port,
 		membershipTTL:    o.membershipTTL,
-		reconnectWindow:  o.reconnectWindow,
+		tlsIdentityTTL:   o.tlsIdentityTTL,
 		maxConnectionAge: o.maxConnectionAge,
 		peerTickInterval: peerTickInterval,
 		injectedConn:     o.packetConn,
@@ -339,14 +349,17 @@ func New(self types.PeerKey, creds *auth.NodeCredentials, listenAddr string, opt
 		waiters:          make(map[types.PeerKey]chan struct{}),
 		recvCh:           make(chan Packet, queueBufSize),
 		tunnelDatagramCh: make(chan Packet, queueBufSize),
-		renewalCh:        make(chan *meshv1.CertRenewalResponse, 1),
-		certPushCh:       make(chan *meshv1.CertPushResponse, 1),
 		peerEventCh:      make(chan PeerEvent, queueBufSize),
 		supervisorCh:     make(chan PeerEvent, queueBufSize),
 		acceptCh:         make(chan acceptedStream, queueBufSize),
 		metrics:          o.metrics,
 	}
 	m.peers = newPeerStore(m)
+	m.routeAuth, err = newRouteAuth(o.signPriv)
+	if err != nil {
+		return nil, fmt.Errorf("route auth: %w", err)
+	}
+	m.curSession.Store(session)
 	m.meshCert.Store(&meshCert)
 	return m, nil
 }
@@ -365,11 +378,11 @@ func (m *QUICTransport) Start(ctx context.Context) error {
 
 	qt := &quic.Transport{Conn: pconn}
 	ln, err := qt.Listen(newServerTLSConfig(serverTLSParams{
-		meshCertPtr:     &m.meshCert,
-		inviteCert:      m.bareCert,
-		rootPub:         m.rootPub,
-		reconnectWindow: m.reconnectWindow,
-		inviteEnabled:   m.inviteSigner != nil || m.inviteForwarder != nil,
+		meshCertPtr:   &m.meshCert,
+		inviteCert:    m.bareCert,
+		rootPub:       m.rootPub,
+		inviteEnabled: m.inviteCreds != nil || m.inviteForwarder != nil,
+		denied:        m.deniedSubject,
 	}), quicConfig())
 	if err != nil {
 		_ = pconn.Close()
@@ -390,11 +403,52 @@ func (m *QUICTransport) Start(ctx context.Context) error {
 
 	m.acceptWG.Go(func() { m.acceptLoop(ctx) })
 	m.acceptWG.Go(func() { m.peers.runPeerTickLoop(ctx, m.peerTickInterval) })
+	m.acceptWG.Go(func() { m.sessionRefreshLoop(ctx) })
 
 	if m.maxConnectionAge > 0 {
 		m.acceptWG.Go(func() { m.sessionReaper(ctx) })
 	}
 	return nil
+}
+
+// sessionRefreshLoop keeps the mesh certificate fresh by re-minting
+// the node's session locally before it expires. Renewal is entirely
+// local: a node proves liveness from its held grant with no issuer or
+// mesh round-trip, so a stale session is a node that stopped running,
+// never a renewal that failed to reach an admin.
+func (m *QUICTransport) sessionRefreshLoop(ctx context.Context) {
+	interval := m.tlsIdentityTTL / 3 //nolint:mnd
+	if interval <= 0 {
+		interval = time.Minute
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			m.refreshMeshCert()
+		}
+	}
+}
+
+func (m *QUICTransport) refreshMeshCert() {
+	session, err := m.creds.EnsureFreshSession(time.Now(), m.tlsIdentityTTL, m.tlsIdentityTTL/2) //nolint:mnd
+	if err != nil {
+		m.log.Warnw("session re-mint failed", "err", err)
+		return
+	}
+	if session == m.curSession.Load() {
+		return
+	}
+	cert, err := GenerateIdentityCert(m.signPriv, session, m.tlsIdentityTTL)
+	if err != nil {
+		m.log.Warnw("mesh cert regenerate failed", "err", err)
+		return
+	}
+	m.meshCert.Store(&cert)
+	m.curSession.Store(session)
 }
 
 func (m *QUICTransport) Stop() error {
@@ -424,25 +478,23 @@ func (m *QUICTransport) Stop() error {
 }
 
 type peerSession struct {
-	conn           *quic.Conn
-	transport      *quic.Transport
-	sockConn       *conn
-	delegationCert atomic.Pointer[admissionv1.DelegationCert]
-	createdAt      time.Time
-	certExpiresAt  time.Time
-	outbound       bool
+	conn      *quic.Conn
+	transport *quic.Transport
+	sockConn  *conn
+	session   atomic.Pointer[identityv1.Session]
+	createdAt time.Time
+	outbound  bool
 }
 
-func newPeerSession(qc *quic.Conn, qt *quic.Transport, sock *conn, dc *admissionv1.DelegationCert, outbound bool) *peerSession {
+func newPeerSession(qc *quic.Conn, qt *quic.Transport, sock *conn, sess *identityv1.Session, outbound bool) *peerSession {
 	s := &peerSession{
-		conn:          qc,
-		transport:     qt,
-		sockConn:      sock,
-		createdAt:     time.Now(),
-		certExpiresAt: auth.CertExpiresAt(dc),
-		outbound:      outbound,
+		conn:      qc,
+		transport: qt,
+		sockConn:  sock,
+		createdAt: time.Now(),
+		outbound:  outbound,
 	}
-	s.delegationCert.Store(dc)
+	s.session.Store(sess)
 	return s
 }
 
@@ -525,12 +577,12 @@ func (m *QUICTransport) acceptLoop(ctx context.Context) {
 
 		switch qc.ConnectionState().TLS.NegotiatedProtocol {
 		case alpnMesh:
-			dc := delegationCertFromConn(qc)
-			if m.isDenied != nil && m.isChainDenied(peerKey, dc) {
+			sess := sessionFromConn(qc)
+			if m.isDenied != nil && m.isChainDenied(peerKey, sess) {
 				_ = qc.CloseWithError(0, DisconnectDenied.String())
 				continue
 			}
-			m.addPeer(ctx, newPeerSession(qc, m.mainQT, nil, dc, false), peerKey)
+			m.addPeer(ctx, newPeerSession(qc, m.mainQT, nil, sess, false), peerKey)
 		case alpnInvite:
 			m.acceptWG.Go(func() { m.handleInviteConnection(ctx, qc, peerKey) })
 		default:
@@ -540,22 +592,33 @@ func (m *QUICTransport) acceptLoop(ctx context.Context) {
 }
 
 // isChainDenied rejects a peer either by its leaf identity (steady-state
-// from gossiped denied set) or by any subject in its presented chain
-// (fast-path: lets us reject a peer in a revoked admin's subtree even
-// before that peer's own delegation cert has gossipped to us).
-func (m *QUICTransport) isChainDenied(peerKey types.PeerKey, dc *admissionv1.DelegationCert) bool {
+// from gossiped denied set) or by any subject in its presented grant
+// chain (fast-path: lets us reject a peer in a revoked admin's subtree
+// even before that peer's own grant has gossipped to us).
+func (m *QUICTransport) isChainDenied(peerKey types.PeerKey, sess *identityv1.Session) bool {
 	if m.isDenied == nil {
 		return false
 	}
 	if m.isDenied(peerKey) {
 		return true
 	}
-	for _, sub := range auth.ChainSubjectPubs(dc) {
+	for _, sub := range identity.ChainSubjectPubs(sess.GetClaims().GetGrant()) {
 		if pk := types.PeerKeyFromBytes(sub); pk != peerKey && m.isDenied(pk) {
 			return true
 		}
 	}
 	return false
+}
+
+// deniedSubject adapts the peer-key denylist to the identity.DenyChecker
+// shape consumed by CheckGrant at the TLS handshake. CheckGrant walks the
+// full grant chain, so a leaf-level check here yields the same
+// subtree-poisoning semantics as isChainDenied.
+func (m *QUICTransport) deniedSubject(subjectPub []byte) bool {
+	if m.isDenied == nil {
+		return false
+	}
+	return m.isDenied(types.PeerKeyFromBytes(subjectPub))
 }
 
 func (m *QUICTransport) acceptBidiStreams(s *peerSession, peerKey types.PeerKey) {
@@ -592,38 +655,22 @@ func (m *QUICTransport) recvDatagrams(s *peerSession, peerKey types.PeerKey) {
 	for {
 		payload, err := s.conn.ReceiveDatagram(ctx)
 		if err != nil {
-			reason := classifyQUICError(err)
-			m.removePeer(peerKey, s, reason)
+			m.classifyAndRemovePeer(peerKey, s, err)
 			return
 		}
 		m.metrics.DatagramsRecv.Add(ctx, 1)
 		m.metrics.DatagramBytesRecv.Add(ctx, int64(len(payload)))
 
+		// QUIC permits zero-length DATAGRAM frames (RFC 9221), so guard the
+		// type byte: without this an authenticated peer could panic the node
+		// with a single empty datagram.
+		if len(payload) == 0 {
+			continue
+		}
 		switch DatagramType(payload[0]) {
 		case DatagramTypeMembership:
-			data := payload[1:]
-			env := &meshv1.Envelope{}
-			if err := env.UnmarshalVT(data); err != nil {
-				continue
-			}
-			if resp, ok := env.GetBody().(*meshv1.Envelope_CertRenewalResponse); ok {
-				select {
-				case m.renewalCh <- resp.CertRenewalResponse:
-				case <-ctx.Done():
-					return
-				}
-				continue
-			}
-			if resp, ok := env.GetBody().(*meshv1.Envelope_CertPushResponse); ok {
-				select {
-				case m.certPushCh <- resp.CertPushResponse:
-				case <-ctx.Done():
-					return
-				}
-				continue
-			}
 			select {
-			case m.recvCh <- Packet{From: peerKey, Data: data}:
+			case m.recvCh <- Packet{From: peerKey, Data: payload[1:]}:
 			case <-ctx.Done():
 				return
 			}
@@ -660,13 +707,13 @@ func (m *QUICTransport) Connect(ctx context.Context, peerKey types.PeerKey, addr
 
 	for _, ap := range addrs {
 		m.acceptWG.Go(func() {
-			tlsCfg := newExpectedPeerTLSConfig(&m.meshCert, peerKey, m.rootPub, m.reconnectWindow)
+			tlsCfg := newExpectedPeerTLSConfig(&m.meshCert, peerKey, m.rootPub, m.deniedSubject)
 			qc, err := m.mainQT.Dial(dialCtx, net.UDPAddrFromAddrPort(ap), tlsCfg, quicConfig())
 			if err != nil {
 				ch <- result{err: err}
 				return
 			}
-			ch <- result{s: newPeerSession(qc, m.mainQT, nil, delegationCertFromConn(qc), true)}
+			ch <- result{s: newPeerSession(qc, m.mainQT, nil, sessionFromConn(qc), true)}
 		})
 	}
 
@@ -681,7 +728,7 @@ func (m *QUICTransport) Connect(ctx context.Context, peerKey types.PeerKey, addr
 				continue
 			}
 			cancelDial()
-			if m.isChainDenied(peerKey, r.s.delegationCert.Load()) {
+			if m.isChainDenied(peerKey, r.s.session.Load()) {
 				_ = r.s.conn.CloseWithError(0, DisconnectDenied.String())
 				return fmt.Errorf("connect to %s: %w", peerKey.Short(), errDeniedSubtree)
 			}
@@ -719,7 +766,7 @@ func (m *QUICTransport) Punch(ctx context.Context, peerKey types.PeerKey, addr *
 		dialAddr = peerAddr
 	}
 
-	tlsCfg := newExpectedPeerTLSConfig(&m.meshCert, peerKey, m.rootPub, m.reconnectWindow)
+	tlsCfg := newExpectedPeerTLSConfig(&m.meshCert, peerKey, m.rootPub, m.deniedSubject)
 
 	var qc *quic.Conn
 	var qt *quic.Transport
@@ -740,8 +787,8 @@ func (m *QUICTransport) Punch(ctx context.Context, peerKey types.PeerKey, addr *
 		return err
 	}
 
-	s := newPeerSession(qc, qt, conn, delegationCertFromConn(qc), true)
-	if m.isChainDenied(peerKey, s.delegationCert.Load()) {
+	s := newPeerSession(qc, qt, conn, sessionFromConn(qc), true)
+	if m.isChainDenied(peerKey, s.session.Load()) {
 		m.closeSession(s, DisconnectDenied.String())
 		return fmt.Errorf("punch to %s: %w", peerKey.Short(), errDeniedSubtree)
 	}
@@ -825,13 +872,13 @@ func (m *QUICTransport) raceDirectDial(ctx context.Context, peerKey types.PeerKe
 
 	for _, ap := range addrs {
 		go func(addr netip.AddrPort) {
-			tlsCfg := newExpectedPeerTLSConfig(&m.meshCert, peerKey, m.rootPub, m.reconnectWindow)
+			tlsCfg := newExpectedPeerTLSConfig(&m.meshCert, peerKey, m.rootPub, m.deniedSubject)
 			qc, err := m.mainQT.Dial(dialCtx, net.UDPAddrFromAddrPort(addr), tlsCfg, quicConfig())
 			if err != nil {
 				ch <- result{err: err}
 				return
 			}
-			ch <- result{s: newPeerSession(qc, m.mainQT, nil, delegationCertFromConn(qc), true)}
+			ch <- result{s: newPeerSession(qc, m.mainQT, nil, sessionFromConn(qc), true)}
 		}(ap)
 	}
 
@@ -844,7 +891,7 @@ func (m *QUICTransport) raceDirectDial(ctx context.Context, peerKey types.PeerKe
 				continue
 			}
 			cancelDial()
-			if m.isChainDenied(peerKey, r.s.delegationCert.Load()) {
+			if m.isChainDenied(peerKey, r.s.session.Load()) {
 				_ = r.s.conn.CloseWithError(0, DisconnectDenied.String())
 				return nil, fmt.Errorf("dial %s: %w", peerKey.Short(), errDeniedSubtree)
 			}
@@ -934,26 +981,18 @@ func (m *QUICTransport) GetConn(peer types.PeerKey) (*quic.Conn, bool) {
 	return s.conn, true
 }
 
-func (m *QUICTransport) PeerStateCounts() PeerStateCounts    { return m.peers.stateCounts() }
-func (m *QUICTransport) UpdateMeshCert(cert tls.Certificate) { m.meshCert.Store(&cert) }
-func (m *QUICTransport) PeerDelegationCert(peerKey types.PeerKey) (*admissionv1.DelegationCert, bool) {
+func (m *QUICTransport) PeerStateCounts() PeerStateCounts { return m.peers.stateCounts() }
+
+// PeerSession returns the session a connected peer presented at
+// handshake, for callers that need the peer's resolved authority
+// (gossip ingress, control caller extraction).
+func (m *QUICTransport) PeerSession(peerKey types.PeerKey) (*identityv1.Session, bool) {
 	s, ok := m.getSession(peerKey)
 	if !ok {
 		return nil, false
 	}
-	dc := s.delegationCert.Load()
-	return dc, dc != nil
-}
-
-func (m *QUICTransport) SetPeerDelegationCert(peerKey types.PeerKey, cert *admissionv1.DelegationCert) {
-	if cert == nil {
-		return
-	}
-	s, ok := m.getSession(peerKey)
-	if !ok {
-		return
-	}
-	s.delegationCert.Store(cert)
+	sess := s.session.Load()
+	return sess, sess != nil
 }
 
 func (m *QUICTransport) DiscoverPeer(pk types.PeerKey, ips []net.IP, port int, lastAddr *net.UDPAddr, privatelyRoutable, publiclyAccessible bool) {
@@ -989,13 +1028,28 @@ func (m *QUICTransport) ClosePeerSession(peer types.PeerKey, reason DisconnectRe
 	}
 }
 
+// classifyAndRemovePeer tears the peer session down with a reason
+// derived from err. For unclassified errors it also logs the raw type
+// and message, which the downstream PeerEventDisconnected log line
+// would otherwise drop.
+func (m *QUICTransport) classifyAndRemovePeer(peerKey types.PeerKey, s *peerSession, err error) {
+	reason := classifyQUICError(err)
+	if reason == disconnectUnknown {
+		m.log.Infow("unclassified peer disconnect",
+			"peer_id", peerKey.Short(),
+			"err_type", fmt.Sprintf("%T", err),
+			"err", err.Error())
+	}
+	m.removePeer(peerKey, s, reason)
+}
+
 func (m *QUICTransport) sendRawDatagram(ctx context.Context, peerKey types.PeerKey, data []byte) error {
 	s, ok := m.getSession(peerKey)
 	if !ok {
 		return fmt.Errorf("no connection to peer %s", peerKey.Short())
 	}
 	if err := s.conn.SendDatagram(data); err != nil {
-		m.removePeer(peerKey, s, classifyQUICError(err))
+		m.classifyAndRemovePeer(peerKey, s, err)
 		m.metrics.DatagramErrors.Add(ctx, 1)
 		return err
 	}
@@ -1067,53 +1121,16 @@ func (m *QUICTransport) SetInviteForwarder(f InviteForwarder) {
 	m.inviteHandlerMu.Unlock()
 }
 
-func (m *QUICTransport) SetInviteSigner(s *auth.DelegationSigner) {
+func (m *QUICTransport) SetInviteIssuer(c *identity.Credentials) {
 	m.inviteHandlerMu.Lock()
-	m.inviteSigner = s
+	m.inviteCreds = c
 	m.inviteHandlerMu.Unlock()
 }
 
-func (m *QUICTransport) SetInviteConsumer(c auth.InviteConsumer) {
+func (m *QUICTransport) SetInviteConsumer(c identity.InviteConsumer) {
 	m.inviteHandlerMu.Lock()
 	m.inviteConsumer = c
 	m.inviteHandlerMu.Unlock()
-}
-
-func (m *QUICTransport) PushCert(ctx context.Context, peerKey types.PeerKey, cert *admissionv1.DelegationCert) error {
-	m.certPushMu.Lock()
-	defer m.certPushMu.Unlock()
-
-	select {
-	case <-m.certPushCh:
-	default:
-	}
-
-	data, err := (&meshv1.Envelope{
-		Body: &meshv1.Envelope_CertPushRequest{CertPushRequest: &meshv1.CertPushRequest{Cert: cert}},
-	}).MarshalVT()
-	if err != nil {
-		return fmt.Errorf("marshal cert push: %w", err)
-	}
-	if err := m.SendMembershipDatagram(ctx, peerKey, data); err != nil {
-		return fmt.Errorf("send cert push: %w", err)
-	}
-
-	waitCtx, cancel := context.WithTimeout(ctx, handshakeTimeout)
-	defer cancel()
-
-	select {
-	case resp := <-m.certPushCh:
-		if !resp.GetAccepted() {
-			reason := resp.GetReason()
-			if reason == "" {
-				reason = "cert push rejected"
-			}
-			return errors.New(reason)
-		}
-		return nil
-	case <-waitCtx.Done():
-		return fmt.Errorf("cert push response: %w", waitCtx.Err())
-	}
 }
 
 func (m *QUICTransport) SetPeerMetrics(pm *metrics.PeerMetrics) {

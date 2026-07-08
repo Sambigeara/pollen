@@ -46,10 +46,10 @@ func (n *Supervisor) startPrometheus(ctx context.Context, addr string) error {
 		ReadHeaderTimeout: prometheusReadHeaderTimeout,
 	}
 
-	go func() {
+	n.spawn(func() {
 		<-ctx.Done()
 		srv.Close() //nolint:errcheck
-	}()
+	})
 
 	n.log.Infow("prometheus server listening", "addr", addr)
 	if err := srv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
@@ -82,7 +82,7 @@ func newStateCollector(snapshot func() state.Snapshot) *stateCollector {
 		nodeVivaldiError: prometheus.NewDesc("pollen_node_vivaldi_error", "Node Vivaldi coordinate error estimate (0-1, lower = more confident). High cluster-wide values indicate unconverged coordinates.", []string{"name"}, nil),
 		trafficIn:        prometheus.NewDesc("pollen_traffic_rate_in_bytes", "Inbound traffic rate between peers.", []string{"node", "peer"}, nil),
 		trafficOut:       prometheus.NewDesc("pollen_traffic_rate_out_bytes", "Outbound traffic rate between peers.", []string{"node", "peer"}, nil),
-		workloadInfo:     prometheus.NewDesc("pollen_workload_info", "Workload presence in the cluster.", []string{"name", "hash"}, nil),
+		workloadInfo:     prometheus.NewDesc("pollen_workload_info", "Workload presence in the cluster.", []string{"name", "hash", "publisher"}, nil),
 		workloadReplicas: prometheus.NewDesc("pollen_workload_replicas", "Active replica count for a workload.", []string{"name"}, nil),
 		workloadClaim:    prometheus.NewDesc("pollen_workload_claim", "Workload claimed by a node.", []string{"workload", "node"}, nil),
 		workloadLoad:     prometheus.NewDesc("pollen_workload_load", "Calls/sec a node has made against a workload over its most recent gossip window.", []string{"workload", "node"}, nil),
@@ -121,6 +121,9 @@ func (c *stateCollector) Collect(ch chan<- prometheus.Metric) {
 		}
 	}
 
+	// Replica/claim/load are content-addressed: one running module per
+	// hash, claimants shared across every publisher of identical bytes.
+	// They stay keyed by the deduped Specs view.
 	workloadNames := make(map[string]string, len(snap.Specs))
 	for hash, spec := range snap.Specs {
 		name := spec.Spec.Name
@@ -129,12 +132,22 @@ func (c *stateCollector) Collect(ch chan<- prometheus.Metric) {
 		}
 		workloadNames[hash] = name
 		claimants := snap.Claims[hash]
-		ch <- prometheus.MustNewConstMetric(c.workloadInfo, prometheus.GaugeValue, 1, name, hash[:8]) //nolint:mnd
 		ch <- prometheus.MustNewConstMetric(c.workloadReplicas, prometheus.GaugeValue, float64(len(claimants)), name)
 
 		for claimant := range claimants {
 			ch <- prometheus.MustNewConstMetric(c.workloadClaim, prometheus.GaugeValue, 1, name, nodeNames[claimant])
 		}
+	}
+
+	// workloadInfo is the publication-identity plane: one series per
+	// (authority, name) over the un-deduped SpecsAll, so each tenant's
+	// workload stays visible (see Snapshot.SpecsAll).
+	for _, sv := range snap.SpecsAll {
+		name := sv.Spec.Name
+		if name == "" {
+			name = sv.Spec.Hash[:8] //nolint:mnd
+		}
+		ch <- prometheus.MustNewConstMetric(c.workloadInfo, prometheus.GaugeValue, 1, name, sv.Spec.Hash[:8], sv.Publisher.Short()) //nolint:mnd
 	}
 
 	for pk, nv := range snap.Nodes {

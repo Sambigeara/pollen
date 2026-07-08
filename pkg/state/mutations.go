@@ -13,9 +13,11 @@ import (
 	"time"
 
 	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
+	factv1 "github.com/sambigeara/pollen/api/genpb/pollen/fact/v1"
+	identityv1 "github.com/sambigeara/pollen/api/genpb/pollen/identity/v1"
 	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
-	"github.com/sambigeara/pollen/pkg/auth"
 	"github.com/sambigeara/pollen/pkg/coords"
+	"github.com/sambigeara/pollen/pkg/fact"
 	"github.com/sambigeara/pollen/pkg/nat"
 	"github.com/sambigeara/pollen/pkg/types"
 	"google.golang.org/protobuf/proto"
@@ -33,20 +35,20 @@ func (s *store) mutateLocal(fn func(rec *nodeRecord) ([]*statev1.GossipEvent, []
 	}
 
 	now := s.nowFunc()
-	denyOrCertChanged := false
-	certChanged := false
+	denyOrGrantChanged := false
+	grantChanged := false
 	for _, ev := range gossips {
 		key, _ := getAttrKey(ev)
-		if key.kind == attrDeny || key.kind == attrDelegationCert {
-			denyOrCertChanged = true
+		if key.kind == attrDeny || key.kind == attrGrant {
+			denyOrGrantChanged = true
 		}
-		if key.kind == attrDelegationCert {
-			certChanged = true
+		if key.kind == attrGrant {
+			grantChanged = true
 		}
 		rec.maxCounter++
 		ev.PeerId = s.localID.String()
 		ev.Counter = rec.maxCounter
-		rec.log[key] = ev
+		rec.put(key, ev)
 		s.pendingGossip = append(s.pendingGossip, ev)
 	}
 
@@ -54,11 +56,11 @@ func (s *store) mutateLocal(fn func(rec *nodeRecord) ([]*statev1.GossipEvent, []
 	s.lastLocalEmit = now
 	s.nodes[s.localID] = rec
 
-	if denyOrCertChanged {
+	if denyOrGrantChanged {
 		events = append(events, s.recomputeDeniedLocked()...)
 	}
-	if certChanged {
-		events = append(events, CertChanged{Peer: s.localID})
+	if grantChanged {
+		events = append(events, GrantChanged{Peer: s.localID})
 	}
 
 	s.updateSnapshotLocked()
@@ -81,29 +83,75 @@ func (s *store) DenyPeer(key types.PeerKey) []Event {
 	})
 }
 
-// SetLocalDelegationCert publishes the local node's current delegation
-// cert into the CRDT so every other node can evaluate chain-scoped
-// rules (most importantly: subtree-bounded deny authorisation).
+// SetLocalGrant publishes the local node's current grant into the CRDT
+// so every other node can evaluate chain-scoped rules (most
+// importantly: subtree-bounded deny authorisation).
 //
-// subjectSig must be a valid ed25519 signature by cert.subject_pub
-// (== local node identity) over the cert's claims, produced by
-// auth.SignDelegationCertSubject. Without subject proof-of-possession,
-// any admin could forge a cert for another peer's pub and bypass deny
+// subjectSig must be a valid ed25519 signature by grant.subject_pub
+// (== local node identity) over the grant's claims, produced by
+// identity.SignGrantSubject. Without subject proof-of-possession, any
+// admin could forge a grant for another peer's pub and bypass deny
 // scoping. Callers in production wire this from the signing key; tests
-// that exercise non-cert paths can leave subjectSig empty (apply-time
+// that exercise non-grant paths can leave subjectSig empty (apply-time
 // verification is skipped when rootPub is unset).
-func (s *store) SetLocalDelegationCert(cert *admissionv1.DelegationCert, subjectSig []byte) []Event {
-	if cert == nil {
+func (s *store) SetLocalGrant(grant *identityv1.Grant, subjectSig []byte) []Event {
+	if grant == nil {
 		return nil
 	}
 	return s.mutateLocal(func(rec *nodeRecord) ([]*statev1.GossipEvent, []Event) {
-		owned := &statev1.DelegationCertChange{Cert: cert, SubjectSignature: subjectSig}
-		if ev, ok := rec.log[attrKey{kind: attrDelegationCert}]; ok && !ev.Deleted && proto.Equal(ev.GetDelegationCert(), owned) {
+		owned := &statev1.GrantChange{Grant: grant, SubjectSignature: subjectSig}
+		if ev, ok := rec.log[attrKey{kind: attrGrant}]; ok && !ev.Deleted && proto.Equal(ev.GetGrant(), owned) {
 			return nil, nil
 		}
-		change := &statev1.GossipEvent{Change: &statev1.GossipEvent_DelegationCert{DelegationCert: owned}}
+		change := &statev1.GossipEvent{Change: &statev1.GossipEvent_Grant{Grant: owned}}
 		return []*statev1.GossipEvent{change}, nil
 	})
+}
+
+// RegisterPeerGrant adopts a wire caller's grant into that caller's CRDT
+// slot so cluster-scoped admission can resolve the authority for a
+// presigned Fact whose publisher runs no daemon to gossip its own grant.
+// The serving node is a pure relay: the grant is admitted only if it
+// clears the identical proof-of-possession gate (isAcceptableGrantEvent)
+// a gossiped grant must, so no new trust is introduced. Idempotent: a
+// grant whose content already matches the stored one is a no-op, so
+// steady-state publishing does not churn the slot or the gossip stream.
+func (s *store) RegisterPeerGrant(peer types.PeerKey, grant *identityv1.Grant, subjectSig []byte) []Event {
+	if grant == nil || peer == s.localID {
+		return nil
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	change := &statev1.GossipEvent{
+		PeerId: peer.String(),
+		Change: &statev1.GossipEvent_Grant{Grant: &statev1.GrantChange{Grant: grant, SubjectSignature: subjectSig}},
+	}
+	if !s.isAcceptableGrantEvent(peer, change) {
+		return nil
+	}
+
+	key := attrKey{kind: attrGrant}
+	rec, exists := s.nodes[peer]
+	if !exists {
+		rec = newNodeRecord()
+	}
+	if ev, ok := rec.log[key]; ok && !ev.Deleted && proto.Equal(ev.GetGrant(), change.GetGrant()) {
+		return nil
+	}
+
+	rec.maxCounter++
+	change.Counter = rec.maxCounter
+	rec.put(key, change)
+	rec.lastEventAt = s.nowFunc()
+	s.nodes[peer] = rec
+	s.pendingGossip = append(s.pendingGossip, change)
+
+	events := append([]Event{GrantChanged{Peer: peer}}, s.recomputeDeniedLocked()...)
+	s.updateSnapshotLocked()
+	s.notify()
+	return events
 }
 
 func (s *store) SetLocalAddresses(addrs []netip.AddrPort) []Event {
@@ -208,37 +256,66 @@ func (s *store) SetLocalObservedAddress(ip string, port uint32) []Event {
 	})
 }
 
+// ownSpecEventLocked returns the rank-winning spec event of kind whose
+// content id (workload hash, blob digest, static name) equals want,
+// scoped to publications this node authored. The k.peer == s.localID
+// filter on the register key picks out registers under our authority
+// regardless of which slot stores them: a daemon publish lands in this
+// node's own slot, a wire publish in the serving relay's slot.
+// Supersession reuses specRank so a stale tombstone never masks a newer
+// re-seed, mirroring the snapshot reconciler.
+func (s *store) ownSpecEventLocked(kind attrKind, want string, contentOf func(*statev1.SpecChange) string) *statev1.GossipEvent {
+	var winner *statev1.GossipEvent
+	var winnerRank specRank
+	for _, rec := range s.nodes {
+		for k, ev := range rec.log {
+			if k.kind != kind || k.peer != s.localID {
+				continue
+			}
+			if contentOf(ev.GetSpecChange()) != want {
+				continue
+			}
+			_, r := specRankOf(k, ev)
+			if winner == nil || r.supersedes(winnerRank) {
+				winner = ev
+				winnerRank = r
+			}
+		}
+	}
+	return winner
+}
+
 // PublishWorkload emits the spec and the publisher's claim in a single
 // gossip batch. Splitting them lets a remote see the spec first, observe
 // zero claimants, and decide to claim before the publisher's own claim
-// arrives — causing over-replication until it unwinds minutes later.
+// arrives, causing over-replication until it unwinds minutes later.
 func (s *store) PublishWorkload(spec WorkloadSpec, policy *admissionv1.Predicate) ([]Event, error) {
 	hash := spec.Hash
 	hashBytes, err := hex.DecodeString(hash)
 	if err != nil || len(hashBytes) != sha256Len {
 		return nil, fmt.Errorf("%w: %q", ErrInvalidDigest, hash)
 	}
+	if spec.Name == "" {
+		return nil, ErrMissingName
+	}
 	owned := workloadSpecToProto(spec)
-	var ownerErr error
 	var signerErr error
 	events := s.mutateLocal(func(rec *nodeRecord) ([]*statev1.GossipEvent, []Event) {
-		for pk, r := range s.nodes {
-			if pk == s.localID {
-				continue
-			}
-			if ev, ok := r.log[attrKey{kind: attrWorkloadSpec, name: hash}]; ok && !ev.Deleted && s.isValidOwnerLocked(pk) {
-				ownerErr = fmt.Errorf("%w: %s owns %s", ErrSpecOwnedByPeer, pk.Short(), hash)
-				return nil, nil
-			}
-		}
-
 		var gossips []*statev1.GossipEvent
 		specChange, err := s.signedSpecChangeLocked(seedResourceID(spec.Name, hashBytes), owned, policy, false)
 		if err != nil {
 			signerErr = err
 			return nil, nil
 		}
-		if ev, ok := rec.log[attrKey{kind: attrWorkloadSpec, name: hash}]; !ok || ev.Deleted || !proto.Equal(ev.GetSpecChange(), specChange) {
+		// The local-signer paths probe rec.log under (kind, name,
+		// peer=s.localID) before emitting; this must equal the key
+		// mutateLocal re-derives via specAttrKey from the change it
+		// writes. They agree because a self-signed Fact's AuthorityPub
+		// is s.localID by construction (signedSpecChangeLocked signs
+		// with the node's own identity). That invariant is load-bearing
+		// for the dedup check here, in SetStaticSpec and in SetBlobSpec.
+		specKey := attrKey{kind: attrWorkloadSpec, name: spec.Name, peer: s.localID}
+		if ev, ok := rec.log[specKey]; !ok || ev.Deleted || !proto.Equal(ev.GetSpecChange(), specChange) {
 			gossips = append(gossips, &statev1.GossipEvent{Change: &statev1.GossipEvent_SpecChange{SpecChange: specChange}})
 		}
 		if ev, ok := rec.log[attrKey{kind: attrWorkloadClaim, name: hash}]; !ok || ev.Deleted {
@@ -252,7 +329,7 @@ func (s *store) PublishWorkload(spec WorkloadSpec, policy *admissionv1.Predicate
 	if signerErr != nil {
 		return events, signerErr
 	}
-	return events, ownerErr
+	return events, nil
 }
 
 func (s *store) DeleteWorkloadSpec(hash string) ([]Event, error) {
@@ -260,22 +337,28 @@ func (s *store) DeleteWorkloadSpec(hash string) ([]Event, error) {
 	if err != nil || len(hashBytes) != sha256Len {
 		return nil, fmt.Errorf("%w: %q", ErrInvalidDigest, hash)
 	}
-	var signerErr error
-	events := s.mutateLocal(func(rec *nodeRecord) ([]*statev1.GossipEvent, []Event) {
-		ev, ok := rec.log[attrKey{kind: attrWorkloadSpec, name: hash}]
-		if !ok || ev.Deleted {
+	var mutateErr error
+	events := s.mutateLocal(func(_ *nodeRecord) ([]*statev1.GossipEvent, []Event) {
+		ev := s.ownSpecEventLocked(attrWorkloadSpec, hash, func(sc *statev1.SpecChange) string {
+			return sc.GetWorkload().GetHash()
+		})
+		if ev == nil {
+			mutateErr = ErrUnseedNotAuthored
+			return nil, nil
+		}
+		if ev.Deleted {
 			return nil, nil
 		}
 		body := ev.GetSpecChange().GetWorkload()
-		specChange, err := s.signedSpecChangeLocked(seedResourceID(body.GetName(), hashBytes), body, ev.GetSpecChange().GetAuth().GetPolicy(), true)
+		specChange, err := s.signedSpecChangeLocked(seedResourceID(body.GetName(), hashBytes), body, ev.GetSpecChange().GetFact().GetPolicy(), true)
 		if err != nil {
-			signerErr = err
+			mutateErr = err
 			return nil, nil
 		}
 		change := &statev1.GossipEvent{Deleted: true, Change: &statev1.GossipEvent_SpecChange{SpecChange: specChange}}
 		return []*statev1.GossipEvent{change}, []Event{WorkloadChanged{Hash: hash}}
 	})
-	return events, signerErr
+	return events, mutateErr
 }
 
 func (s *store) ClaimWorkload(hash string) []Event {
@@ -303,9 +386,6 @@ func (s *store) setWorkloadClaimLocked(hash string, claimed, draining bool) []Ev
 			return nil, nil
 		}
 		if claimed && exists && draining == currDraining {
-			return nil, nil
-		}
-		if !claimed && !exists {
 			return nil, nil
 		}
 
@@ -411,7 +491,7 @@ func (s *store) RemoveService(name string) ([]Event, error) {
 			return nil, nil
 		}
 		body := ev.GetSpecChange().GetService()
-		specChange, err := s.signedSpecChangeLocked(serviceResourceID(body), body, ev.GetSpecChange().GetAuth().GetPolicy(), true)
+		specChange, err := s.signedSpecChangeLocked(serviceResourceID(body), body, ev.GetSpecChange().GetFact().GetPolicy(), true)
 		if err != nil {
 			signerErr = err
 			return nil, nil
@@ -424,22 +504,15 @@ func (s *store) RemoveService(name string) ([]Event, error) {
 
 func (s *store) SetStaticSpec(spec StaticSpec, policy *admissionv1.Predicate) ([]Event, error) {
 	name := spec.Name
+	if name == "" {
+		return nil, ErrMissingName
+	}
 	digest, err := hex.DecodeString(spec.ManifestDigest)
 	if err != nil || len(digest) != sha256Len {
 		return nil, fmt.Errorf("%w: %q", ErrInvalidDigest, spec.ManifestDigest)
 	}
-	var ownerErr error
 	var signerErr error
 	events := s.mutateLocal(func(rec *nodeRecord) ([]*statev1.GossipEvent, []Event) {
-		for pk, r := range s.nodes {
-			if pk == s.localID {
-				continue
-			}
-			if ev, ok := r.log[attrKey{kind: attrStaticSpec, name: name}]; ok && !ev.Deleted && s.isValidOwnerLocked(pk) {
-				ownerErr = fmt.Errorf("%w: %s owns %q", ErrSpecOwnedByPeer, pk.Short(), name)
-				return nil, nil
-			}
-		}
 		owned := &statev1.StaticSpecChange{
 			Name:           name,
 			ManifestDigest: digest,
@@ -449,7 +522,7 @@ func (s *store) SetStaticSpec(spec StaticSpec, policy *admissionv1.Predicate) ([
 			signerErr = err
 			return nil, nil
 		}
-		if ev, ok := rec.log[attrKey{kind: attrStaticSpec, name: name}]; ok && !ev.Deleted && proto.Equal(ev.GetSpecChange(), specChange) {
+		if ev, ok := rec.log[attrKey{kind: attrStaticSpec, name: name, peer: s.localID}]; ok && !ev.Deleted && proto.Equal(ev.GetSpecChange(), specChange) {
 			return nil, nil
 		}
 		return []*statev1.GossipEvent{{Change: &statev1.GossipEvent_SpecChange{SpecChange: specChange}}}, []Event{StaticChanged{Name: name}}
@@ -457,49 +530,58 @@ func (s *store) SetStaticSpec(spec StaticSpec, policy *admissionv1.Predicate) ([
 	if signerErr != nil {
 		return events, signerErr
 	}
-	return events, ownerErr
+	return events, nil
 }
 
 func (s *store) DeleteStaticSpec(name string) ([]Event, error) {
-	var signerErr error
-	events := s.mutateLocal(func(rec *nodeRecord) ([]*statev1.GossipEvent, []Event) {
-		ev, ok := rec.log[attrKey{kind: attrStaticSpec, name: name}]
-		if !ok || ev.Deleted {
+	var mutateErr error
+	events := s.mutateLocal(func(_ *nodeRecord) ([]*statev1.GossipEvent, []Event) {
+		ev := s.ownSpecEventLocked(attrStaticSpec, name, func(sc *statev1.SpecChange) string {
+			return sc.GetStatic().GetName()
+		})
+		if ev == nil {
+			mutateErr = ErrUnseedNotAuthored
+			return nil, nil
+		}
+		if ev.Deleted {
 			return nil, nil
 		}
 		body := ev.GetSpecChange().GetStatic()
-		specChange, err := s.signedSpecChangeLocked(staticResourceID(body), body, ev.GetSpecChange().GetAuth().GetPolicy(), true)
+		specChange, err := s.signedSpecChangeLocked(staticResourceID(body), body, ev.GetSpecChange().GetFact().GetPolicy(), true)
 		if err != nil {
-			signerErr = err
+			mutateErr = err
 			return nil, nil
 		}
 		change := &statev1.GossipEvent{Deleted: true, Change: &statev1.GossipEvent_SpecChange{SpecChange: specChange}}
 		return []*statev1.GossipEvent{change}, []Event{StaticChanged{Name: name}}
 	})
-	return events, signerErr
+	return events, mutateErr
 }
 
-func (s *store) ClaimStatic(name string) []Event {
-	return s.setStaticClaimLocked(name, true)
+func (s *store) ClaimStatic(name string, authority types.PeerKey) []Event {
+	return s.setStaticClaimLocked(name, authority, true)
 }
 
-func (s *store) ReleaseStatic(name string) []Event {
-	return s.setStaticClaimLocked(name, false)
+func (s *store) ReleaseStatic(name string, authority types.PeerKey) []Event {
+	return s.setStaticClaimLocked(name, authority, false)
 }
 
-func (s *store) setStaticClaimLocked(name string, claimed bool) []Event {
+func (s *store) setStaticClaimLocked(name string, authority types.PeerKey, claimed bool) []Event {
 	return s.mutateLocal(func(rec *nodeRecord) ([]*statev1.GossipEvent, []Event) {
-		ev, ok := rec.log[attrKey{kind: attrStaticClaim, name: name}]
+		ev, ok := rec.log[attrKey{kind: attrStaticClaim, name: name, peer: authority}]
 		exists := ok && !ev.Deleted
 		if claimed == exists {
 			return nil, nil
 		}
-		change := &statev1.GossipEvent{Deleted: !claimed, Change: &statev1.GossipEvent_StaticClaim{StaticClaim: &statev1.StaticClaimChange{Name: name}}}
+		change := &statev1.GossipEvent{Deleted: !claimed, Change: &statev1.GossipEvent_StaticClaim{StaticClaim: &statev1.StaticClaimChange{Name: name, AuthorityPub: authority.Bytes()}}}
 		return []*statev1.GossipEvent{change}, []Event{StaticChanged{Name: name}}
 	})
 }
 
 func (s *store) SetBlobSpec(spec BlobSpec, policy *admissionv1.Predicate) ([]Event, error) {
+	if spec.Name == "" {
+		return nil, ErrMissingName
+	}
 	digest, err := hex.DecodeString(spec.Digest)
 	if err != nil || len(digest) != sha256Len {
 		return nil, fmt.Errorf("%w: %q", ErrInvalidDigest, spec.Digest)
@@ -510,7 +592,7 @@ func (s *store) SetBlobSpec(spec BlobSpec, policy *admissionv1.Predicate) ([]Eve
 	}
 	var signerErr error
 	events := s.mutateLocal(func(rec *nodeRecord) ([]*statev1.GossipEvent, []Event) {
-		key := attrKey{kind: attrBlobSpec, name: spec.Digest}
+		key := attrKey{kind: attrBlobSpec, name: spec.Name, peer: s.localID}
 		specChange, err := s.signedSpecChangeLocked(blobResourceID(owned), owned, policy, false)
 		if err != nil {
 			signerErr = err
@@ -532,38 +614,320 @@ func (s *store) DeleteBlobSpec(digest string) ([]Event, error) {
 	if err != nil || len(raw) != sha256Len {
 		return nil, fmt.Errorf("%w: %q", ErrInvalidDigest, digest)
 	}
-	var signerErr error
-	events := s.mutateLocal(func(rec *nodeRecord) ([]*statev1.GossipEvent, []Event) {
-		key := attrKey{kind: attrBlobSpec, name: digest}
-		ev, ok := rec.log[key]
-		if !ok || ev.Deleted {
+	var mutateErr error
+	events := s.mutateLocal(func(_ *nodeRecord) ([]*statev1.GossipEvent, []Event) {
+		ev := s.ownSpecEventLocked(attrBlobSpec, digest, func(sc *statev1.SpecChange) string {
+			return hex.EncodeToString(sc.GetBlob().GetDigest())
+		})
+		if ev == nil {
+			mutateErr = ErrUnseedNotAuthored
+			return nil, nil
+		}
+		if ev.Deleted {
 			return nil, nil
 		}
 		body := ev.GetSpecChange().GetBlob()
-		specChange, err := s.signedSpecChangeLocked(blobResourceID(body), body, ev.GetSpecChange().GetAuth().GetPolicy(), true)
+		specChange, err := s.signedSpecChangeLocked(blobResourceID(body), body, ev.GetSpecChange().GetFact().GetPolicy(), true)
 		if err != nil {
-			signerErr = err
+			mutateErr = err
 			return nil, nil
 		}
 		change := &statev1.GossipEvent{Deleted: true, Change: &statev1.GossipEvent_SpecChange{SpecChange: specChange}}
 		return []*statev1.GossipEvent{change}, nil
 	})
-	return events, signerErr
+	return events, mutateErr
 }
 
 // ErrNoSigner is returned when a publish path runs on a node that holds
 // no spec signer. The local mutation would otherwise produce a
 // SpecChange with Auth: nil, which the local store accepts but every
-// remote rejects on the validate hook — silent partial publish.
-var ErrNoSigner = errors.New("local node has no spec signer; publish requires publisher or admin capability")
+// remote rejects on the validate hook: a silent partial publish.
+var ErrNoSigner = errors.New("local node has no spec signer")
 
-// RevokeOwnSpecs tombstones every workload, service, blob, and static
-// spec this node has published. Used when a cap downgrade strips
-// publish authority: the still-valid old signer is used to sign the
-// tombstones before the new cert (which can't sign) replaces it. The
-// returned events are emitted to peers like any other publish change;
-// remotes drop the resources from their CRDTs as the tombstones land.
-func (s *store) RevokeOwnSpecs() ([]Event, error) {
+// ErrMissingName is returned when a workload, static or blob spec is
+// published without a logical name. The name is half the publication
+// identity (authority, name); without it the spec has no register to
+// occupy and the proto-level min_len guard has been bypassed (an
+// in-process local-signer publish never round-trips through the wire's
+// buf.validate).
+var ErrMissingName = errors.New("spec name required")
+
+// ErrPresignedAuthRequired is returned when a presigned mutation path
+// receives a nil Fact. Wire-mode callers must supply the Fact
+// signed under their own authority key.
+var ErrPresignedAuthRequired = errors.New("presigned spec auth required")
+
+// ErrNoValidator is returned when a presigned mutation is attempted on
+// a store without a registered validate hook. Presigned writes carry
+// externally-signed auth and must be validated against the cluster's
+// root before landing in the log.
+var ErrNoValidator = errors.New("presigned mutations require a validate hook")
+
+// PublishWorkloadPresigned stores a tenant-signed workload spec without
+// re-signing. The daemon acts as a relay: the Fact is supplied by the
+// wire-mode caller, validated against the cluster root, and gossipped
+// as-is. No auto-claim is emitted; placement is decided by reconcilers
+// on hosts that match the policy.
+func (s *store) PublishWorkloadPresigned(spec WorkloadSpec, presignedFact *factv1.Fact) ([]Event, error) {
+	hashBytes, err := hex.DecodeString(spec.Hash)
+	if err != nil || len(hashBytes) != sha256Len {
+		return nil, fmt.Errorf("%w: %q", ErrInvalidDigest, spec.Hash)
+	}
+	if spec.Name == "" {
+		return nil, ErrMissingName
+	}
+	specChange, publisher, err := s.preparePresignedSpec(workloadSpecToProto(spec), presignedFact)
+	if err != nil {
+		return nil, err
+	}
+	return s.applyPresignedSpec(attrKey{kind: attrWorkloadSpec, name: spec.Name, peer: publisher}, specChange, WorkloadChanged{Hash: spec.Hash})
+}
+
+// SetStaticSpecPresigned stores a tenant-signed static-site spec without
+// re-signing. See PublishWorkloadPresigned.
+func (s *store) SetStaticSpecPresigned(spec StaticSpec, presignedFact *factv1.Fact) ([]Event, error) {
+	digest, err := hex.DecodeString(spec.ManifestDigest)
+	if err != nil || len(digest) != sha256Len {
+		return nil, fmt.Errorf("%w: %q", ErrInvalidDigest, spec.ManifestDigest)
+	}
+	if spec.Name == "" {
+		return nil, ErrMissingName
+	}
+	body := &statev1.StaticSpecChange{Name: spec.Name, ManifestDigest: digest}
+	specChange, publisher, err := s.preparePresignedSpec(body, presignedFact)
+	if err != nil {
+		return nil, err
+	}
+	return s.applyPresignedSpec(attrKey{kind: attrStaticSpec, name: spec.Name, peer: publisher}, specChange, StaticChanged{Name: spec.Name})
+}
+
+// SetBlobSpecPresigned stores a tenant-signed blob spec without
+// re-signing. See PublishWorkloadPresigned.
+func (s *store) SetBlobSpecPresigned(spec BlobSpec, presignedFact *factv1.Fact) ([]Event, error) {
+	digest, err := hex.DecodeString(spec.Digest)
+	if err != nil || len(digest) != sha256Len {
+		return nil, fmt.Errorf("%w: %q", ErrInvalidDigest, spec.Digest)
+	}
+	if spec.Name == "" {
+		return nil, ErrMissingName
+	}
+	body := &statev1.BlobSpecChange{Name: spec.Name, Digest: digest}
+	specChange, publisher, err := s.preparePresignedSpec(body, presignedFact)
+	if err != nil {
+		return nil, err
+	}
+	return s.applyPresignedSpec(attrKey{kind: attrBlobSpec, name: spec.Name, peer: publisher}, specChange, nil)
+}
+
+// preparePresignedSpec wraps the body in a SpecChange with the supplied
+// auth and runs the validate hook. The hook (the admission pipeline in
+// production) re-derives the resource ID from the body and rejects
+// mismatches, so callers can't smuggle a mismatched resource through.
+func (s *store) preparePresignedSpec(body fact.Body, presignedFact *factv1.Fact) (*statev1.SpecChange, types.PeerKey, error) {
+	if presignedFact == nil {
+		return nil, types.PeerKey{}, ErrPresignedAuthRequired
+	}
+	if s.validate == nil {
+		return nil, types.PeerKey{}, ErrNoValidator
+	}
+	specChange := wrapSpecBody(presignedFact, body)
+	if err := s.validate(specChange); err != nil {
+		return nil, types.PeerKey{}, err
+	}
+	publisher := types.PeerKeyFromBytes(presignedFact.GetAuthorityPub())
+	return specChange, publisher, nil
+}
+
+// applyPresignedSpec writes specChange to our slot under key. The key
+// is (kind, logical-name, authority Principal): distinct authorities
+// occupy distinct registers, so a cross-publisher collision on a shared
+// name or shared content is structurally impossible and needs no
+// conflict scan. Re-applying an identical spec is a no-op.
+func (s *store) applyPresignedSpec(key attrKey, specChange *statev1.SpecChange, domainEvent Event) ([]Event, error) {
+	events := s.mutateLocal(func(rec *nodeRecord) ([]*statev1.GossipEvent, []Event) {
+		if ev, ok := rec.log[key]; ok && !ev.Deleted && proto.Equal(ev.GetSpecChange(), specChange) {
+			return nil, nil
+		}
+		gossip := &statev1.GossipEvent{Change: &statev1.GossipEvent_SpecChange{SpecChange: specChange}}
+		var domain []Event
+		if domainEvent != nil {
+			domain = []Event{domainEvent}
+		}
+		return []*statev1.GossipEvent{gossip}, domain
+	})
+	return events, nil
+}
+
+// presignedResourceName returns the logical name the publisher signed
+// into a presigned Fact's ResourceID.
+func presignedResourceName(f *factv1.Fact) string {
+	switch r := f.GetResource().GetBody().(type) {
+	case *admissionv1.ResourceID_Seed:
+		return r.Seed.GetName()
+	case *admissionv1.ResourceID_Static:
+		return r.Static.GetName()
+	case *admissionv1.ResourceID_Blob:
+		return r.Blob.GetName()
+	case *admissionv1.ResourceID_Service:
+		return r.Service.GetName()
+	}
+	return ""
+}
+
+// DeleteWorkloadSpecPresigned applies a tenant-signed workload-spec
+// tombstone. The tombstone is keyed by (authority, logical name),
+// the same register the live spec occupies, so unseeds work even when the
+// daemon serving the RPC isn't the one that originally accepted the
+// spec. hash is retained only to reject a malformed content digest.
+func (s *store) DeleteWorkloadSpecPresigned(hash string, presignedFact *factv1.Fact) ([]Event, error) {
+	if _, err := hex.DecodeString(hash); err != nil || len(hash) != sha256HexLen {
+		return nil, fmt.Errorf("%w: %q", ErrInvalidDigest, hash)
+	}
+	key := attrKey{kind: attrWorkloadSpec, name: presignedResourceName(presignedFact), peer: types.PeerKeyFromBytes(presignedFact.GetAuthorityPub())}
+	return s.applyPresignedTombstone(key, presignedFact, WorkloadChanged{Hash: hash})
+}
+
+// DeleteStaticSpecPresigned applies a tenant-signed static-spec tombstone.
+func (s *store) DeleteStaticSpecPresigned(name string, presignedFact *factv1.Fact) ([]Event, error) {
+	key := attrKey{kind: attrStaticSpec, name: presignedResourceName(presignedFact), peer: types.PeerKeyFromBytes(presignedFact.GetAuthorityPub())}
+	return s.applyPresignedTombstone(key, presignedFact, StaticChanged{Name: name})
+}
+
+// DeleteBlobSpecPresigned applies a tenant-signed blob-spec tombstone.
+// digest is retained only to reject a malformed content digest.
+func (s *store) DeleteBlobSpecPresigned(digest string, presignedFact *factv1.Fact) ([]Event, error) {
+	if _, err := hex.DecodeString(digest); err != nil || len(digest) != sha256HexLen {
+		return nil, fmt.Errorf("%w: %q", ErrInvalidDigest, digest)
+	}
+	key := attrKey{kind: attrBlobSpec, name: presignedResourceName(presignedFact), peer: types.PeerKeyFromBytes(presignedFact.GetAuthorityPub())}
+	return s.applyPresignedTombstone(key, presignedFact, nil)
+}
+
+// ErrTombstoneNoLiveSpec is returned when a presigned tombstone arrives
+// for a spec the cluster has no record of (neither locally nor on any
+// other peer). The publisher's signature can't be verified without the
+// body it was signed over, so the daemon refuses rather than emit an
+// unverifiable tombstone.
+var ErrTombstoneNoLiveSpec = errors.New("presigned tombstone: live spec not found on any peer")
+
+// ErrUnseedNotAuthored is returned from DeleteWorkloadSpec /
+// DeleteStaticSpec / DeleteBlobSpec when no live publication keyed by
+// this daemon's authority exists in any slot. Either the name is not
+// published at all, or it belongs to another publisher who must unseed
+// it themselves (the daemon cannot tombstone a Fact it did not sign).
+// Surfacing this lets the handler return a real NotFound instead of a
+// silent success.
+var ErrUnseedNotAuthored = errors.New("no live publication under this daemon's authority")
+
+func (s *store) applyPresignedTombstone(key attrKey, presignedFact *factv1.Fact, domainEvent Event) ([]Event, error) {
+	if presignedFact == nil {
+		return nil, ErrPresignedAuthRequired
+	}
+	if !presignedFact.GetDeleted() {
+		return nil, errors.New("presigned tombstone must have Deleted=true")
+	}
+	if s.validate == nil {
+		return nil, ErrNoValidator
+	}
+	var rebuildErr error
+	events := s.mutateLocal(func(rec *nodeRecord) ([]*statev1.GossipEvent, []Event) {
+		if ev, ok := rec.log[key]; ok && ev.Deleted {
+			return nil, nil
+		}
+		body := s.findLiveSpecBodyLocked(key, presignedFact.GetBodyHash())
+		if body == nil {
+			rebuildErr = ErrTombstoneNoLiveSpec
+			return nil, nil
+		}
+		specChange := wrapSpecBody(presignedFact, body)
+		if err := s.validate(specChange); err != nil {
+			rebuildErr = err
+			return nil, nil
+		}
+		gossip := &statev1.GossipEvent{Deleted: true, Change: &statev1.GossipEvent_SpecChange{SpecChange: specChange}}
+		var domain []Event
+		if domainEvent != nil {
+			domain = []Event{domainEvent}
+		}
+		return []*statev1.GossipEvent{gossip}, domain
+	})
+	return events, rebuildErr
+}
+
+// findLiveSpecBodyLocked returns the body the publisher signed at
+// create time, looking first at the local slot and then across every
+// other peer's log. key is (kind, logical name, authority), so every
+// event found under it already belongs to the right authority; the
+// register itself is the publisher gate. wantBodyHash is the body_hash
+// the tombstone was signed over; matching on it disambiguates re-seeded
+// content (otherwise map-iteration order could return a stale body from
+// a previous tenure still cached on some peer). s.mu must be held by
+// the caller.
+func (s *store) findLiveSpecBodyLocked(key attrKey, wantBodyHash []byte) fact.Body {
+	matches := func(ev *statev1.GossipEvent) fact.Body {
+		if ev == nil || ev.Deleted {
+			return nil
+		}
+		sc := ev.GetSpecChange()
+		// When the tombstone's body_hash is unset (older callers), accept
+		// any body at this register. Otherwise require the live spec's
+		// own signed body_hash to match so map-iteration order doesn't
+		// pick a stale body cached on a relay peer.
+		if len(wantBodyHash) > 0 && !bytes.Equal(sc.GetFact().GetBodyHash(), wantBodyHash) {
+			return nil
+		}
+		return liveSpecBody(sc)
+	}
+	if rec, ok := s.nodes[s.localID]; ok {
+		if ev, ok := rec.log[key]; ok {
+			if body := matches(ev); body != nil {
+				return body
+			}
+		}
+	}
+	for pk, rec := range s.nodes {
+		if pk == s.localID {
+			continue
+		}
+		ev, ok := rec.log[key]
+		if !ok {
+			continue
+		}
+		if body := matches(ev); body != nil {
+			return body
+		}
+	}
+	return nil
+}
+
+// liveSpecBody returns the typed body proto for the live spec change,
+// so a presigned tombstone can be rewrapped against the same body the
+// publisher signed at create time.
+func liveSpecBody(sc *statev1.SpecChange) fact.Body {
+	switch v := sc.GetBody().(type) {
+	case *statev1.SpecChange_Workload:
+		return v.Workload
+	case *statev1.SpecChange_Static:
+		return v.Static
+	case *statev1.SpecChange_Blob:
+		return v.Blob
+	case *statev1.SpecChange_Service:
+		return v.Service
+	}
+	return nil
+}
+
+// RevokeOwnSpecs tombstones this node's published Facts whose required
+// publish kind is not present in retain. Used on a capability change
+// (downgrade, or admin-issued upgrade that drops a kind): the still-valid
+// old signer is used to sign the tombstones before the new grant
+// replaces it, so each tombstone chains correctly. A nil retain
+// argument means no kinds are retained, equivalent to a full publish
+// drop. The returned events are emitted to peers like any other publish
+// change; remotes drop the resources from their CRDTs as the
+// tombstones land.
+func (s *store) RevokeOwnSpecs(retain *identityv1.Capabilities) ([]Event, error) {
+	p := retain.GetPublish()
 	snap := s.Snapshot()
 	var events []Event
 	var firstErr error
@@ -573,24 +937,37 @@ func (s *store) RevokeOwnSpecs() ([]Event, error) {
 			firstErr = err
 		}
 	}
-	if local, ok := snap.Nodes[snap.LocalID]; ok {
-		for name := range local.Services {
-			record(s.RemoveService(name))
+	if !p.GetServices() {
+		if local, ok := snap.Nodes[snap.LocalID]; ok {
+			for name := range local.Services {
+				record(s.RemoveService(name))
+			}
 		}
 	}
-	for hash, spec := range snap.Specs {
-		if spec.Publisher == snap.LocalID {
-			record(s.DeleteWorkloadSpec(hash))
+	// Iterate the per-(authority, name) publication sources, not the deduped
+	// maps (see the SpecsAll field doc): under a colliding remote tenant a
+	// deduped-map scan skips this node's own spec, so a cap-downgraded
+	// principal would keep a gossiped spec it has lost authority to publish.
+	// The delete helpers resolve the local register by content id.
+	if !p.GetFunctions() {
+		for _, spec := range snap.SpecsAll {
+			if spec.Publisher == snap.LocalID {
+				record(s.DeleteWorkloadSpec(spec.Spec.Hash))
+			}
 		}
 	}
-	for name, spec := range snap.StaticSpecs {
-		if spec.Publisher == snap.LocalID {
-			record(s.DeleteStaticSpec(name))
+	if !p.GetSites() {
+		for _, spec := range snap.StaticSpecsAll {
+			if spec.Publisher == snap.LocalID {
+				record(s.DeleteStaticSpec(spec.Spec.Name))
+			}
 		}
 	}
-	for digest, spec := range snap.BlobSpecs {
-		if spec.Publisher == snap.LocalID {
-			record(s.DeleteBlobSpec(digest))
+	if !p.GetBlobs() {
+		for _, spec := range snap.BlobSpecsAll {
+			if spec.Publisher == snap.LocalID {
+				record(s.DeleteBlobSpec(spec.Spec.Digest))
+			}
 		}
 	}
 	return events, firstErr
@@ -601,7 +978,7 @@ func (s *store) RevokeOwnSpecs() ([]Event, error) {
 // equivalent path that signs with the local node's identity key). The
 // CRDT keys it as (blob_hash, recipient) per peer; replaying with the
 // same payload is a no-op.
-func (s *store) SetBlobWrapping(wrapping *statev1.BlobWrappingChange) []Event {
+func (s *store) SetBlobWrapping(wrapping *factv1.BlobWrapping) []Event {
 	if wrapping == nil {
 		return nil
 	}
@@ -609,7 +986,7 @@ func (s *store) SetBlobWrapping(wrapping *statev1.BlobWrappingChange) []Event {
 		key := attrKey{
 			kind: attrBlobWrapping,
 			name: hex.EncodeToString(wrapping.GetBlobHash()),
-			peer: types.PeerKeyFromBytes(wrapping.GetRecipientPubkey()),
+			peer: types.PeerKeyFromBytes(wrapping.GetRecipientPub()),
 		}
 		if ev, ok := rec.log[key]; ok && !ev.Deleted && proto.Equal(ev.GetBlobWrapping(), wrapping) {
 			return nil, nil
@@ -619,15 +996,35 @@ func (s *store) SetBlobWrapping(wrapping *statev1.BlobWrappingChange) []Event {
 	})
 }
 
-func (s *store) signedSpecChangeLocked(resource *admissionv1.ResourceID, body auth.SpecBody, policy *admissionv1.Predicate, deleted bool) (*statev1.SpecChange, error) {
+func (s *store) signedSpecChangeLocked(resource *admissionv1.ResourceID, body fact.Body, policy *admissionv1.Predicate, deleted bool) (*statev1.SpecChange, error) {
 	if s.signer == nil {
 		return nil, ErrNoSigner
 	}
-	specAuth, err := s.signer.IssueSpecAuth(resource, body, policy, deleted)
+	f, err := s.signer.IssueFact(resource, body, policy, deleted)
 	if err != nil {
 		return nil, err
 	}
-	specChange := &statev1.SpecChange{Auth: specAuth}
+	sc := wrapSpecBody(f, body)
+	// Route local self-signed mutations through the same admission
+	// pipeline gossip and presigned writes already traverse, so a local
+	// seed/unseed cannot bypass authorise/account (closing the
+	// UnseedStatic and self-signed-delete gaps). Runs under s.mu via
+	// mutateLocal; the pipeline reads only the lock-free Snapshot(), so
+	// this is non-re-entrant. Gated on a configured validator: state
+	// tests that wire no validator keep the pre-pipeline behaviour.
+	if s.validate != nil {
+		if err := s.validate(sc); err != nil {
+			return nil, err
+		}
+	}
+	return sc, nil
+}
+
+// wrapSpecBody assembles a SpecChange from a pre-built Fact and a body.
+// Used by the local-signer path (signedSpecChangeLocked) and by
+// presigned wire-mode paths that supply the Fact themselves.
+func wrapSpecBody(f *factv1.Fact, body fact.Body) *statev1.SpecChange {
+	specChange := &statev1.SpecChange{Fact: f}
 	switch v := body.(type) {
 	case *statev1.WorkloadSpecChange:
 		specChange.Body = &statev1.SpecChange_Workload{Workload: v}
@@ -638,7 +1035,7 @@ func (s *store) signedSpecChangeLocked(resource *admissionv1.ResourceID, body au
 	case *statev1.BlobSpecChange:
 		specChange.Body = &statev1.SpecChange_Blob{Blob: v}
 	}
-	return specChange, nil
+	return specChange
 }
 
 func seedResourceID(name string, hash []byte) *admissionv1.ResourceID {
@@ -699,7 +1096,10 @@ func (s *store) SetLocalBlobs(digests []string) []Event {
 	})
 }
 
-const sha256Len = 32
+const (
+	sha256Len    = 32
+	sha256HexLen = 64
+)
 
 func (s *store) SetLocalTraffic(peer types.PeerKey, in, out uint64) []Event {
 	return s.mutateLocal(func(rec *nodeRecord) ([]*statev1.GossipEvent, []Event) {
@@ -774,20 +1174,55 @@ func (s *store) SetStaticCapable() {
 	})
 }
 
-func (s *store) SetNodeName(name string) {
+// setLocalStringAttr is the shared tombstone-on-empty / dedupe / upsert
+// path for single-string per-node attributes. currentValue reads the
+// value from an existing event for the dedupe check; mk builds a fresh
+// gossip event for a non-empty value (the helper flips Deleted for the
+// tombstone case).
+func (s *store) setLocalStringAttr(
+	kind attrKind,
+	value string,
+	currentValue func(*statev1.GossipEvent) string,
+	mk func(string) *statev1.GossipEvent,
+) {
 	s.mutateLocal(func(rec *nodeRecord) ([]*statev1.GossipEvent, []Event) {
-		key := attrKey{kind: attrNodeName}
-		if name == "" {
-			if ev, ok := rec.log[key]; !ok || ev.Deleted {
+		key := attrKey{kind: kind}
+		if value == "" {
+			ev, ok := rec.log[key]
+			if !ok || ev.Deleted {
 				return nil, nil
 			}
-			change := &statev1.GossipEvent{Deleted: true, Change: &statev1.GossipEvent_NodeName{NodeName: &statev1.NodeNameChange{Name: name}}}
-			return []*statev1.GossipEvent{change}, nil
+			tomb := mk(value)
+			tomb.Deleted = true
+			return []*statev1.GossipEvent{tomb}, nil
 		}
-		if ev, ok := rec.log[key]; ok && !ev.Deleted && ev.GetNodeName().Name == name {
+		if ev, ok := rec.log[key]; ok && !ev.Deleted && currentValue(ev) == value {
 			return nil, nil
 		}
-		change := &statev1.GossipEvent{Change: &statev1.GossipEvent_NodeName{NodeName: &statev1.NodeNameChange{Name: name}}}
-		return []*statev1.GossipEvent{change}, nil
+		return []*statev1.GossipEvent{mk(value)}, nil
 	})
+}
+
+func (s *store) SetNodeName(name string) {
+	s.setLocalStringAttr(attrNodeName, name,
+		func(ev *statev1.GossipEvent) string { return ev.GetNodeName().GetName() },
+		func(v string) *statev1.GossipEvent {
+			return &statev1.GossipEvent{Change: &statev1.GossipEvent_NodeName{NodeName: &statev1.NodeNameChange{Name: v}}}
+		})
+}
+
+func (s *store) SetControlAddr(addr string) {
+	s.setLocalStringAttr(attrControlAddr, addr,
+		func(ev *statev1.GossipEvent) string { return ev.GetControlAddr().GetAddr() },
+		func(v string) *statev1.GossipEvent {
+			return &statev1.GossipEvent{Change: &statev1.GossipEvent_ControlAddr{ControlAddr: &statev1.ControlAddrChange{Addr: v}}}
+		})
+}
+
+func (s *store) SetGatewayDomain(domain string) {
+	s.setLocalStringAttr(attrGatewayDomain, domain,
+		func(ev *statev1.GossipEvent) string { return ev.GetGatewayDomain().GetDomain() },
+		func(v string) *statev1.GossipEvent {
+			return &statev1.GossipEvent{Change: &statev1.GossipEvent_GatewayDomain{GatewayDomain: &statev1.GatewayDomainChange{Domain: v}}}
+		})
 }

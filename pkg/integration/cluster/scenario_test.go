@@ -20,12 +20,24 @@ import (
 
 	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
 	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
-	"github.com/sambigeara/pollen/pkg/auth"
 	"github.com/sambigeara/pollen/pkg/coords"
+	"github.com/sambigeara/pollen/pkg/identity"
 	"github.com/sambigeara/pollen/pkg/state"
 	"github.com/sambigeara/pollen/pkg/types"
 	"github.com/stretchr/testify/require"
 )
+
+// connectToBootstrap dials the joiner into the mesh via its bootstrap
+// peer, mirroring the post-enrolment connect a real daemon performs
+// after `pln join`. Invite redemption uses a throwaway QUIC connection
+// and does not itself add a mesh peer.
+func connectToBootstrap(ctx context.Context, t *testing.T, joiner, bootstrap *TestNode) {
+	t.Helper()
+	cctx, cancel := context.WithTimeout(ctx, 5*time.Second) //nolint:mnd
+	defer cancel()
+	require.NoError(t, joiner.Node().Connect(cctx, bootstrap.PeerKey(),
+		[]netip.AddrPort{bootstrap.VirtualAddr().AddrPort()}))
+}
 
 func TestPublicMesh_GossipConvergence(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) //nolint:mnd
@@ -259,24 +271,27 @@ func TestPublicMesh_InviteFlow(t *testing.T) {
 		joiner := c.AddNodeAndStart(t, "invited-joiner", Public, ctx)
 
 		node0 := c.Node("node-0")
+		admin := c.Node("node-1")
 		bootstrap := []*admissionv1.BootstrapPeer{{
 			PeerPub: node0.PeerKey().Bytes(),
 			Addrs:   []string{node0.VirtualAddr().String()},
 		}}
 
-		invite, err := node0.Node().Credentials().DelegationKey().IssueInviteToken(
-			joiner.PeerKey().Bytes(),
+		ticket, err := admin.Node().Credentials().IssueInvite(
 			bootstrap,
+			ed25519.PublicKey(joiner.PeerKey().Bytes()),
+			identity.LeafCapabilities(),
+			identity.UnlimitedBudget(),
+			time.Now().Add(24*time.Hour), //nolint:mnd
 			time.Now(),
 			5*time.Minute, //nolint:mnd
-			24*time.Hour,  //nolint:mnd
-			auth.LeafCapabilities(),
 		)
 		require.NoError(t, err)
 
-		_, err = joiner.Node().JoinWithInvite(ctx, invite)
+		_, err = joiner.Node().JoinWithInvite(ctx, ticket)
 		require.NoError(t, err)
 
+		connectToBootstrap(ctx, t, joiner, node0)
 		c.RequirePeerVisible(t, "invited-joiner")
 	})
 
@@ -292,17 +307,18 @@ func TestPublicMesh_InviteFlow(t *testing.T) {
 		wrongSubject, _, err := ed25519.GenerateKey(rand.Reader)
 		require.NoError(t, err)
 
-		invite, err := node0.Node().Credentials().DelegationKey().IssueInviteToken(
-			wrongSubject,
+		ticket, err := node0.Node().Credentials().IssueInvite(
 			bootstrap,
+			wrongSubject,
+			identity.LeafCapabilities(),
+			identity.UnlimitedBudget(),
+			time.Now().Add(24*time.Hour), //nolint:mnd
 			time.Now(),
 			5*time.Minute, //nolint:mnd
-			24*time.Hour,  //nolint:mnd
-			auth.LeafCapabilities(),
 		)
 		require.NoError(t, err)
 
-		_, err = joiner.Node().JoinWithInvite(ctx, invite)
+		_, err = joiner.Node().JoinWithInvite(ctx, ticket)
 		require.Error(t, err)
 	})
 
@@ -311,25 +327,27 @@ func TestPublicMesh_InviteFlow(t *testing.T) {
 		second := c.AddNodeAndStart(t, "single-use-second", Public, ctx)
 
 		node0 := c.Node("node-0")
+		admin := c.Node("node-1")
 		bootstrap := []*admissionv1.BootstrapPeer{{
 			PeerPub: node0.PeerKey().Bytes(),
 			Addrs:   []string{node0.VirtualAddr().String()},
 		}}
 
-		invite, err := node0.Node().Credentials().DelegationKey().IssueInviteToken(
-			nil,
+		ticket, err := admin.Node().Credentials().IssueInvite(
 			bootstrap,
+			nil,
+			identity.LeafCapabilities(),
+			identity.UnlimitedBudget(),
+			time.Now().Add(24*time.Hour), //nolint:mnd
 			time.Now(),
 			5*time.Minute, //nolint:mnd
-			24*time.Hour,  //nolint:mnd
-			auth.LeafCapabilities(),
 		)
 		require.NoError(t, err)
 
-		_, err = first.Node().JoinWithInvite(ctx, invite)
+		_, err = first.Node().JoinWithInvite(ctx, ticket)
 		require.NoError(t, err)
 
-		_, err = second.Node().JoinWithInvite(ctx, invite)
+		_, err = second.Node().JoinWithInvite(ctx, ticket)
 		require.Error(t, err)
 	})
 
@@ -355,23 +373,27 @@ func TestPublicMesh_InviteFlow(t *testing.T) {
 		joiner := c.AddNodeAndStart(t, "converge-joiner", Public, ctx)
 
 		node0 := c.Node("node-0")
+		admin := c.Node("node-1")
 		bootstrap := []*admissionv1.BootstrapPeer{{
 			PeerPub: node0.PeerKey().Bytes(),
 			Addrs:   []string{node0.VirtualAddr().String()},
 		}}
 
-		invite, err := node0.Node().Credentials().DelegationKey().IssueInviteToken(
-			joiner.PeerKey().Bytes(),
+		ticket, err := admin.Node().Credentials().IssueInvite(
 			bootstrap,
+			ed25519.PublicKey(joiner.PeerKey().Bytes()),
+			identity.LeafCapabilities(),
+			identity.UnlimitedBudget(),
+			time.Now().Add(24*time.Hour), //nolint:mnd
 			time.Now(),
 			5*time.Minute, //nolint:mnd
-			24*time.Hour,  //nolint:mnd
-			auth.LeafCapabilities(),
 		)
 		require.NoError(t, err)
 
-		_, err = joiner.Node().JoinWithInvite(ctx, invite)
+		_, err = joiner.Node().JoinWithInvite(ctx, ticket)
 		require.NoError(t, err)
+
+		connectToBootstrap(ctx, t, joiner, node0)
 
 		pk0 := node0.PeerKey()
 		pk1 := c.Node("node-1").PeerKey()
@@ -407,25 +429,28 @@ func TestPublicMesh_DelegatedAdminInviteRedeemsViaRootBootstrap(t *testing.T) {
 
 	root := c.Node("root")
 	admin := c.Node("admin")
-	require.NotNil(t, admin.Node().Credentials().DelegationKey())
+	require.True(t, admin.Node().Credentials().Grant().GetClaims().GetCapabilities().GetCanDelegate(),
+		"delegated admin must hold a delegating grant to issue invites")
 
 	joiner := c.AddNodeAndStart(t, "joiner", Public, ctx)
 	bootstrap := []*admissionv1.BootstrapPeer{{
 		PeerPub: root.PeerKey().Bytes(),
 		Addrs:   []string{root.VirtualAddr().String()},
 	}}
-	invite, err := admin.Node().Credentials().DelegationKey().IssueInviteToken(
-		joiner.PeerKey().Bytes(),
+	ticket, err := admin.Node().Credentials().IssueInvite(
 		bootstrap,
+		ed25519.PublicKey(joiner.PeerKey().Bytes()),
+		identity.LeafCapabilities(),
+		identity.UnlimitedBudget(),
+		time.Now().Add(24*time.Hour), //nolint:mnd
 		time.Now(),
 		5*time.Minute, //nolint:mnd
-		24*time.Hour,  //nolint:mnd
-		auth.LeafCapabilities(),
 	)
 	require.NoError(t, err)
 
-	_, err = joiner.Node().JoinWithInvite(ctx, invite)
+	_, err = joiner.Node().JoinWithInvite(ctx, ticket)
 	require.NoError(t, err)
+	connectToBootstrap(ctx, t, joiner, root)
 	c.RequirePeerVisible(t, "joiner")
 }
 
@@ -778,18 +803,19 @@ func TestPublicMesh_ExpiredInviteToken(t *testing.T) {
 		Addrs:   []string{node0.VirtualAddr().String()},
 	}}
 
-	invite, err := node0.Node().Credentials().DelegationKey().IssueInviteToken(
-		joiner.PeerKey().Bytes(),
+	ticket, err := node0.Node().Credentials().IssueInvite(
 		bootstrap,
-		time.Now().Add(-time.Hour),
+		ed25519.PublicKey(joiner.PeerKey().Bytes()),
+		identity.LeafCapabilities(),
+		identity.UnlimitedBudget(),
+		time.Now().Add(24*time.Hour), //nolint:mnd
+		time.Now().Add(-time.Hour),   //nolint:mnd
 		time.Minute,
-		24*time.Hour, //nolint:mnd
-		auth.LeafCapabilities(),
 	)
 	require.NoError(t, err)
 
-	_, err = joiner.Node().JoinWithInvite(ctx, invite)
-	require.Error(t, err, "expired invite token should be rejected")
+	_, err = joiner.Node().JoinWithInvite(ctx, ticket)
+	require.Error(t, err, "expired invite ticket should be rejected")
 }
 
 func TestPublicMesh_VivaldiDistancesReflectTopology(t *testing.T) {
@@ -925,4 +951,47 @@ func TestPublicMesh_ServiceUnexposureRevokesActiveTunnels(t *testing.T) {
 	)
 
 	lt.requireClosed(t)
+}
+
+// TestPublicMesh_InviteRedeemOnIssuerNode pins the case where the
+// joiner's only bootstrap peer is the issuing node itself. This is the
+// real-world `ssh <host> pln invite` pattern: the operator mints on a
+// node, so that node is both the issuer and the advertised entrypoint.
+// The redeem must be processed locally. The other invite tests always
+// bootstrap via a different node, so a regression where the daemon does
+// not wire its own invite-issuer credentials still passes there (the
+// receiving node forwards to the issuer over the mesh). Here the issuer
+// receives its own redeem; without the local fast path it forwards to
+// itself, and a node holds no mesh session to itself, so the join fails.
+func TestPublicMesh_InviteRedeemOnIssuerNode(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) //nolint:mnd
+	t.Cleanup(cancel)
+
+	c := PublicMesh(t, 2, ctx) //nolint:mnd
+	c.RequireConverged(t)
+
+	joiner := c.AddNodeAndStart(t, "issuer-dial-joiner", Public, ctx)
+
+	issuer := c.Node("node-0")
+	bootstrap := []*admissionv1.BootstrapPeer{{
+		PeerPub: issuer.PeerKey().Bytes(),
+		Addrs:   []string{issuer.VirtualAddr().String()},
+	}}
+
+	ticket, err := issuer.Node().Credentials().IssueInvite(
+		bootstrap,
+		ed25519.PublicKey(joiner.PeerKey().Bytes()),
+		identity.LeafCapabilities(),
+		identity.UnlimitedBudget(),
+		time.Now().Add(24*time.Hour), //nolint:mnd
+		time.Now(),
+		5*time.Minute, //nolint:mnd
+	)
+	require.NoError(t, err)
+
+	_, err = joiner.Node().JoinWithInvite(ctx, ticket)
+	require.NoError(t, err)
+
+	connectToBootstrap(ctx, t, joiner, issuer)
+	c.RequirePeerVisible(t, "issuer-dial-joiner")
 }

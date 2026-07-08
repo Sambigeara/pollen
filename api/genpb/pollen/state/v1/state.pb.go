@@ -11,7 +11,8 @@ package statev1
 
 import (
 	_ "buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go/buf/validate"
-	v1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
+	v1 "github.com/sambigeara/pollen/api/genpb/pollen/fact/v1"
+	v11 "github.com/sambigeara/pollen/api/genpb/pollen/identity/v1"
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 	reflect "reflect"
@@ -822,6 +823,7 @@ func (x *StaticSpecChange) GetManifestDigest() []byte {
 type StaticClaimChange struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	AuthorityPub  []byte                 `protobuf:"bytes,2,opt,name=authority_pub,json=authorityPub,proto3" json:"authority_pub,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -861,6 +863,13 @@ func (x *StaticClaimChange) GetName() string {
 		return x.Name
 	}
 	return ""
+}
+
+func (x *StaticClaimChange) GetAuthorityPub() []byte {
+	if x != nil {
+		return x.AuthorityPub
+	}
+	return nil
 }
 
 type BlobSpecChange struct {
@@ -917,7 +926,7 @@ func (x *BlobSpecChange) GetDigest() []byte {
 
 type SpecChange struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	Auth  *v1.SpecAuth           `protobuf:"bytes,1,opt,name=auth,proto3" json:"auth,omitempty"`
+	Fact  *v1.Fact               `protobuf:"bytes,1,opt,name=fact,proto3" json:"fact,omitempty"`
 	// Types that are valid to be assigned to Body:
 	//
 	//	*SpecChange_Service
@@ -959,9 +968,9 @@ func (*SpecChange) Descriptor() ([]byte, []int) {
 	return file_pollen_state_v1_state_proto_rawDescGZIP(), []int{16}
 }
 
-func (x *SpecChange) GetAuth() *v1.SpecAuth {
+func (x *SpecChange) GetFact() *v1.Fact {
 	if x != nil {
-		return x.Auth
+		return x.Fact
 	}
 	return nil
 }
@@ -1447,6 +1456,103 @@ func (x *NodeNameChange) GetName() string {
 	return ""
 }
 
+// ControlAddrChange gossips the node's reachable control-plane TLS
+// endpoint so a delegated peer can find an admin to renew its grant
+// against without an operator-supplied address.
+type ControlAddrChange struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Addr          string                 `protobuf:"bytes,1,opt,name=addr,proto3" json:"addr,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ControlAddrChange) Reset() {
+	*x = ControlAddrChange{}
+	mi := &file_pollen_state_v1_state_proto_msgTypes[26]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ControlAddrChange) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ControlAddrChange) ProtoMessage() {}
+
+func (x *ControlAddrChange) ProtoReflect() protoreflect.Message {
+	mi := &file_pollen_state_v1_state_proto_msgTypes[26]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ControlAddrChange.ProtoReflect.Descriptor instead.
+func (*ControlAddrChange) Descriptor() ([]byte, []int) {
+	return file_pollen_state_v1_state_proto_rawDescGZIP(), []int{26}
+}
+
+func (x *ControlAddrChange) GetAddr() string {
+	if x != nil {
+		return x.Addr
+	}
+	return ""
+}
+
+// GatewayDomainChange gossips the node's configured static HTTP
+// gateway domain (e.g. ".staging.pln.sh"). Readers cluster-wide
+// aggregate every announcement, so any peer can render the correct
+// public URL for a static spec, blob, or workload even when the
+// rendering node isn't itself a gateway. Empty domain means the
+// node isn't configured as a gateway.
+type GatewayDomainChange struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Domain        string                 `protobuf:"bytes,1,opt,name=domain,proto3" json:"domain,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GatewayDomainChange) Reset() {
+	*x = GatewayDomainChange{}
+	mi := &file_pollen_state_v1_state_proto_msgTypes[27]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GatewayDomainChange) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GatewayDomainChange) ProtoMessage() {}
+
+func (x *GatewayDomainChange) ProtoReflect() protoreflect.Message {
+	mi := &file_pollen_state_v1_state_proto_msgTypes[27]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GatewayDomainChange.ProtoReflect.Descriptor instead.
+func (*GatewayDomainChange) Descriptor() ([]byte, []int) {
+	return file_pollen_state_v1_state_proto_rawDescGZIP(), []int{27}
+}
+
+func (x *GatewayDomainChange) GetDomain() string {
+	if x != nil {
+		return x.Domain
+	}
+	return ""
+}
+
 type BackoffTTLChange struct {
 	state           protoimpl.MessageState `protogen:"open.v1"`
 	ExpiresAtUnixMs int64                  `protobuf:"varint,1,opt,name=expires_at_unix_ms,json=expiresAtUnixMs,proto3" json:"expires_at_unix_ms,omitempty"`
@@ -1456,7 +1562,7 @@ type BackoffTTLChange struct {
 
 func (x *BackoffTTLChange) Reset() {
 	*x = BackoffTTLChange{}
-	mi := &file_pollen_state_v1_state_proto_msgTypes[26]
+	mi := &file_pollen_state_v1_state_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1468,7 +1574,7 @@ func (x *BackoffTTLChange) String() string {
 func (*BackoffTTLChange) ProtoMessage() {}
 
 func (x *BackoffTTLChange) ProtoReflect() protoreflect.Message {
-	mi := &file_pollen_state_v1_state_proto_msgTypes[26]
+	mi := &file_pollen_state_v1_state_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1481,7 +1587,7 @@ func (x *BackoffTTLChange) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BackoffTTLChange.ProtoReflect.Descriptor instead.
 func (*BackoffTTLChange) Descriptor() ([]byte, []int) {
-	return file_pollen_state_v1_state_proto_rawDescGZIP(), []int{26}
+	return file_pollen_state_v1_state_proto_rawDescGZIP(), []int{28}
 }
 
 func (x *BackoffTTLChange) GetExpiresAtUnixMs() int64 {
@@ -1500,7 +1606,7 @@ type PerSeedCallCountsChange struct {
 
 func (x *PerSeedCallCountsChange) Reset() {
 	*x = PerSeedCallCountsChange{}
-	mi := &file_pollen_state_v1_state_proto_msgTypes[27]
+	mi := &file_pollen_state_v1_state_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1512,7 +1618,7 @@ func (x *PerSeedCallCountsChange) String() string {
 func (*PerSeedCallCountsChange) ProtoMessage() {}
 
 func (x *PerSeedCallCountsChange) ProtoReflect() protoreflect.Message {
-	mi := &file_pollen_state_v1_state_proto_msgTypes[27]
+	mi := &file_pollen_state_v1_state_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1525,7 +1631,7 @@ func (x *PerSeedCallCountsChange) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PerSeedCallCountsChange.ProtoReflect.Descriptor instead.
 func (*PerSeedCallCountsChange) Descriptor() ([]byte, []int) {
-	return file_pollen_state_v1_state_proto_rawDescGZIP(), []int{27}
+	return file_pollen_state_v1_state_proto_rawDescGZIP(), []int{29}
 }
 
 func (x *PerSeedCallCountsChange) GetCounts() map[string]uint64 {
@@ -1535,29 +1641,29 @@ func (x *PerSeedCallCountsChange) GetCounts() map[string]uint64 {
 	return nil
 }
 
-type DelegationCertChange struct {
+type GrantChange struct {
 	state            protoimpl.MessageState `protogen:"open.v1"`
-	Cert             *v1.DelegationCert     `protobuf:"bytes,1,opt,name=cert,proto3" json:"cert,omitempty"`
+	Grant            *v11.Grant             `protobuf:"bytes,1,opt,name=grant,proto3" json:"grant,omitempty"`
 	SubjectSignature []byte                 `protobuf:"bytes,2,opt,name=subject_signature,json=subjectSignature,proto3" json:"subject_signature,omitempty"`
 	unknownFields    protoimpl.UnknownFields
 	sizeCache        protoimpl.SizeCache
 }
 
-func (x *DelegationCertChange) Reset() {
-	*x = DelegationCertChange{}
-	mi := &file_pollen_state_v1_state_proto_msgTypes[28]
+func (x *GrantChange) Reset() {
+	*x = GrantChange{}
+	mi := &file_pollen_state_v1_state_proto_msgTypes[30]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *DelegationCertChange) String() string {
+func (x *GrantChange) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*DelegationCertChange) ProtoMessage() {}
+func (*GrantChange) ProtoMessage() {}
 
-func (x *DelegationCertChange) ProtoReflect() protoreflect.Message {
-	mi := &file_pollen_state_v1_state_proto_msgTypes[28]
+func (x *GrantChange) ProtoReflect() protoreflect.Message {
+	mi := &file_pollen_state_v1_state_proto_msgTypes[30]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1568,107 +1674,21 @@ func (x *DelegationCertChange) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use DelegationCertChange.ProtoReflect.Descriptor instead.
-func (*DelegationCertChange) Descriptor() ([]byte, []int) {
-	return file_pollen_state_v1_state_proto_rawDescGZIP(), []int{28}
+// Deprecated: Use GrantChange.ProtoReflect.Descriptor instead.
+func (*GrantChange) Descriptor() ([]byte, []int) {
+	return file_pollen_state_v1_state_proto_rawDescGZIP(), []int{30}
 }
 
-func (x *DelegationCertChange) GetCert() *v1.DelegationCert {
+func (x *GrantChange) GetGrant() *v11.Grant {
 	if x != nil {
-		return x.Cert
+		return x.Grant
 	}
 	return nil
 }
 
-func (x *DelegationCertChange) GetSubjectSignature() []byte {
+func (x *GrantChange) GetSubjectSignature() []byte {
 	if x != nil {
 		return x.SubjectSignature
-	}
-	return nil
-}
-
-// BlobWrappingChange gossips a sealed DEK addressed to one entitled
-// host. Wrappers are authorisations to decrypt one blob; the receiving
-// host opens the wrapped DEK with its own private key, then decrypts
-// the on-disk envelope. Wrappings are append-only on the wire: the
-// admission filter rejects any event with GossipEvent.deleted set,
-// because the deletion bit lives outside the signed payload and a
-// captured live wrapping replayed with the bit flipped would
-// otherwise erase the recipient's only path back to the DEK. Effective
-// revocation is local-side eviction of the on-disk envelope; a stale
-// wrapping then resolves to a cas.ErrNotFound at first read.
-type BlobWrappingChange struct {
-	state           protoimpl.MessageState `protogen:"open.v1"`
-	BlobHash        []byte                 `protobuf:"bytes,1,opt,name=blob_hash,json=blobHash,proto3" json:"blob_hash,omitempty"`
-	RecipientPubkey []byte                 `protobuf:"bytes,2,opt,name=recipient_pubkey,json=recipientPubkey,proto3" json:"recipient_pubkey,omitempty"`
-	WrappedDek      []byte                 `protobuf:"bytes,3,opt,name=wrapped_dek,json=wrappedDek,proto3" json:"wrapped_dek,omitempty"`
-	Wrapper         *v1.DelegationCert     `protobuf:"bytes,4,opt,name=wrapper,proto3" json:"wrapper,omitempty"`
-	Signature       []byte                 `protobuf:"bytes,5,opt,name=signature,proto3" json:"signature,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
-}
-
-func (x *BlobWrappingChange) Reset() {
-	*x = BlobWrappingChange{}
-	mi := &file_pollen_state_v1_state_proto_msgTypes[29]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *BlobWrappingChange) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*BlobWrappingChange) ProtoMessage() {}
-
-func (x *BlobWrappingChange) ProtoReflect() protoreflect.Message {
-	mi := &file_pollen_state_v1_state_proto_msgTypes[29]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use BlobWrappingChange.ProtoReflect.Descriptor instead.
-func (*BlobWrappingChange) Descriptor() ([]byte, []int) {
-	return file_pollen_state_v1_state_proto_rawDescGZIP(), []int{29}
-}
-
-func (x *BlobWrappingChange) GetBlobHash() []byte {
-	if x != nil {
-		return x.BlobHash
-	}
-	return nil
-}
-
-func (x *BlobWrappingChange) GetRecipientPubkey() []byte {
-	if x != nil {
-		return x.RecipientPubkey
-	}
-	return nil
-}
-
-func (x *BlobWrappingChange) GetWrappedDek() []byte {
-	if x != nil {
-		return x.WrappedDek
-	}
-	return nil
-}
-
-func (x *BlobWrappingChange) GetWrapper() *v1.DelegationCert {
-	if x != nil {
-		return x.Wrapper
-	}
-	return nil
-}
-
-func (x *BlobWrappingChange) GetSignature() []byte {
-	if x != nil {
-		return x.Signature
 	}
 	return nil
 }
@@ -1697,8 +1717,10 @@ type GossipEvent struct {
 	//	*GossipEvent_StaticCapable
 	//	*GossipEvent_BackoffTtl
 	//	*GossipEvent_PerSeedCallCounts
-	//	*GossipEvent_DelegationCert
+	//	*GossipEvent_Grant
 	//	*GossipEvent_SpecChange
+	//	*GossipEvent_ControlAddr
+	//	*GossipEvent_GatewayDomain
 	//	*GossipEvent_BlobWrapping
 	Change        isGossipEvent_Change `protobuf_oneof:"change"`
 	Deleted       bool                 `protobuf:"varint,14,opt,name=deleted,proto3" json:"deleted,omitempty"`
@@ -1708,7 +1730,7 @@ type GossipEvent struct {
 
 func (x *GossipEvent) Reset() {
 	*x = GossipEvent{}
-	mi := &file_pollen_state_v1_state_proto_msgTypes[30]
+	mi := &file_pollen_state_v1_state_proto_msgTypes[31]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1720,7 +1742,7 @@ func (x *GossipEvent) String() string {
 func (*GossipEvent) ProtoMessage() {}
 
 func (x *GossipEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_pollen_state_v1_state_proto_msgTypes[30]
+	mi := &file_pollen_state_v1_state_proto_msgTypes[31]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1733,7 +1755,7 @@ func (x *GossipEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GossipEvent.ProtoReflect.Descriptor instead.
 func (*GossipEvent) Descriptor() ([]byte, []int) {
-	return file_pollen_state_v1_state_proto_rawDescGZIP(), []int{30}
+	return file_pollen_state_v1_state_proto_rawDescGZIP(), []int{31}
 }
 
 func (x *GossipEvent) GetPeerId() string {
@@ -1919,10 +1941,10 @@ func (x *GossipEvent) GetPerSeedCallCounts() *PerSeedCallCountsChange {
 	return nil
 }
 
-func (x *GossipEvent) GetDelegationCert() *DelegationCertChange {
+func (x *GossipEvent) GetGrant() *GrantChange {
 	if x != nil {
-		if x, ok := x.Change.(*GossipEvent_DelegationCert); ok {
-			return x.DelegationCert
+		if x, ok := x.Change.(*GossipEvent_Grant); ok {
+			return x.Grant
 		}
 	}
 	return nil
@@ -1937,7 +1959,25 @@ func (x *GossipEvent) GetSpecChange() *SpecChange {
 	return nil
 }
 
-func (x *GossipEvent) GetBlobWrapping() *BlobWrappingChange {
+func (x *GossipEvent) GetControlAddr() *ControlAddrChange {
+	if x != nil {
+		if x, ok := x.Change.(*GossipEvent_ControlAddr); ok {
+			return x.ControlAddr
+		}
+	}
+	return nil
+}
+
+func (x *GossipEvent) GetGatewayDomain() *GatewayDomainChange {
+	if x != nil {
+		if x, ok := x.Change.(*GossipEvent_GatewayDomain); ok {
+			return x.GatewayDomain
+		}
+	}
+	return nil
+}
+
+func (x *GossipEvent) GetBlobWrapping() *v1.BlobWrapping {
 	if x != nil {
 		if x, ok := x.Change.(*GossipEvent_BlobWrapping); ok {
 			return x.BlobWrapping
@@ -2029,16 +2069,31 @@ type GossipEvent_PerSeedCallCounts struct {
 	PerSeedCallCounts *PerSeedCallCountsChange `protobuf:"bytes,34,opt,name=per_seed_call_counts,json=perSeedCallCounts,proto3,oneof"`
 }
 
-type GossipEvent_DelegationCert struct {
-	DelegationCert *DelegationCertChange `protobuf:"bytes,35,opt,name=delegation_cert,json=delegationCert,proto3,oneof"`
+type GossipEvent_Grant struct {
+	Grant *GrantChange `protobuf:"bytes,35,opt,name=grant,proto3,oneof"`
 }
 
 type GossipEvent_SpecChange struct {
 	SpecChange *SpecChange `protobuf:"bytes,36,opt,name=spec_change,json=specChange,proto3,oneof"`
 }
 
+type GossipEvent_ControlAddr struct {
+	ControlAddr *ControlAddrChange `protobuf:"bytes,38,opt,name=control_addr,json=controlAddr,proto3,oneof"`
+}
+
+type GossipEvent_GatewayDomain struct {
+	GatewayDomain *GatewayDomainChange `protobuf:"bytes,39,opt,name=gateway_domain,json=gatewayDomain,proto3,oneof"`
+}
+
 type GossipEvent_BlobWrapping struct {
-	BlobWrapping *BlobWrappingChange `protobuf:"bytes,37,opt,name=blob_wrapping,json=blobWrapping,proto3,oneof"`
+	// blob_wrapping gossips a sealed DEK addressed to one entitled
+	// host. Wrappings are append-only on the wire: the admission
+	// filter rejects any event with GossipEvent.deleted set, because
+	// the deletion bit lives outside the signed payload and a captured
+	// live wrapping replayed with the bit flipped would otherwise
+	// erase the recipient's only path back to the DEK. Effective
+	// revocation is local-side eviction of the on-disk envelope.
+	BlobWrapping *v1.BlobWrapping `protobuf:"bytes,37,opt,name=blob_wrapping,json=blobWrapping,proto3,oneof"`
 }
 
 func (*GossipEvent_Network) isGossipEvent_Change() {}
@@ -2077,9 +2132,13 @@ func (*GossipEvent_BackoffTtl) isGossipEvent_Change() {}
 
 func (*GossipEvent_PerSeedCallCounts) isGossipEvent_Change() {}
 
-func (*GossipEvent_DelegationCert) isGossipEvent_Change() {}
+func (*GossipEvent_Grant) isGossipEvent_Change() {}
 
 func (*GossipEvent_SpecChange) isGossipEvent_Change() {}
+
+func (*GossipEvent_ControlAddr) isGossipEvent_Change() {}
+
+func (*GossipEvent_GatewayDomain) isGossipEvent_Change() {}
 
 func (*GossipEvent_BlobWrapping) isGossipEvent_Change() {}
 
@@ -2092,7 +2151,7 @@ type GossipEventBatch struct {
 
 func (x *GossipEventBatch) Reset() {
 	*x = GossipEventBatch{}
-	mi := &file_pollen_state_v1_state_proto_msgTypes[31]
+	mi := &file_pollen_state_v1_state_proto_msgTypes[32]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2104,7 +2163,7 @@ func (x *GossipEventBatch) String() string {
 func (*GossipEventBatch) ProtoMessage() {}
 
 func (x *GossipEventBatch) ProtoReflect() protoreflect.Message {
-	mi := &file_pollen_state_v1_state_proto_msgTypes[31]
+	mi := &file_pollen_state_v1_state_proto_msgTypes[32]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2117,7 +2176,7 @@ func (x *GossipEventBatch) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GossipEventBatch.ProtoReflect.Descriptor instead.
 func (*GossipEventBatch) Descriptor() ([]byte, []int) {
-	return file_pollen_state_v1_state_proto_rawDescGZIP(), []int{31}
+	return file_pollen_state_v1_state_proto_rawDescGZIP(), []int{32}
 }
 
 func (x *GossipEventBatch) GetEvents() []*GossipEvent {
@@ -2141,7 +2200,7 @@ type RuntimeState struct {
 
 func (x *RuntimeState) Reset() {
 	*x = RuntimeState{}
-	mi := &file_pollen_state_v1_state_proto_msgTypes[32]
+	mi := &file_pollen_state_v1_state_proto_msgTypes[33]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2153,7 +2212,7 @@ func (x *RuntimeState) String() string {
 func (*RuntimeState) ProtoMessage() {}
 
 func (x *RuntimeState) ProtoReflect() protoreflect.Message {
-	mi := &file_pollen_state_v1_state_proto_msgTypes[32]
+	mi := &file_pollen_state_v1_state_proto_msgTypes[33]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2166,7 +2225,7 @@ func (x *RuntimeState) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RuntimeState.ProtoReflect.Descriptor instead.
 func (*RuntimeState) Descriptor() ([]byte, []int) {
-	return file_pollen_state_v1_state_proto_rawDescGZIP(), []int{32}
+	return file_pollen_state_v1_state_proto_rawDescGZIP(), []int{33}
 }
 
 func (x *RuntimeState) GetPeers() []*PeerState {
@@ -2219,7 +2278,7 @@ type PeerState struct {
 
 func (x *PeerState) Reset() {
 	*x = PeerState{}
-	mi := &file_pollen_state_v1_state_proto_msgTypes[33]
+	mi := &file_pollen_state_v1_state_proto_msgTypes[34]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2231,7 +2290,7 @@ func (x *PeerState) String() string {
 func (*PeerState) ProtoMessage() {}
 
 func (x *PeerState) ProtoReflect() protoreflect.Message {
-	mi := &file_pollen_state_v1_state_proto_msgTypes[33]
+	mi := &file_pollen_state_v1_state_proto_msgTypes[34]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2244,7 +2303,7 @@ func (x *PeerState) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PeerState.ProtoReflect.Descriptor instead.
 func (*PeerState) Descriptor() ([]byte, []int) {
-	return file_pollen_state_v1_state_proto_rawDescGZIP(), []int{33}
+	return file_pollen_state_v1_state_proto_rawDescGZIP(), []int{34}
 }
 
 func (x *PeerState) GetPeerPub() []byte {
@@ -2307,7 +2366,7 @@ type ConsumedInvite struct {
 
 func (x *ConsumedInvite) Reset() {
 	*x = ConsumedInvite{}
-	mi := &file_pollen_state_v1_state_proto_msgTypes[34]
+	mi := &file_pollen_state_v1_state_proto_msgTypes[35]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2319,7 +2378,7 @@ func (x *ConsumedInvite) String() string {
 func (*ConsumedInvite) ProtoMessage() {}
 
 func (x *ConsumedInvite) ProtoReflect() protoreflect.Message {
-	mi := &file_pollen_state_v1_state_proto_msgTypes[34]
+	mi := &file_pollen_state_v1_state_proto_msgTypes[35]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2332,7 +2391,7 @@ func (x *ConsumedInvite) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ConsumedInvite.ProtoReflect.Descriptor instead.
 func (*ConsumedInvite) Descriptor() ([]byte, []int) {
-	return file_pollen_state_v1_state_proto_rawDescGZIP(), []int{34}
+	return file_pollen_state_v1_state_proto_rawDescGZIP(), []int{35}
 }
 
 func (x *ConsumedInvite) GetTokenId() string {
@@ -2360,7 +2419,7 @@ var File_pollen_state_v1_state_proto protoreflect.FileDescriptor
 
 const file_pollen_state_v1_state_proto_rawDesc = "" +
 	"\n" +
-	"\x1bpollen/state/v1/state.proto\x12\x0fpollen.state.v1\x1a\x1bbuf/validate/validate.proto\x1a#pollen/admission/v1/admission.proto\"L\n" +
+	"\x1bpollen/state/v1/state.proto\x12\x0fpollen.state.v1\x1a\x1bbuf/validate/validate.proto\x1a\x19pollen/fact/v1/fact.proto\x1a!pollen/identity/v1/identity.proto\"L\n" +
 	"\n" +
 	"PeerDigest\x12\x1f\n" +
 	"\vmax_counter\x18\x01 \x01(\x04R\n" +
@@ -2404,31 +2463,33 @@ const file_pollen_state_v1_state_proto_rawDesc = "" +
 	"\vmem_percent\x18\x02 \x01(\rR\n" +
 	"memPercent\x12&\n" +
 	"\x0fmem_total_bytes\x18\x03 \x01(\x04R\rmemTotalBytes\x12\x17\n" +
-	"\anum_cpu\x18\x04 \x01(\rR\x06numCpuJ\x04\b\x05\x10\x06J\x04\b\x06\x10\aJ\x04\b\a\x10\bR\x12cpu_budget_percentR\x12mem_budget_percentR\x0fadmission_state\"\xe6\x01\n" +
+	"\anum_cpu\x18\x04 \x01(\rR\x06numCpuJ\x04\b\x05\x10\x06J\x04\b\x06\x10\aJ\x04\b\a\x10\bR\x12cpu_budget_percentR\x12mem_budget_percentR\x0fadmission_state\"\xf2\x01\n" +
 	"\x12WorkloadSpecChange\x12\x12\n" +
 	"\x04hash\x18\x01 \x01(\tR\x04hash\x12!\n" +
 	"\fmin_replicas\x18\x02 \x01(\rR\vminReplicas\x12!\n" +
 	"\fmemory_bytes\x18\x03 \x01(\x04R\vmemoryBytes\x12\x1d\n" +
 	"\n" +
-	"timeout_ms\x18\x04 \x01(\rR\ttimeoutMs\x12\x12\n" +
-	"\x04name\x18\x05 \x01(\tR\x04name\x12\x16\n" +
+	"timeout_ms\x18\x04 \x01(\rR\ttimeoutMs\x12\x1e\n" +
+	"\x04name\x18\x05 \x01(\tB\n" +
+	"\xbaH\ar\x05\x10\x01\x18\xff\x01R\x04name\x12\x16\n" +
 	"\x06spread\x18\x06 \x01(\x02R\x06spreadJ\x04\b\a\x10\bJ\x04\b\b\x10\tR\x0elatency_slo_msR\x0fpublisher_claim\"2\n" +
 	"\x16BlobAvailabilityChange\x12\x18\n" +
 	"\adigests\x18\x01 \x03(\fR\adigests\"\x8f\x01\n" +
 	"\x10StaticSpecChange\x12\x1e\n" +
 	"\x04name\x18\x01 \x01(\tB\n" +
 	"\xbaH\ar\x05\x10\x01\x18\xff\x01R\x04name\x120\n" +
-	"\x0fmanifest_digest\x18\x02 \x01(\fB\a\xbaH\x04z\x02h R\x0emanifestDigestJ\x04\b\x03\x10\x04J\x04\b\x04\x10\x05R\fmin_replicasR\x0fpublisher_claim\"3\n" +
+	"\x0fmanifest_digest\x18\x02 \x01(\fB\a\xbaH\x04z\x02h R\x0emanifestDigestJ\x04\b\x03\x10\x04J\x04\b\x04\x10\x05R\fmin_replicasR\x0fpublisher_claim\"a\n" +
 	"\x11StaticClaimChange\x12\x1e\n" +
 	"\x04name\x18\x01 \x01(\tB\n" +
-	"\xbaH\ar\x05\x10\x01\x18\xff\x01R\x04name\"h\n" +
+	"\xbaH\ar\x05\x10\x01\x18\xff\x01R\x04name\x12,\n" +
+	"\rauthority_pub\x18\x02 \x01(\fB\a\xbaH\x04z\x02h R\fauthorityPub\"h\n" +
 	"\x0eBlobSpecChange\x12\x1e\n" +
 	"\x04name\x18\x01 \x01(\tB\n" +
 	"\xbaH\ar\x05\x10\x01\x18\xff\x01R\x04name\x12\x1f\n" +
-	"\x06digest\x18\x02 \x01(\fB\a\xbaH\x04z\x02h R\x06digestJ\x04\b\x03\x10\x04R\x0fpublisher_claim\"\xc2\x02\n" +
+	"\x06digest\x18\x02 \x01(\fB\a\xbaH\x04z\x02h R\x06digestJ\x04\b\x03\x10\x04R\x0fpublisher_claim\"\xb9\x02\n" +
 	"\n" +
-	"SpecChange\x129\n" +
-	"\x04auth\x18\x01 \x01(\v2\x1d.pollen.admission.v1.SpecAuthB\x06\xbaH\x03\xc8\x01\x01R\x04auth\x12:\n" +
+	"SpecChange\x120\n" +
+	"\x04fact\x18\x01 \x01(\v2\x14.pollen.fact.v1.FactB\x06\xbaH\x03\xc8\x01\x01R\x04fact\x12:\n" +
 	"\aservice\x18\x02 \x01(\v2\x1e.pollen.state.v1.ServiceChangeH\x00R\aservice\x12A\n" +
 	"\bworkload\x18\x03 \x01(\v2#.pollen.state.v1.WorkloadSpecChangeH\x00R\bworkload\x12;\n" +
 	"\x06static\x18\x04 \x01(\v2!.pollen.state.v1.StaticSpecChangeH\x00R\x06static\x125\n" +
@@ -2454,24 +2515,21 @@ const file_pollen_state_v1_state_proto_rawDesc = "" +
 	"\x12AdminCapableChange\"\x15\n" +
 	"\x13StaticCapableChange\"B\n" +
 	"\x0eNodeNameChange\x120\n" +
-	"\x04name\x18\x01 \x01(\tB\x1c\xbaH\x19r\x17\x10\x01\x18@2\x11^[a-zA-Z0-9._-]+$R\x04name\"?\n" +
+	"\x04name\x18\x01 \x01(\tB\x1c\xbaH\x19r\x17\x10\x01\x18@2\x11^[a-zA-Z0-9._-]+$R\x04name\"'\n" +
+	"\x11ControlAddrChange\x12\x12\n" +
+	"\x04addr\x18\x01 \x01(\tR\x04addr\"-\n" +
+	"\x13GatewayDomainChange\x12\x16\n" +
+	"\x06domain\x18\x01 \x01(\tR\x06domain\"?\n" +
 	"\x10BackoffTTLChange\x12+\n" +
 	"\x12expires_at_unix_ms\x18\x01 \x01(\x03R\x0fexpiresAtUnixMs\"\xa2\x01\n" +
 	"\x17PerSeedCallCountsChange\x12L\n" +
 	"\x06counts\x18\x01 \x03(\v24.pollen.state.v1.PerSeedCallCountsChange.CountsEntryR\x06counts\x1a9\n" +
 	"\vCountsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\x04R\x05value:\x028\x01\"\x8d\x01\n" +
-	"\x14DelegationCertChange\x12?\n" +
-	"\x04cert\x18\x01 \x01(\v2#.pollen.admission.v1.DelegationCertB\x06\xbaH\x03\xc8\x01\x01R\x04cert\x124\n" +
-	"\x11subject_signature\x18\x02 \x01(\fB\a\xbaH\x04z\x02h@R\x10subjectSignature\"\x86\x02\n" +
-	"\x12BlobWrappingChange\x12$\n" +
-	"\tblob_hash\x18\x01 \x01(\fB\a\xbaH\x04z\x02h R\bblobHash\x122\n" +
-	"\x10recipient_pubkey\x18\x02 \x01(\fB\a\xbaH\x04z\x02h R\x0frecipientPubkey\x12(\n" +
-	"\vwrapped_dek\x18\x03 \x01(\fB\a\xbaH\x04z\x02\x10\x01R\n" +
-	"wrappedDek\x12E\n" +
-	"\awrapper\x18\x04 \x01(\v2#.pollen.admission.v1.DelegationCertB\x06\xbaH\x03\xc8\x01\x01R\awrapper\x12%\n" +
-	"\tsignature\x18\x05 \x01(\fB\a\xbaH\x04z\x02h@R\tsignature\"\xb2\x0e\n" +
+	"\x05value\x18\x02 \x01(\x04R\x05value:\x028\x01\"|\n" +
+	"\vGrantChange\x127\n" +
+	"\x05grant\x18\x01 \x01(\v2\x19.pollen.identity.v1.GrantB\x06\xbaH\x03\xc8\x01\x01R\x05grant\x124\n" +
+	"\x11subject_signature\x18\x02 \x01(\fB\a\xbaH\x04z\x02h@R\x10subjectSignature\"\xa7\x0f\n" +
 	"\vGossipEvent\x124\n" +
 	"\apeer_id\x18\x01 \x01(\tB\x1b\xbaH\x18r\x162\x11^[a-fA-F0-9]{64}$\x98\x01@R\x06peerId\x12\x18\n" +
 	"\acounter\x18\x02 \x01(\x04R\acounter\x12:\n" +
@@ -2494,11 +2552,13 @@ const file_pollen_state_v1_state_proto_rawDesc = "" +
 	"\x0estatic_capable\x18  \x01(\v2$.pollen.state.v1.StaticCapableChangeH\x00R\rstaticCapable\x12D\n" +
 	"\vbackoff_ttl\x18! \x01(\v2!.pollen.state.v1.BackoffTTLChangeH\x00R\n" +
 	"backoffTtl\x12[\n" +
-	"\x14per_seed_call_counts\x18\" \x01(\v2(.pollen.state.v1.PerSeedCallCountsChangeH\x00R\x11perSeedCallCounts\x12P\n" +
-	"\x0fdelegation_cert\x18# \x01(\v2%.pollen.state.v1.DelegationCertChangeH\x00R\x0edelegationCert\x12>\n" +
+	"\x14per_seed_call_counts\x18\" \x01(\v2(.pollen.state.v1.PerSeedCallCountsChangeH\x00R\x11perSeedCallCounts\x124\n" +
+	"\x05grant\x18# \x01(\v2\x1c.pollen.state.v1.GrantChangeH\x00R\x05grant\x12>\n" +
 	"\vspec_change\x18$ \x01(\v2\x1b.pollen.state.v1.SpecChangeH\x00R\n" +
-	"specChange\x12J\n" +
-	"\rblob_wrapping\x18% \x01(\v2#.pollen.state.v1.BlobWrappingChangeH\x00R\fblobWrapping\x12\x18\n" +
+	"specChange\x12G\n" +
+	"\fcontrol_addr\x18& \x01(\v2\".pollen.state.v1.ControlAddrChangeH\x00R\vcontrolAddr\x12M\n" +
+	"\x0egateway_domain\x18' \x01(\v2$.pollen.state.v1.GatewayDomainChangeH\x00R\rgatewayDomain\x12C\n" +
+	"\rblob_wrapping\x18% \x01(\v2\x1c.pollen.fact.v1.BlobWrappingH\x00R\fblobWrapping\x12\x18\n" +
 	"\adeleted\x18\x0e \x01(\bR\adeletedB\b\n" +
 	"\x06changeJ\x04\b\x05\x10\x06J\x04\b\x06\x10\aJ\x04\b\x0f\x10\x10J\x04\b\x18\x10\x19J\x04\b\x1b\x10\x1cJ\x04\b\x1d\x10\x1eJ\x04\b\x1f\x10 R\vcert_expiryR\aserviceR\rworkload_specR\x0fseed_dial_ratesR\fseed_metricsR\vstatic_specR\tblob_spec\"H\n" +
 	"\x10GossipEventBatch\x124\n" +
@@ -2541,7 +2601,7 @@ func file_pollen_state_v1_state_proto_rawDescGZIP() []byte {
 }
 
 var file_pollen_state_v1_state_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_pollen_state_v1_state_proto_msgTypes = make([]protoimpl.MessageInfo, 37)
+var file_pollen_state_v1_state_proto_msgTypes = make([]protoimpl.MessageInfo, 38)
 var file_pollen_state_v1_state_proto_goTypes = []any{
 	(ServiceProtocol)(0),             // 0: pollen.state.v1.ServiceProtocol
 	(*PeerDigest)(nil),               // 1: pollen.state.v1.PeerDigest
@@ -2570,64 +2630,67 @@ var file_pollen_state_v1_state_proto_goTypes = []any{
 	(*AdminCapableChange)(nil),       // 24: pollen.state.v1.AdminCapableChange
 	(*StaticCapableChange)(nil),      // 25: pollen.state.v1.StaticCapableChange
 	(*NodeNameChange)(nil),           // 26: pollen.state.v1.NodeNameChange
-	(*BackoffTTLChange)(nil),         // 27: pollen.state.v1.BackoffTTLChange
-	(*PerSeedCallCountsChange)(nil),  // 28: pollen.state.v1.PerSeedCallCountsChange
-	(*DelegationCertChange)(nil),     // 29: pollen.state.v1.DelegationCertChange
-	(*BlobWrappingChange)(nil),       // 30: pollen.state.v1.BlobWrappingChange
-	(*GossipEvent)(nil),              // 31: pollen.state.v1.GossipEvent
-	(*GossipEventBatch)(nil),         // 32: pollen.state.v1.GossipEventBatch
-	(*RuntimeState)(nil),             // 33: pollen.state.v1.RuntimeState
-	(*PeerState)(nil),                // 34: pollen.state.v1.PeerState
-	(*ConsumedInvite)(nil),           // 35: pollen.state.v1.ConsumedInvite
-	nil,                              // 36: pollen.state.v1.Digest.PeersEntry
-	nil,                              // 37: pollen.state.v1.PerSeedCallCountsChange.CountsEntry
-	(*v1.SpecAuth)(nil),              // 38: pollen.admission.v1.SpecAuth
-	(*v1.DelegationCert)(nil),        // 39: pollen.admission.v1.DelegationCert
+	(*ControlAddrChange)(nil),        // 27: pollen.state.v1.ControlAddrChange
+	(*GatewayDomainChange)(nil),      // 28: pollen.state.v1.GatewayDomainChange
+	(*BackoffTTLChange)(nil),         // 29: pollen.state.v1.BackoffTTLChange
+	(*PerSeedCallCountsChange)(nil),  // 30: pollen.state.v1.PerSeedCallCountsChange
+	(*GrantChange)(nil),              // 31: pollen.state.v1.GrantChange
+	(*GossipEvent)(nil),              // 32: pollen.state.v1.GossipEvent
+	(*GossipEventBatch)(nil),         // 33: pollen.state.v1.GossipEventBatch
+	(*RuntimeState)(nil),             // 34: pollen.state.v1.RuntimeState
+	(*PeerState)(nil),                // 35: pollen.state.v1.PeerState
+	(*ConsumedInvite)(nil),           // 36: pollen.state.v1.ConsumedInvite
+	nil,                              // 37: pollen.state.v1.Digest.PeersEntry
+	nil,                              // 38: pollen.state.v1.PerSeedCallCountsChange.CountsEntry
+	(*v1.Fact)(nil),                  // 39: pollen.fact.v1.Fact
+	(*v11.Grant)(nil),                // 40: pollen.identity.v1.Grant
+	(*v1.BlobWrapping)(nil),          // 41: pollen.fact.v1.BlobWrapping
 }
 var file_pollen_state_v1_state_proto_depIdxs = []int32{
-	36, // 0: pollen.state.v1.Digest.peers:type_name -> pollen.state.v1.Digest.PeersEntry
+	37, // 0: pollen.state.v1.Digest.peers:type_name -> pollen.state.v1.Digest.PeersEntry
 	0,  // 1: pollen.state.v1.ServiceChange.protocol:type_name -> pollen.state.v1.ServiceProtocol
-	38, // 2: pollen.state.v1.SpecChange.auth:type_name -> pollen.admission.v1.SpecAuth
+	39, // 2: pollen.state.v1.SpecChange.fact:type_name -> pollen.fact.v1.Fact
 	3,  // 3: pollen.state.v1.SpecChange.service:type_name -> pollen.state.v1.ServiceChange
 	12, // 4: pollen.state.v1.SpecChange.workload:type_name -> pollen.state.v1.WorkloadSpecChange
 	14, // 5: pollen.state.v1.SpecChange.static:type_name -> pollen.state.v1.StaticSpecChange
 	16, // 6: pollen.state.v1.SpecChange.blob:type_name -> pollen.state.v1.BlobSpecChange
 	18, // 7: pollen.state.v1.StaticManifest.paths:type_name -> pollen.state.v1.StaticPath
 	21, // 8: pollen.state.v1.TrafficHeatmapChange.rates:type_name -> pollen.state.v1.TrafficRate
-	37, // 9: pollen.state.v1.PerSeedCallCountsChange.counts:type_name -> pollen.state.v1.PerSeedCallCountsChange.CountsEntry
-	39, // 10: pollen.state.v1.DelegationCertChange.cert:type_name -> pollen.admission.v1.DelegationCert
-	39, // 11: pollen.state.v1.BlobWrappingChange.wrapper:type_name -> pollen.admission.v1.DelegationCert
-	5,  // 12: pollen.state.v1.GossipEvent.network:type_name -> pollen.state.v1.NetworkChange
-	6,  // 13: pollen.state.v1.GossipEvent.observed_address:type_name -> pollen.state.v1.ObservedAddressChange
-	4,  // 14: pollen.state.v1.GossipEvent.reachability:type_name -> pollen.state.v1.ReachabilityChange
-	7,  // 15: pollen.state.v1.GossipEvent.publicly_accessible:type_name -> pollen.state.v1.PubliclyAccessibleChange
-	8,  // 16: pollen.state.v1.GossipEvent.vivaldi:type_name -> pollen.state.v1.VivaldiCoordinateChange
-	10, // 17: pollen.state.v1.GossipEvent.nat_type:type_name -> pollen.state.v1.NatTypeChange
-	11, // 18: pollen.state.v1.GossipEvent.resource_telemetry:type_name -> pollen.state.v1.ResourceTelemetryChange
-	9,  // 19: pollen.state.v1.GossipEvent.deny:type_name -> pollen.state.v1.DenyChange
-	20, // 20: pollen.state.v1.GossipEvent.workload_claim:type_name -> pollen.state.v1.WorkloadClaimChange
-	22, // 21: pollen.state.v1.GossipEvent.traffic_heatmap:type_name -> pollen.state.v1.TrafficHeatmapChange
-	23, // 22: pollen.state.v1.GossipEvent.heartbeat:type_name -> pollen.state.v1.HeartbeatChange
-	24, // 23: pollen.state.v1.GossipEvent.admin_capable:type_name -> pollen.state.v1.AdminCapableChange
-	26, // 24: pollen.state.v1.GossipEvent.node_name:type_name -> pollen.state.v1.NodeNameChange
-	13, // 25: pollen.state.v1.GossipEvent.blob_availability:type_name -> pollen.state.v1.BlobAvailabilityChange
-	15, // 26: pollen.state.v1.GossipEvent.static_claim:type_name -> pollen.state.v1.StaticClaimChange
-	25, // 27: pollen.state.v1.GossipEvent.static_capable:type_name -> pollen.state.v1.StaticCapableChange
-	27, // 28: pollen.state.v1.GossipEvent.backoff_ttl:type_name -> pollen.state.v1.BackoffTTLChange
-	28, // 29: pollen.state.v1.GossipEvent.per_seed_call_counts:type_name -> pollen.state.v1.PerSeedCallCountsChange
-	29, // 30: pollen.state.v1.GossipEvent.delegation_cert:type_name -> pollen.state.v1.DelegationCertChange
-	17, // 31: pollen.state.v1.GossipEvent.spec_change:type_name -> pollen.state.v1.SpecChange
-	30, // 32: pollen.state.v1.GossipEvent.blob_wrapping:type_name -> pollen.state.v1.BlobWrappingChange
-	31, // 33: pollen.state.v1.GossipEventBatch.events:type_name -> pollen.state.v1.GossipEvent
-	34, // 34: pollen.state.v1.RuntimeState.peers:type_name -> pollen.state.v1.PeerState
-	35, // 35: pollen.state.v1.RuntimeState.consumed_invites:type_name -> pollen.state.v1.ConsumedInvite
-	12, // 36: pollen.state.v1.RuntimeState.workload_specs:type_name -> pollen.state.v1.WorkloadSpecChange
-	1,  // 37: pollen.state.v1.Digest.PeersEntry.value:type_name -> pollen.state.v1.PeerDigest
-	38, // [38:38] is the sub-list for method output_type
-	38, // [38:38] is the sub-list for method input_type
-	38, // [38:38] is the sub-list for extension type_name
-	38, // [38:38] is the sub-list for extension extendee
-	0,  // [0:38] is the sub-list for field type_name
+	38, // 9: pollen.state.v1.PerSeedCallCountsChange.counts:type_name -> pollen.state.v1.PerSeedCallCountsChange.CountsEntry
+	40, // 10: pollen.state.v1.GrantChange.grant:type_name -> pollen.identity.v1.Grant
+	5,  // 11: pollen.state.v1.GossipEvent.network:type_name -> pollen.state.v1.NetworkChange
+	6,  // 12: pollen.state.v1.GossipEvent.observed_address:type_name -> pollen.state.v1.ObservedAddressChange
+	4,  // 13: pollen.state.v1.GossipEvent.reachability:type_name -> pollen.state.v1.ReachabilityChange
+	7,  // 14: pollen.state.v1.GossipEvent.publicly_accessible:type_name -> pollen.state.v1.PubliclyAccessibleChange
+	8,  // 15: pollen.state.v1.GossipEvent.vivaldi:type_name -> pollen.state.v1.VivaldiCoordinateChange
+	10, // 16: pollen.state.v1.GossipEvent.nat_type:type_name -> pollen.state.v1.NatTypeChange
+	11, // 17: pollen.state.v1.GossipEvent.resource_telemetry:type_name -> pollen.state.v1.ResourceTelemetryChange
+	9,  // 18: pollen.state.v1.GossipEvent.deny:type_name -> pollen.state.v1.DenyChange
+	20, // 19: pollen.state.v1.GossipEvent.workload_claim:type_name -> pollen.state.v1.WorkloadClaimChange
+	22, // 20: pollen.state.v1.GossipEvent.traffic_heatmap:type_name -> pollen.state.v1.TrafficHeatmapChange
+	23, // 21: pollen.state.v1.GossipEvent.heartbeat:type_name -> pollen.state.v1.HeartbeatChange
+	24, // 22: pollen.state.v1.GossipEvent.admin_capable:type_name -> pollen.state.v1.AdminCapableChange
+	26, // 23: pollen.state.v1.GossipEvent.node_name:type_name -> pollen.state.v1.NodeNameChange
+	13, // 24: pollen.state.v1.GossipEvent.blob_availability:type_name -> pollen.state.v1.BlobAvailabilityChange
+	15, // 25: pollen.state.v1.GossipEvent.static_claim:type_name -> pollen.state.v1.StaticClaimChange
+	25, // 26: pollen.state.v1.GossipEvent.static_capable:type_name -> pollen.state.v1.StaticCapableChange
+	29, // 27: pollen.state.v1.GossipEvent.backoff_ttl:type_name -> pollen.state.v1.BackoffTTLChange
+	30, // 28: pollen.state.v1.GossipEvent.per_seed_call_counts:type_name -> pollen.state.v1.PerSeedCallCountsChange
+	31, // 29: pollen.state.v1.GossipEvent.grant:type_name -> pollen.state.v1.GrantChange
+	17, // 30: pollen.state.v1.GossipEvent.spec_change:type_name -> pollen.state.v1.SpecChange
+	27, // 31: pollen.state.v1.GossipEvent.control_addr:type_name -> pollen.state.v1.ControlAddrChange
+	28, // 32: pollen.state.v1.GossipEvent.gateway_domain:type_name -> pollen.state.v1.GatewayDomainChange
+	41, // 33: pollen.state.v1.GossipEvent.blob_wrapping:type_name -> pollen.fact.v1.BlobWrapping
+	32, // 34: pollen.state.v1.GossipEventBatch.events:type_name -> pollen.state.v1.GossipEvent
+	35, // 35: pollen.state.v1.RuntimeState.peers:type_name -> pollen.state.v1.PeerState
+	36, // 36: pollen.state.v1.RuntimeState.consumed_invites:type_name -> pollen.state.v1.ConsumedInvite
+	12, // 37: pollen.state.v1.RuntimeState.workload_specs:type_name -> pollen.state.v1.WorkloadSpecChange
+	1,  // 38: pollen.state.v1.Digest.PeersEntry.value:type_name -> pollen.state.v1.PeerDigest
+	39, // [39:39] is the sub-list for method output_type
+	39, // [39:39] is the sub-list for method input_type
+	39, // [39:39] is the sub-list for extension type_name
+	39, // [39:39] is the sub-list for extension extendee
+	0,  // [0:39] is the sub-list for field type_name
 }
 
 func init() { file_pollen_state_v1_state_proto_init() }
@@ -2641,7 +2704,7 @@ func file_pollen_state_v1_state_proto_init() {
 		(*SpecChange_Static)(nil),
 		(*SpecChange_Blob)(nil),
 	}
-	file_pollen_state_v1_state_proto_msgTypes[30].OneofWrappers = []any{
+	file_pollen_state_v1_state_proto_msgTypes[31].OneofWrappers = []any{
 		(*GossipEvent_Network)(nil),
 		(*GossipEvent_ObservedAddress)(nil),
 		(*GossipEvent_Reachability)(nil),
@@ -2660,8 +2723,10 @@ func file_pollen_state_v1_state_proto_init() {
 		(*GossipEvent_StaticCapable)(nil),
 		(*GossipEvent_BackoffTtl)(nil),
 		(*GossipEvent_PerSeedCallCounts)(nil),
-		(*GossipEvent_DelegationCert)(nil),
+		(*GossipEvent_Grant)(nil),
 		(*GossipEvent_SpecChange)(nil),
+		(*GossipEvent_ControlAddr)(nil),
+		(*GossipEvent_GatewayDomain)(nil),
 		(*GossipEvent_BlobWrapping)(nil),
 	}
 	type x struct{}
@@ -2670,7 +2735,7 @@ func file_pollen_state_v1_state_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_pollen_state_v1_state_proto_rawDesc), len(file_pollen_state_v1_state_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   37,
+			NumMessages:   38,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

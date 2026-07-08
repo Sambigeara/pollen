@@ -17,6 +17,7 @@ import (
 	"maps"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -32,8 +33,9 @@ import (
 
 	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
 	controlv1 "github.com/sambigeara/pollen/api/genpb/pollen/control/v1"
-	"github.com/sambigeara/pollen/pkg/auth"
+	identityv1 "github.com/sambigeara/pollen/api/genpb/pollen/identity/v1"
 	"github.com/sambigeara/pollen/pkg/config"
+	"github.com/sambigeara/pollen/pkg/identity"
 	"github.com/sambigeara/pollen/pkg/peercache"
 	"github.com/sambigeara/pollen/pkg/transport"
 	"github.com/sambigeara/pollen/pkg/types"
@@ -62,7 +64,11 @@ func newIDCmd() *cobra.Command {
 on first call. Pipe-friendly (no trailing newline). Other admins use
 this value as the --subject of an invite token.`,
 		Example: "  pln id\n  pln invite --subject \"$(ssh user@host pln id)\"",
-		RunE:    withEnv(runID, localOnly()),
+		// localOnly: pln id only touches the local keypair, never a
+		// daemon. Without this, withEnv's resolver errors on a fresh
+		// node where neither a sock nor a wire endpoint exists yet,
+		// breaking pln bootstrap ssh's discoverRemote step.
+		RunE: withEnv(runID, localOnly()),
 	}
 }
 
@@ -83,23 +89,27 @@ Prefix a target with ` + "`name=`" + ` to label the node, or pipe a list of targ
 on stdin via ` + "`-`" + `. The default tier is leaf; pass --publisher to allow
 the node to publish resources, or --admin to also delegate admit and
 grant authority so the cluster keeps working with the root offline.
+Pass --infra to mark a shared relay or compute node that may carry
+traffic for any tenant and appear as infrastructure in tenant views.
 Properties passed via --prop are baked into each node's membership cert.
 
-Pass --no-up to skip starting the local daemon when the orchestrator
-also enrols itself as a cluster member.`,
+Pass --no-up to skip starting the local daemon after bootstrapping.`,
 		Example: `  pln bootstrap ssh user@host
-  pln bootstrap ssh relay-eu=root@10.0.0.5 relay-us=root@10.0.0.6 --admin
+  pln bootstrap ssh relay-eu=root@10.0.0.5 relay-us=root@10.0.0.6 --infra
   pln bootstrap ssh edge=root@10.0.0.7 --prop region=eu --prop tier=edge
   echo "media=alice@10.0.0.5" | pln bootstrap ssh -`,
 		Args: cobra.MinimumNArgs(1),
 		RunE: withEnv(runBootstrapSSH),
 	}
 	sshCmd.Flags().Int("relay-port", config.DefaultBootstrapPort, "Relay UDP port to advertise")
-	sshCmd.Flags().Duration("expire-after", 0, "Hard access expiry for the relay peer")
+	sshCmd.Flags().Duration("expire-after", 0, "Hard, non-renewable access expiry for the relay peer")
 	sshCmd.Flags().Bool("admin", false, "Issue with admin capabilities (delegate + admit + publish)")
+	sshCmd.Flags().Bool("workspace", false, workspaceFlagDesc)
 	sshCmd.Flags().Bool("publisher", false, "Issue with publisher capability")
-	sshCmd.Flags().Bool("no-up", false, "Enrol the orchestrator without starting its local daemon")
+	sshCmd.Flags().Bool("infra", false, infraFlagDesc)
+	sshCmd.Flags().Bool("no-up", false, "Skip starting the local daemon after bootstrapping")
 	sshCmd.Flags().StringArray("prop", nil, "Cert properties: key=value, JSON, or - for stdin (applied to every target)")
+	sshCmd.Flags().String("wire", "", "Bind addr for the remote's TLS+mTLS control listener (e.g. :7443). The first publicly-reachable target with --wire set also becomes this context's wire fallback when none is configured yet.")
 
 	cmd.AddCommand(sshCmd)
 	return cmd
@@ -109,8 +119,8 @@ func newClusterCmds() []*cobra.Command {
 	purgeCmd := &cobra.Command{
 		Use:   "purge",
 		Short: "Delete local cluster state",
-		Long: `Deletes local cluster credentials (root.pub, membership and
-delegation certs, admin keypair), CAS, runtime state, and config from
+		Long: `Deletes local cluster credentials (root.pub, the grant, admin
+keypair), CAS, runtime state, and config from
 $PLN_DIR. The node identity (ed25519.{key,pub}) is preserved by
 default — pass --include-keys to wipe the keys directory entirely.
 Errors if the daemon is running. Prompts unless --yes is given.`,
@@ -124,13 +134,14 @@ Errors if the daemon is running. Prompts unless --yes is given.`,
 		Use:   "join <token>",
 		Short: "Join a cluster using a token",
 		Long: `Enrols this node into the cluster the token was minted for. Tokens
-come from ` + "`pln invite`" + ` on an admin node. By default, starts the daemon
-once enrolment succeeds; use --no-up to defer.`,
-		Example: "  pln join \"$(ssh admin pln invite --subject $(pln id))\"",
+come from ` + "`pln invite`" + ` on an admin node. Credentials are written and
+the command exits; pass --up to also start the daemon once enrolment
+succeeds.`,
+		Example: "  pln join \"$(ssh admin pln invite --subject $(pln id))\"\n  pln join --up \"$TOKEN\"",
 		Args:    cobra.ExactArgs(1),
 		RunE:    withEnv(runJoin, wantsRoot(), localOnly()),
 	}
-	joinCmd.Flags().Bool("no-up", false, "Enroll credentials without starting the daemon")
+	joinCmd.Flags().BoolP("up", "u", false, "Start the daemon after enrolment")
 	joinCmd.Flags().Bool("public", false, "Hint that this node is publicly reachable; the mesh may use it as a relay (verified at runtime)")
 
 	inviteCmd := &cobra.Command{
@@ -138,56 +149,58 @@ once enrolment succeeds; use --no-up to defer.`,
 		Short: "Generate an invite token",
 		Long: `Mints a signed invite token. Pass to ` + "`pln join`" + ` on the joining node.
 Tokens are time-limited (--ttl) and may bind to a specific subject key
-or carry hard access deadlines. Properties are baked into the issued
-cert and surfaced to seeds at call time.
+or carry a hard grant deadline. Properties are baked into the issued
+grant and surfaced to seeds at call time.
 
 The default tier is leaf (consume only). Pass --publisher to allow
 the peer to publish workloads, blobs, services, and static sites.
 Pass --admin to additionally allow admitting peers and delegating
-further certs.`,
+further grants.`,
 		Example: "  pln invite --ttl 30m --prop role=worker\n  pln invite --publisher --subject $(ssh worker pln id)\n  pln invite --admin --subject $(ssh relay pln id)",
 		Args:    cobra.RangeArgs(0, 1),
 		RunE:    withEnv(runInvite),
 	}
 	inviteCmd.Flags().String("subject", "", "Optional hex node public key to bind invite")
 	inviteCmd.Flags().Duration("ttl", defaultInviteTTL, "Invite token validity duration")
-	inviteCmd.Flags().Duration("expire-after", 0, "Hard access expiry for the invited peer")
-	inviteCmd.Flags().StringArray("prop", nil, "Cert properties: key=value, JSON, or - for stdin")
+	inviteCmd.Flags().Duration("expire-after", 0, "Hard, non-renewable access expiry for the invited peer")
+	inviteCmd.Flags().StringArray("prop", nil, "Grant properties: key=value, JSON, or - for stdin")
 	inviteCmd.Flags().Bool("admin", false, "Issue with admin capabilities (delegate + admit + publish)")
+	inviteCmd.Flags().Bool("workspace", false, workspaceFlagDesc)
 	inviteCmd.Flags().Bool("publisher", false, "Issue with publisher capability")
+	inviteCmd.Flags().Bool("infra", false, infraFlagDesc)
+	inviteCmd.Flags().Uint32("max-functions", 0, "Max functions the grantee may publish (0 = unlimited)")
+	inviteCmd.Flags().Uint32("max-blobs", 0, "Max blobs the grantee may publish (0 = unlimited)")
+	inviteCmd.Flags().Uint32("max-sites", 0, "Max sites the grantee may publish (0 = unlimited)")
 
 	adminCmd := &cobra.Command{Use: "admin", Short: "Manage admin keys (advanced)"}
 	adminCmd.AddCommand(&cobra.Command{
 		Use:    "keygen",
 		Short:  "Generate the local admin key",
-		Long:   "Generates an ed25519 admin keypair under $PLN_DIR/keys. Holding the key alone grants no signing authority — install a delegated cert with `pln admin set-cert`.",
+		Long:   "Generates an ed25519 admin keypair under $PLN_DIR/keys. The admin key anchors a root cluster via `pln init`; delegated authority is granted to peers with `pln grant`.",
 		RunE:   withEnv(runAdminKeygen, wantsRoot(), localOnly()),
-		Hidden: true,
-	})
-	adminCmd.AddCommand(&cobra.Command{
-		Use:    "set-cert <admin-cert-b64>",
-		Short:  "Install a delegated admin certificate",
-		Long:   "Installs a delegated admin cert (issued by the root admin) that grants this node signing authority on behalf of the cluster.",
-		Args:   cobra.ExactArgs(1),
-		RunE:   withEnv(runAdminSetCert, wantsRoot(), localOnly()),
 		Hidden: true,
 	})
 
 	grantCmd := &cobra.Command{
 		Use:   "grant <peer-id>",
-		Short: "Grant a certificate to a connected peer",
-		Long: `Issues a fresh delegation cert to an already-connected peer. Use
+		Short: "Grant authority to a connected peer",
+		Long: `Issues a fresh grant to an already-connected peer. Use
 --publisher to grant publishing rights, or --admin to delegate full
 admin authority (so the cluster stays operable without the root).
-Properties are baked into the cert and visible to seeds and the
+Properties are baked into the grant and visible to seeds and the
 policy router.`,
 		Example: "  pln grant ab12cd34 --prop role=lead --prop team=backend\n  pln grant worker1 --publisher\n  pln grant relay1 --admin",
 		Args:    cobra.ExactArgs(1),
 		RunE:    withEnv(runGrant),
 	}
 	grantCmd.Flags().Bool("admin", false, "Issue with admin capabilities (delegate + admit + publish)")
+	grantCmd.Flags().Bool("workspace", false, workspaceFlagDesc)
 	grantCmd.Flags().Bool("publisher", false, "Issue with publisher capability")
-	grantCmd.Flags().StringArray("prop", nil, "Cert properties: key=value, JSON, or - for stdin")
+	grantCmd.Flags().Bool("infra", false, infraFlagDesc)
+	grantCmd.Flags().StringArray("prop", nil, "Grant properties: key=value, JSON, or - for stdin")
+	grantCmd.Flags().Uint32("max-functions", 0, "Max functions the grantee may publish (0 = unlimited)")
+	grantCmd.Flags().Uint32("max-blobs", 0, "Max blobs the grantee may publish (0 = unlimited)")
+	grantCmd.Flags().Uint32("max-sites", 0, "Max sites the grantee may publish (0 = unlimited)")
 
 	initCmd := &cobra.Command{
 		Use:   "init",
@@ -232,13 +245,13 @@ re-issued from config. On non-root nodes, an admin must re-grant with
 }
 
 func runID(cmd *cobra.Command, _ []string, env *cliEnv) error {
-	identityDir := auth.IdentityPath(env.dir)
-	pub, err := auth.ReadIdentityPub(identityDir)
+	identityDir := identity.IdentityPath(env.dir)
+	pub, err := identity.ReadIdentityPub(identityDir)
 	if err != nil {
 		if !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
-		if _, pub, err = auth.EnsureIdentityKey(identityDir); err != nil {
+		if _, pub, err = identity.EnsureIdentityKey(identityDir); err != nil {
 			return err
 		}
 	}
@@ -251,15 +264,15 @@ func runInit(cmd *cobra.Command, _ []string, env *cliEnv) error {
 		return errors.New("local node is running; run `pln down` before initializing")
 	}
 
-	identityDir := auth.IdentityPath(env.dir)
-	_, pub, err := auth.EnsureIdentityKey(identityDir)
+	identityDir := identity.IdentityPath(env.dir)
+	_, pub, err := identity.EnsureIdentityKey(identityDir)
 	if err != nil {
 		return err
 	}
 
-	existing, err := auth.LoadNodeCredentials(identityDir)
+	existing, err := identity.LoadCredentials(identityDir)
 	if err == nil {
-		_, adminPub, adminErr := auth.LoadAdminKey(identityDir)
+		_, adminPub, adminErr := identity.LoadAdminKey(identityDir)
 		if adminErr == nil && slices.Equal(adminPub, existing.RootPub()) {
 			fmt.Fprintf(cmd.OutOrStdout(), "already initialized as root cluster\nroot_pub: %s\ncluster_id: %x\n", hex.EncodeToString(adminPub), sha256.Sum256(existing.RootPub()))
 			return nil
@@ -282,12 +295,12 @@ func runInit(cmd *cobra.Command, _ []string, env *cliEnv) error {
 		}
 	}
 
-	creds, err := auth.EnsureLocalRootCredentials(identityDir, pub, props, time.Now(), auth.DefaultDelegationTTL)
+	creds, err := identity.EnsureLocalRootGrant(identityDir, pub, props, time.Now())
 	if err != nil {
 		return err
 	}
 
-	_, adminPub, _ := auth.LoadAdminKey(identityDir)
+	_, adminPub, _ := identity.LoadAdminKey(identityDir)
 	fmt.Fprintf(cmd.OutOrStdout(), "initialized root cluster\nroot_pub: %s\ncluster_id: %x\n", hex.EncodeToString(adminPub), sha256.Sum256(creds.RootPub()))
 	return nil
 }
@@ -303,17 +316,16 @@ func runProps(cmd *cobra.Command, args []string, env *cliEnv) error {
 		return nil
 	}
 
-	// On non-root nodes the root cert is signed by an admin; the local
+	// On non-root nodes the root grant is signed by an admin; the local
 	// node can't re-issue it from config. Refuse rather than silently
 	// writing a value that won't take effect.
-	identityDir := auth.IdentityPath(env.dir)
-	creds, err := auth.LoadNodeCredentials(identityDir)
+	identityDir := identity.IdentityPath(env.dir)
+	creds, err := identity.LoadCredentials(identityDir)
 	if err != nil {
 		return fmt.Errorf("load credentials: %w", err)
 	}
-	if _, isRoot, err := auth.LocalRootAuthority(identityDir, creds); err != nil {
-		return err
-	} else if !isRoot {
+	_, adminPub, adminErr := identity.LoadAdminKey(identityDir)
+	if adminErr != nil || !bytes.Equal(adminPub, creds.Grant().GetClaims().GetIssuerPub()) {
 		return errors.New("only root nodes may set properties locally; ask an admin to `pln grant <peer-id> --prop ...`")
 	}
 
@@ -365,8 +377,8 @@ func runPurge(cmd *cobra.Command, _ []string, env *cliEnv) error {
 	}
 
 	paths := []string{
-		"keys/root.pub", "keys/membership.cert.pb", "keys/delegation.cert.pb",
-		"keys/admin_ed25519.key", "keys/admin_ed25519.pub", "config.yaml",
+		"keys/root.pub", "keys/grant.pb", "keys/ed25519.key", "keys/ed25519.pub",
+		"keys/fact.seq", "keys/admin_ed25519.key", "keys/admin_ed25519.pub", "config.yaml",
 		"state.pb", "state.yaml", "state.yaml.bak", "consumed_invites.json",
 		"peers.json", "invites", "cas", "pln.log", socketName,
 	}
@@ -383,21 +395,27 @@ func runPurge(cmd *cobra.Command, _ []string, env *cliEnv) error {
 }
 
 func runJoin(cmd *cobra.Command, args []string, env *cliEnv) error {
-	identityDir := auth.IdentityPath(env.dir)
-	privKey, pubKey, err := auth.EnsureIdentityKey(identityDir)
+	up, _ := cmd.Flags().GetBool("up")
+	public, _ := cmd.Flags().GetBool("public")
+	return joinCluster(cmd, env, args[0], up, public)
+}
+
+func joinCluster(cmd *cobra.Command, env *cliEnv, token string, startDaemon, public bool) error {
+	identityDir := identity.IdentityPath(env.dir)
+	privKey, pubKey, err := identity.EnsureIdentityKey(identityDir)
 	if err != nil {
 		return err
 	}
 
-	tkn, err := resolveJoinToken(cmd.Context(), privKey, args[0])
+	tkn, err := resolveJoinToken(cmd.Context(), privKey, token)
 	if err != nil {
 		return fmt.Errorf("resolve token: %w", err)
 	}
 
-	if _, credErr := auth.EnrollNodeCredentials(identityDir, pubKey, tkn, time.Now()); credErr != nil {
-		if errors.Is(credErr, auth.ErrDifferentCluster) {
+	if _, credErr := identity.EnrollGrant(identityDir, pubKey, tkn, time.Now()); credErr != nil {
+		if errors.Is(credErr, identity.ErrDifferentCluster) {
 			_ = runPurge(cmd, nil, env) // Clear old cluster state
-			_, credErr = auth.EnrollNodeCredentials(identityDir, pubKey, tkn, time.Now())
+			_, credErr = identity.EnrollGrant(identityDir, pubKey, tkn, time.Now())
 		}
 		if credErr != nil {
 			return fmt.Errorf("enroll credentials: %w", credErr)
@@ -408,18 +426,25 @@ func runJoin(cmd *cobra.Command, args []string, env *cliEnv) error {
 		return fmt.Errorf("persist bootstrap peers: %w", err)
 	}
 
-	if public, _ := cmd.Flags().GetBool("public"); public {
+	if wire := firstBootstrapWireEndpoint(tkn.GetClaims().GetBootstrap()); wire != "" {
+		reportCtxWireWrite(cmd.OutOrStdout(), cmd.ErrOrStderr(), env.ctxName, wire, "enrolled")
+	}
+
+	if public {
 		env.cfg.Public = true
 		if err := config.Save(env.dir, env.cfg); err != nil {
 			return err
 		}
 	}
 
-	if noUp, _ := cmd.Flags().GetBool("no-up"); noUp {
+	if !startDaemon {
 		fmt.Fprintln(cmd.OutOrStdout(), "credentials enrolled; run `pln up -d` to start the node")
 		return nil
 	}
 
+	if err := ensureSystemServiceContext(env.ctxName); err != nil {
+		return err
+	}
 	if nodeSocketActive(filepath.Join(env.dir, socketName)) {
 		if err := servicectl("restart", cmd, env); err != nil {
 			return fmt.Errorf("joined cluster but failed to restart daemon: %w", err)
@@ -435,7 +460,6 @@ func runJoin(cmd *cobra.Command, args []string, env *cliEnv) error {
 func runInvite(cmd *cobra.Command, args []string, env *cliEnv) error {
 	var subjectPub ed25519.PublicKey
 	subjectFlag, _ := cmd.Flags().GetString("subject")
-
 	if len(args) == 1 {
 		subjectFlag = args[0]
 	}
@@ -447,74 +471,96 @@ func runInvite(cmd *cobra.Command, args []string, env *cliEnv) error {
 		subjectPub = ed25519.PublicKey(pk.Bytes())
 	}
 
-	ttl, _ := cmd.Flags().GetDuration("ttl")
-	expireAfter, _ := cmd.Flags().GetDuration("expire-after")
-
-	identityDir := auth.IdentityPath(env.dir)
-	nodePriv, _, err := auth.EnsureIdentityKey(identityDir)
-	if err != nil {
-		return err
-	}
-
-	signer, err := auth.NewDelegationSigner(identityDir, nodePriv)
-	if err != nil {
-		return errors.New("this node cannot issue invites; only delegated admins can sign invite tokens")
-	}
-
-	bootstrap, err := resolveBootstrapPeers(cmd.Context(), env)
-	if err != nil {
-		return err
-	}
-
 	attrs, err := parseProperties(cmd)
 	if err != nil {
 		return err
 	}
-	certCaps, err := capsFromFlags(cmd, attrs)
-	if err != nil {
-		return err
-	}
-	if err := validateCapsAgainstSigner(certCaps, signer.IssuerCert().GetClaims().GetCapabilities()); err != nil {
-		return err
-	}
-
-	token, err := signer.IssueInviteToken(subjectPub, bootstrap, time.Now(), ttl, expireAfter, certCaps)
+	caps, err := capsFromFlags(cmd, attrs)
 	if err != nil {
 		return err
 	}
 
-	encoded, err := auth.EncodeInviteToken(token)
+	encoded, err := mintInviteTicket(cmd, env, subjectPub, caps, budgetFromFlags(cmd))
+	if errors.Is(err, errCannotSignTokens) {
+		if env.transport.IsSSHBridge() {
+			return fmt.Errorf("this context's local keys can't sign invite tokens; admin keys live on the remote, mint the token there:\n  ssh %s pln invite", env.transport.SSHHost())
+		}
+		return errors.New("this node cannot issue invites; only delegated admins can sign invite tokens")
+	}
 	if err != nil {
 		return err
 	}
-
-	fmt.Fprint(cmd.OutOrStdout(), encoded)
+	fmt.Fprintln(cmd.OutOrStdout(), encoded)
 	return nil
+}
+
+// errCannotSignTokens is the mintInviteTicket sentinel for "this
+// context has no delegating credentials of its own". Callers translate
+// it to a command-specific error (pln invite vs pln grant fallback).
+var errCannotSignTokens = errors.New("local context cannot sign tokens")
+
+// mintInviteTicket assembles a base64 invite ticket signed by the
+// local context's credentials. It is the shared backend for `pln
+// invite` (subject parsed from a flag) and `pln grant`'s wire fallback
+// (subject pre-resolved to the target peer's pubkey). The caller
+// supplies caps and budget; this helper resolves bootstrap, derives
+// horizon and TTL from the flag set, and signs the ticket.
+func mintInviteTicket(cmd *cobra.Command, env *cliEnv, subjectPub []byte, caps *identityv1.Capabilities, budget *identityv1.Budget) (string, error) {
+	identityDir := identity.IdentityPath(env.dir)
+	creds, err := identity.LoadCredentials(identityDir)
+	switch {
+	case errors.Is(err, identity.ErrCredentialsNotFound):
+		return "", errCannotSignTokens
+	case err != nil:
+		return "", fmt.Errorf("load credentials: %w", err)
+	case !creds.Grant().GetClaims().GetCapabilities().GetCanDelegate():
+		return "", errCannotSignTokens
+	}
+	if err := validateCapsAgainstSigner(caps, creds.Grant().GetClaims().GetCapabilities()); err != nil {
+		return "", err
+	}
+	bootstrap, err := resolveBootstrapPeers(cmd.Context(), env)
+	if err != nil {
+		return "", err
+	}
+	if budget == nil {
+		budget = identity.UnlimitedBudget()
+	}
+
+	// pln grant doesn't define --ttl or --expire-after; pln invite
+	// does. GetDuration on a missing flag returns the zero value, which
+	// becomes the "use the default" signal below.
+	expireAfter, _ := cmd.Flags().GetDuration("expire-after")
+	ttl, _ := cmd.Flags().GetDuration("ttl")
+	if ttl <= 0 {
+		ttl = defaultInviteTTL
+	}
+
+	now := time.Now()
+	var grantDeadline time.Time
+	switch {
+	case expireAfter > 0:
+		grantDeadline = now.Add(expireAfter)
+	case !caps.GetCanAdmit():
+		grantDeadline = now.Add(identity.DefaultGrantDeadlineTTL)
+	}
+
+	// --expire-after is a hard deadline: the redeemed grant cannot be
+	// renewed past it, so issuing a 1h invite yields a 1h hard cap.
+	// Default invites (no --expire-after) stay renewable.
+	ticket, err := creds.IssueInvite(bootstrap, subjectPub, caps, budget, grantDeadline, now, ttl, expireAfter > 0)
+	if err != nil {
+		return "", err
+	}
+	return identity.EncodeInviteTicket(ticket)
 }
 
 func runAdminKeygen(cmd *cobra.Command, _ []string, env *cliEnv) error {
-	_, pub, err := auth.EnsureAdminKey(auth.IdentityPath(env.dir))
+	_, pub, err := identity.EnsureAdminKey(identity.IdentityPath(env.dir))
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(cmd.OutOrStdout(), "admin_pub: %s\nnote: this does not grant signing authority\ninstall a delegated admin cert with `pln admin set-cert <admin-cert-b64>`\n", hex.EncodeToString(pub))
-	return nil
-}
-
-func runAdminSetCert(cmd *cobra.Command, args []string, env *cliEnv) error {
-	identityDir := auth.IdentityPath(env.dir)
-	_, nodePub, err := auth.EnsureIdentityKey(identityDir)
-	if err != nil {
-		return err
-	}
-	creds, err := auth.LoadNodeCredentials(identityDir)
-	if err != nil {
-		return errors.New("node credentials not initialized; run `pln init` or `pln join <token>` first")
-	}
-	if err := auth.InstallDelegationCert(identityDir, args[0], creds.RootPub(), nodePub, time.Now()); err != nil {
-		return err
-	}
-	fmt.Fprintln(cmd.OutOrStdout(), "delegated admin certificate installed")
+	fmt.Fprintf(cmd.OutOrStdout(), "admin_pub: %s\nnote: anchor a root cluster with `pln init`, or delegate authority to peers with `pln grant`\n", hex.EncodeToString(pub))
 	return nil
 }
 
@@ -523,6 +569,26 @@ type bootstrapResult struct {
 	target  string
 	peerPub ed25519.PublicKey
 	addrs   []string
+	public  bool
+}
+
+// pickFounderWireEndpoint synthesises a host:port for the founder's
+// wire fallback by combining a publicly-reachable bootstrapped peer's
+// host with the wire listen port. Callers must only pass successful
+// results (err == nil), so addrs holds exactly one valid host:port.
+func pickFounderWireEndpoint(peers []bootstrapResult, wireAddr string) string {
+	_, port, err := splitListenAddr(wireAddr)
+	if err != nil || port == "" {
+		return ""
+	}
+	for _, p := range peers {
+		if !p.public {
+			continue
+		}
+		host, _, _ := net.SplitHostPort(p.addrs[0])
+		return net.JoinHostPort(host, port)
+	}
+	return ""
 }
 
 func runBootstrapSSH(cmd *cobra.Command, args []string, env *cliEnv) error {
@@ -536,25 +602,22 @@ func runBootstrapSSH(cmd *cobra.Command, args []string, env *cliEnv) error {
 		return fmt.Errorf("invalid relay port %d", relayPort)
 	}
 	expireAfter, _ := cmd.Flags().GetDuration("expire-after")
+	wireAddr, _ := cmd.Flags().GetString("wire")
 	attrs, err := parseProperties(cmd)
 	if err != nil {
 		return err
 	}
-	certCaps, err := capsFromFlags(cmd, attrs)
+	caps, err := capsFromFlags(cmd, attrs)
 	if err != nil {
 		return err
 	}
 
-	identityDir := auth.IdentityPath(env.dir)
-	nodePriv, localPub, err := auth.EnsureIdentityKey(identityDir)
-	if err != nil {
-		return err
-	}
-	signer, err := auth.NewDelegationSigner(identityDir, nodePriv)
-	if err != nil {
+	identityDir := identity.IdentityPath(env.dir)
+	creds, err := identity.LoadCredentials(identityDir)
+	if err != nil || creds == nil || creds.Grant() == nil || !creds.Grant().GetClaims().GetCapabilities().GetCanDelegate() {
 		return errors.New("this node cannot issue tokens; only delegated admins can sign enrollment tokens")
 	}
-	if err := validateCapsAgainstSigner(certCaps, signer.IssuerCert().GetClaims().GetCapabilities()); err != nil {
+	if err := validateCapsAgainstSigner(caps, creds.Grant().GetClaims().GetCapabilities()); err != nil {
 		return err
 	}
 
@@ -623,7 +686,7 @@ func runBootstrapSSH(cmd *cobra.Command, args []string, env *cliEnv) error {
 		prepared := d.prepared
 		enrollWG.Go(func() {
 			seeded := seedPeersFor(peerPool, prepared.peerPub)
-			if err := enrollRemote(cmd.Context(), signer, prepared, seeded, expireAfter, certCaps); err != nil {
+			if err := enrollRemote(cmd.Context(), creds, prepared, seeded, expireAfter, caps, wireAddr); err != nil {
 				results <- bootstrapResult{target: prepared.spec.target, err: err}
 				return
 			}
@@ -631,6 +694,7 @@ func runBootstrapSSH(cmd *cobra.Command, args []string, env *cliEnv) error {
 				target:  prepared.spec.target,
 				peerPub: prepared.peerPub,
 				addrs:   prepared.addrs,
+				public:  prepared.public,
 			}
 		})
 	}
@@ -663,7 +727,13 @@ func runBootstrapSSH(cmd *cobra.Command, args []string, env *cliEnv) error {
 		return fmt.Errorf("persist bootstrap peers: %w", err)
 	}
 
-	if nodeSocketActive(filepath.Join(env.dir, socketName)) { //nolint:nestif
+	if wireAddr != "" {
+		if endpoint := pickFounderWireEndpoint(bootstrappedPeers, wireAddr); endpoint != "" {
+			reportCtxWireWrite(out, cmd.ErrOrStderr(), env.ctxName, endpoint, "bootstrapped")
+		}
+	}
+
+	if nodeSocketActive(filepath.Join(env.dir, socketName)) {
 		for _, r := range bootstrappedPeers {
 			if _, err := env.client.ConnectPeer(cmd.Context(), connect.NewRequest(&controlv1.ConnectPeerRequest{
 				PeerPub: r.peerPub,
@@ -672,22 +742,11 @@ func runBootstrapSSH(cmd *cobra.Command, args []string, env *cliEnv) error {
 				fmt.Fprintf(cmd.ErrOrStderr(), "%s: connect failed: %v\n", r.target, err)
 			}
 		}
-	} else {
-		bsPeers := make([]*admissionv1.BootstrapPeer, 0, len(bootstrappedPeers))
-		for _, r := range bootstrappedPeers {
-			bsPeers = append(bsPeers, &admissionv1.BootstrapPeer{
-				PeerPub: append([]byte(nil), r.peerPub...),
-				Addrs:   append([]string(nil), r.addrs...),
-			})
-		}
-
-		joinToken, err := createJoinTokenWithSigner(signer, config.DefaultMembershipTTL, localPub, defaultInviteTTL, expireAfter, bsPeers, auth.LeafCapabilities())
-		if err != nil {
-			return fmt.Errorf("create local join token: %w", err)
-		}
-
-		if err := runJoin(cmd, []string{joinToken}, env); err != nil {
-			return err
+	} else if noUp, _ := cmd.Flags().GetBool("no-up"); !noUp {
+		// Precondition above guarantees delegating credentials; re-enrolling
+		// here would clobber the local root grant with a self-issued leaf.
+		if err := servicectl("start", cmd, env); err != nil {
+			return fmt.Errorf("start local daemon: %w", err)
 		}
 	}
 
@@ -695,7 +754,7 @@ func runBootstrapSSH(cmd *cobra.Command, args []string, env *cliEnv) error {
 		fmt.Fprintf(out, "%d succeeded, %d failed\n", succeeded, failed)
 	}
 	if failed > 0 {
-		fmt.Fprintf(out, "hint: for failed hosts, use `pln invite` and run `pln join <token>` on the remote host\n")
+		fmt.Fprintf(out, "hint: for failed hosts, use `pln invite` and run `pln join --up <token>` on the remote host\n")
 		return errors.Join(failErrs...)
 	}
 	return nil
@@ -718,8 +777,8 @@ func discoverRemote(ctx context.Context, spec sshTargetSpec, relayPort int) (pre
 		return fail(err)
 	}
 	host, _, _ := net.SplitHostPort(inferredAddr)
-	ip := net.ParseIP(host)
-	public := ip != nil && !ip.IsPrivate() && !ip.IsLoopback()
+	addr, _ := netip.ParseAddr(host)
+	public := types.IsPublicIP(addr)
 
 	if err := requireRemoteLinux(ctx, spec.target); err != nil {
 		return fail(err)
@@ -752,12 +811,12 @@ func discoverRemote(ctx context.Context, spec sshTargetSpec, relayPort int) (pre
 	}, nil
 }
 
-func enrollRemote(ctx context.Context, signer *auth.DelegationSigner, remote preparedRemote, bootstrapPeers []*admissionv1.BootstrapPeer, expireAfter time.Duration, certCaps *admissionv1.Capabilities) error {
-	seedToken, err := createJoinTokenWithSigner(signer, config.DefaultMembershipTTL, remote.peerPub, 1*time.Minute, expireAfter, bootstrapPeers, certCaps)
+func enrollRemote(ctx context.Context, creds *identity.Credentials, remote preparedRemote, bootstrapPeers []*admissionv1.BootstrapPeer, expireAfter time.Duration, caps *identityv1.Capabilities, wireAddr string) error {
+	seedToken, err := createJoinTokenWithCreds(creds, remote.peerPub, 1*time.Minute, expireAfter, bootstrapPeers, caps)
 	if err != nil {
 		return fmt.Errorf("create seed token: %w", err)
 	}
-	return bootstrapRelayOverSSH(ctx, remote.spec.target, seedToken, remote.spec.nodeName, remote.public)
+	return bootstrapRelayOverSSH(ctx, remote.spec.target, seedToken, remote.spec.nodeName, remote.public, wireAddr)
 }
 
 func seedPeersFor(pool map[string]*admissionv1.BootstrapPeer, self ed25519.PublicKey) []*admissionv1.BootstrapPeer {
@@ -775,8 +834,8 @@ func seedPeersFor(pool map[string]*admissionv1.BootstrapPeer, self ed25519.Publi
 	return out
 }
 
-func bootstrapRelayOverSSH(ctx context.Context, sshTarget, seedToken, nodeName string, public bool) error {
-	joinArgs := []string{"join", "--no-up"}
+func bootstrapRelayOverSSH(ctx context.Context, sshTarget, seedToken, nodeName string, public bool, wireAddr string) error {
+	joinArgs := []string{"join"}
 	if public {
 		joinArgs = append(joinArgs, "--public")
 	}
@@ -784,24 +843,19 @@ func bootstrapRelayOverSSH(ctx context.Context, sshTarget, seedToken, nodeName s
 	if out, err := sshPln(ctx, sshTarget, joinArgs...).CombinedOutput(); err != nil {
 		return fmt.Errorf("failed to enroll relay node: %w\n%s", err, strings.TrimSpace(string(out)))
 	}
+	// pln set persists to config.yaml. The control-tls listener binds on
+	// the next pln up, so this must run before the start step below.
+	if wireAddr != "" {
+		if out, err := sshPln(ctx, sshTarget, "set", "control-tls", wireAddr).CombinedOutput(); err != nil {
+			return fmt.Errorf("failed to enable wire on relay node: %w\n%s", err, strings.TrimSpace(string(out)))
+		}
+	}
 	upArgs := []string{"pln", "up", "-d"}
 	if nodeName != "" {
 		upArgs = append(upArgs, "--name", nodeName)
 	}
 	if out, err := sshSudo(ctx, sshTarget, upArgs...).CombinedOutput(); err != nil {
 		return fmt.Errorf("failed to start relay node: %w\n%s", err, strings.TrimSpace(string(out)))
-	}
-	if err := waitForRelayReady(ctx, sshTarget); err != nil {
-		return err
-	}
-
-	// Applied post-start to survive the config round-trip that
-	// `pln join --public` and `pln up -d --name` perform.
-	if out, err := sshPln(ctx, sshTarget, "set", "control-addr", config.DefaultControlAddr).CombinedOutput(); err != nil {
-		return fmt.Errorf("set control-addr: %w\n%s", err, strings.TrimSpace(string(out)))
-	}
-	if out, err := sshSudo(ctx, sshTarget, "pln", "restart").CombinedOutput(); err != nil {
-		return fmt.Errorf("failed to restart relay node: %w\n%s", err, strings.TrimSpace(string(out)))
 	}
 	return waitForRelayReady(ctx, sshTarget)
 }
@@ -813,20 +867,25 @@ func runGrant(cmd *cobra.Command, args []string, env *cliEnv) error {
 	if err != nil {
 		return err
 	}
-	certCaps, err := capsFromFlags(cmd, attrs)
+	caps, err := capsFromFlags(cmd, attrs)
 	if err != nil {
 		return err
 	}
+	budget := budgetFromFlags(cmd)
 
 	statusResp, err := env.client.GetStatus(cmd.Context(), connect.NewRequest(&controlv1.GetStatusRequest{}))
 	if err != nil {
 		return err
 	}
 
-	var matches [][]byte
+	type match struct {
+		name   string
+		peerID []byte
+	}
+	var matches []match
 	for _, n := range statusResp.Msg.GetNodes() {
 		if peerIDHasPrefix(n.GetNode().GetPeerPub(), prefix) {
-			matches = append(matches, n.GetNode().GetPeerPub())
+			matches = append(matches, match{peerID: n.GetNode().GetPeerPub(), name: n.GetName()})
 		}
 	}
 	if len(matches) == 0 {
@@ -835,33 +894,85 @@ func runGrant(cmd *cobra.Command, args []string, env *cliEnv) error {
 	if len(matches) > 1 {
 		return ambiguousErr("ambiguous peer prefix %q matches %d peers", prefix, len(matches))
 	}
-
-	peerID := matches[0]
-	if _, err := env.client.IssueCert(cmd.Context(), connect.NewRequest(&controlv1.IssueCertRequest{
-		PeerPub:  peerID,
-		CertCaps: certCaps,
-	})); err != nil {
-		return err
+	peerID := matches[0].peerID
+	peerShort := hex.EncodeToString(peerID)[:shortHexLen]
+	peerLabel := peerShort
+	if matches[0].name != "" {
+		peerLabel = fmt.Sprintf("%s (%s)", matches[0].name, peerShort)
 	}
 
-	fmt.Fprintf(cmd.OutOrStdout(), "certificate issued (%s) to %s\n", capsTierLabel(certCaps), hex.EncodeToString(peerID)[:shortHexLen])
+	resp, err := env.client.UpgradePeer(cmd.Context(), connect.NewRequest(&controlv1.UpgradePeerRequest{
+		PeerPub:      peerID,
+		Capabilities: caps,
+		Budget:       budget,
+	}))
+	if err != nil {
+		// codes.Unavailable is the daemon's signal that the peer has no
+		// live mesh session: a tenant only reachable over the wire.
+		// Fall back to a subject-pinned invite ticket the operator
+		// delivers out-of-band. Every other failure (recipient
+		// rejection, permission, etc.) surfaces verbatim so the
+		// operator sees what the daemon said.
+		if connect.CodeOf(err) == connect.CodeUnavailable {
+			return issueUpgradeToken(cmd, env, peerID, peerShort, caps, budget)
+		}
+		return err
+	}
+	if resp.Msg.GetDelivered() {
+		fmt.Fprintf(cmd.OutOrStdout(), "upgraded %s → %s\n", peerLabel, capsTierLabel(caps))
+		return nil
+	}
+	return fmt.Errorf("could not upgrade %s: %s", peerLabel, resp.Msg.GetReason())
+}
+
+func issueUpgradeToken(cmd *cobra.Command, env *cliEnv, peerID []byte, peerShort string, caps *identityv1.Capabilities, budget *identityv1.Budget) error {
+	encoded, err := mintInviteTicket(cmd, env, peerID, caps, budget)
+	if errors.Is(err, errCannotSignTokens) {
+		if env.transport.IsSSHBridge() {
+			return fmt.Errorf("%s has no live mesh daemon and this context's local keys can't sign upgrade tokens. Mint one on the admin host:\n  ssh %s pln invite --subject %s", peerShort, env.transport.SSHHost(), peerShort)
+		}
+		return fmt.Errorf("%s has no live mesh daemon and this node cannot mint upgrade tokens; only delegated admins can sign them", peerShort)
+	}
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(cmd.ErrOrStderr(), "pln: %s has no live mesh daemon; deliver this token and have them run `pln join`\n", peerShort)
+	fmt.Fprintln(cmd.OutOrStdout(), encoded)
 	return nil
 }
 
 const (
 	tierAdmin     = "admin"
+	tierWorkspace = "workspace"
 	tierPublisher = "publisher"
 	tierLeaf      = "leaf"
 )
 
-func capsTierLabel(caps *admissionv1.Capabilities) string {
-	return tierLabel(caps.GetCanAdmit(), caps.GetCanPublish())
+const workspaceFlagDesc = "Issue as a workspace-admin: founds a workspace, may delegate within it, sees its chain ancestors and own subtree"
+
+const infraFlagDesc = "Mark as shared infrastructure: may relay for any tenant and appears as infrastructure in tenant views (requires an infrastructure issuer)"
+
+func capsTierLabel(caps *identityv1.Capabilities) string {
+	label := tierLabel(caps.GetCanAdmit(), caps.GetIsWorkspaceAdmin(), capsCanPublish(caps))
+	if caps.GetIsInfrastructure() {
+		label += "+infra"
+	}
+	return label
 }
 
-func tierLabel(canAdmit, canPublish bool) string {
+func capsCanPublish(c *identityv1.Capabilities) bool {
+	p := c.GetPublish()
+	return p.GetFunctions() || p.GetBlobs() || p.GetSites() || p.GetServices()
+}
+
+// tierLabel returns the highest-precedence role tier a capability set
+// satisfies, admin first.
+func tierLabel(canAdmit, isWorkspaceAdmin, canPublish bool) string {
 	switch {
 	case canAdmit:
 		return tierAdmin
+	case isWorkspaceAdmin:
+		return tierWorkspace
 	case canPublish:
 		return tierPublisher
 	default:
@@ -874,35 +985,68 @@ func parseProperties(cmd *cobra.Command) (*structpb.Struct, error) {
 	return parsePropertyValues(cmd, vals)
 }
 
-// capsFromFlags translates the --admin/--publisher flag pair plus parsed
-// attributes into a cert capability set. Mutually exclusive; default is leaf.
-func capsFromFlags(cmd *cobra.Command, attrs *structpb.Struct) (*admissionv1.Capabilities, error) {
+// capsFromFlags translates the role-selecting flag triple
+// (--admin / --workspace / --publisher) plus parsed attributes into a
+// cert capability set. The three flags are mutually exclusive; default
+// is leaf.
+func capsFromFlags(cmd *cobra.Command, attrs *structpb.Struct) (*identityv1.Capabilities, error) {
 	admin, _ := cmd.Flags().GetBool("admin")
+	workspace, _ := cmd.Flags().GetBool("workspace")
 	publisher, _ := cmd.Flags().GetBool("publisher")
-	if admin && publisher {
-		return nil, errors.New("--admin and --publisher are mutually exclusive")
+	roles := 0
+	for _, set := range []bool{admin, workspace, publisher} {
+		if set {
+			roles++
+		}
 	}
-	var caps *admissionv1.Capabilities
+	if roles > 1 {
+		return nil, errors.New("--admin, --workspace and --publisher are mutually exclusive")
+	}
+	var caps *identityv1.Capabilities
 	switch {
 	case admin:
-		caps = auth.FullCapabilities()
+		caps = identity.FullCapabilities()
+	case workspace:
+		caps = identity.WorkspaceCapabilities()
 	case publisher:
-		caps = auth.PublisherCapabilities()
+		caps = identity.PublisherCapabilities()
 	default:
-		caps = auth.LeafCapabilities()
+		caps = identity.LeafCapabilities()
 	}
 	caps.Attributes = attrs
+	if infra, _ := cmd.Flags().GetBool("infra"); infra {
+		caps.IsInfrastructure = true
+	}
 	return caps, nil
+}
+
+// budgetFromFlags builds the per-Principal Budget from the --max-*
+// flags. All-zero means no flags were set, so the request carries no
+// budget and the grantee is unlimited.
+func budgetFromFlags(cmd *cobra.Command) *identityv1.Budget {
+	fns, _ := cmd.Flags().GetUint32("max-functions")
+	blobs, _ := cmd.Flags().GetUint32("max-blobs")
+	sites, _ := cmd.Flags().GetUint32("max-sites")
+	if fns == 0 && blobs == 0 && sites == 0 {
+		return nil
+	}
+	return &identityv1.Budget{MaxFunctions: fns, MaxBlobs: blobs, MaxSites: sites}
 }
 
 // validateCapsAgainstSigner reports an error if the requested caps cannot
 // be issued by a signer holding signerCaps. Used by code paths that mint
 // locally; the control RPC enforces the same on the server side.
-func validateCapsAgainstSigner(requested, signerCaps *admissionv1.Capabilities) error {
+func validateCapsAgainstSigner(requested, signerCaps *identityv1.Capabilities) error {
 	if requested.GetCanAdmit() && !signerCaps.GetCanAdmit() {
 		return errors.New("--admin requires admit capability")
 	}
-	if requested.GetCanPublish() && !signerCaps.GetCanPublish() {
+	if requested.GetIsWorkspaceAdmin() && !signerCaps.GetIsWorkspaceAdmin() {
+		return errors.New("--workspace requires workspace-admin capability")
+	}
+	if requested.GetIsInfrastructure() && !signerCaps.GetIsInfrastructure() {
+		return errors.New("--infra requires infrastructure capability")
+	}
+	if capsCanPublish(requested) && !capsCanPublish(signerCaps) {
 		return errors.New("--publisher requires publish capability")
 	}
 	return nil
@@ -948,7 +1092,7 @@ func parsePropertyValues(cmd *cobra.Command, vals []string) (*structpb.Struct, e
 	if err != nil {
 		return nil, fmt.Errorf("building properties: %w", err)
 	}
-	if err := auth.ValidateAttributes(s); err != nil {
+	if err := identity.ValidateAttributes(s); err != nil {
 		return nil, err
 	}
 	return s, nil
@@ -993,8 +1137,9 @@ func resolveBootstrapPeers(ctx context.Context, env *cliEnv) ([]*admissionv1.Boo
 			continue
 		}
 		out = append(out, &admissionv1.BootstrapPeer{
-			PeerPub: append([]byte(nil), p.GetPeer().GetPeerPub()...),
-			Addrs:   append([]string(nil), p.GetAddrs()...),
+			PeerPub:      append([]byte(nil), p.GetPeer().GetPeerPub()...),
+			Addrs:        append([]string(nil), p.GetAddrs()...),
+			WireEndpoint: p.GetWireEndpoint(),
 		})
 	}
 	if len(out) == 0 {
@@ -1003,30 +1148,38 @@ func resolveBootstrapPeers(ctx context.Context, env *cliEnv) ([]*admissionv1.Boo
 	return out, nil
 }
 
-func resolveJoinToken(ctx context.Context, priv ed25519.PrivateKey, encoded string) (*admissionv1.JoinToken, error) {
+func resolveJoinToken(ctx context.Context, priv ed25519.PrivateKey, encoded string) (*identityv1.GrantToken, error) {
 	trimmed := strings.TrimSpace(encoded)
-	if joinToken, err := auth.DecodeJoinToken(trimmed); err == nil {
-		if _, verifyErr := auth.VerifyJoinToken(joinToken, priv.Public().(ed25519.PublicKey), time.Now()); verifyErr == nil { //nolint:forcetypeassert
-			return joinToken, nil
+	if grantToken, err := identity.DecodeGrantToken(trimmed); err == nil {
+		if _, verifyErr := identity.VerifyGrantToken(grantToken, priv.Public().(ed25519.PublicKey), time.Now()); verifyErr == nil { //nolint:forcetypeassert
+			return grantToken, nil
 		}
 	}
-	inviteToken, err := auth.DecodeInviteToken(trimmed)
+	ticket, err := identity.DecodeInviteTicket(trimmed)
 	if err != nil {
 		return nil, errors.New("failed to decode token")
 	}
-	return transport.RedeemInvite(ctx, priv, inviteToken)
+	return transport.RedeemInvite(ctx, priv, ticket)
 }
 
-func createJoinTokenWithSigner(signer *auth.DelegationSigner, defaultMembershipTTL time.Duration, subjectPub ed25519.PublicKey, ttl, expireAfter time.Duration, bootstrap []*admissionv1.BootstrapPeer, certCaps *admissionv1.Capabilities) (string, error) {
-	var accessDeadline time.Time
-	if expireAfter > 0 {
-		accessDeadline = time.Now().Add(expireAfter)
+func createJoinTokenWithCreds(creds *identity.Credentials, subjectPub ed25519.PublicKey, tokenTTL, expireAfter time.Duration, bootstrap []*admissionv1.BootstrapPeer, caps *identityv1.Capabilities) (string, error) {
+	now := time.Now()
+	var grantDeadline time.Time
+	switch {
+	case expireAfter > 0:
+		grantDeadline = now.Add(expireAfter)
+	case !caps.GetCanAdmit():
+		grantDeadline = now.Add(identity.DefaultGrantDeadlineTTL)
 	}
-	token, err := signer.IssueJoinToken(subjectPub, bootstrap, time.Now(), ttl, defaultMembershipTTL, accessDeadline, certCaps)
+	grant, err := creds.IssueGrant(subjectPub, caps, identity.UnlimitedBudget(), now, grantDeadline, expireAfter > 0)
 	if err != nil {
 		return "", err
 	}
-	return auth.EncodeJoinToken(token)
+	token, err := creds.IssueGrantToken(grant, bootstrap, now, tokenTTL)
+	if err != nil {
+		return "", err
+	}
+	return identity.EncodeGrantToken(token)
 }
 
 func ensureRemotePollen(ctx context.Context, sshTarget string) error {

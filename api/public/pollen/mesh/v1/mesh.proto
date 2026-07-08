@@ -5,7 +5,7 @@ syntax = "proto3";
 
 package pollen.mesh.v1;
 
-import "pollen/admission/v1/admission.proto";
+import "pollen/identity/v1/identity.proto";
 import "pollen/state/v1/state.proto";
 
 option go_package = "github.com/sambigeara/pollen/api/genpb/pollen/mesh/v1;meshv1";
@@ -21,38 +21,18 @@ message PunchCoordTrigger {
 }
 
 message InviteRedeemRequest {
-  pollen.admission.v1.InviteToken token = 1;
+  pollen.identity.v1.InviteTicket ticket = 1;
   bytes peer_pub = 2;
 }
 
 message InviteRedeemResponse {
   bool accepted = 1;
   string reason = 2;
-  pollen.admission.v1.JoinToken join_token = 3;
+  pollen.identity.v1.GrantToken grant_token = 3;
 }
 
 message ObservedAddress {
   string addr = 1;
-}
-
-message CertRenewalRequest {
-  bytes peer_pub = 1;
-  bytes current_cert = 2;
-}
-
-message CertRenewalResponse {
-  bool accepted = 1;
-  string reason = 2;
-  pollen.admission.v1.DelegationCert cert = 3;
-}
-
-message CertPushRequest {
-  pollen.admission.v1.DelegationCert cert = 1;
-}
-
-message CertPushResponse {
-  bool accepted = 1;
-  string reason = 2;
 }
 
 message ForwardedInviteRedeemRequest {
@@ -65,6 +45,20 @@ message ForwardedInviteRedeemResponse {
   bytes joiner_pub = 2;
 }
 
+// GrantOfferRequest pushes a freshly-minted grant to its intended
+// subject so the subject's daemon can adopt it without waiting on its
+// own renewal tick. The receiver verifies the grant chains to root,
+// matches its own subject pubkey, and falls within its budget+horizon
+// before swapping in local creds and gossiping with its own subject PoP.
+message GrantOfferRequest {
+  pollen.identity.v1.Grant grant = 1;
+}
+
+message GrantOfferResponse {
+  bool accepted = 1;
+  string reason = 2;
+}
+
 message Envelope {
   oneof body {
     PunchCoordRequest punch_coord_request = 1;
@@ -73,12 +67,11 @@ message Envelope {
     InviteRedeemResponse invite_redeem_response = 4;
     ObservedAddress observed_address = 5;
     pollen.state.v1.GossipEventBatch events = 6;
-    CertRenewalRequest cert_renewal_request = 7;
-    CertRenewalResponse cert_renewal_response = 8;
     ForwardedInviteRedeemRequest forwarded_invite_request = 10;
     ForwardedInviteRedeemResponse forwarded_invite_response = 11;
-    CertPushRequest cert_push_request = 12;
-    CertPushResponse cert_push_response = 13;
+    GrantOfferRequest grant_offer_request = 14;
+    GrantOfferResponse grant_offer_response = 15;
   }
+  reserved 7, 8, 12, 13;
   bytes trace_id = 9;
 }

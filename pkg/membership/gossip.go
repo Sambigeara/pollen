@@ -79,7 +79,7 @@ func (s *Service) sendDigestViaStream(ctx context.Context, peerID types.PeerKey,
 		return nil, fmt.Errorf("digest response from %s exceeded size limit (%d bytes)", peerID.Short(), len(resp))
 	}
 
-	events, _, err := s.store.ApplyDelta(peerID, resp)
+	events, _, err := s.store.ApplyDelta(resp)
 	if err != nil {
 		return nil, fmt.Errorf("apply digest response from %s: %w", peerID.Short(), err)
 	}
@@ -143,7 +143,7 @@ func (s *Service) handleDatagram(ctx context.Context, from types.PeerKey, data [
 			return
 		}
 
-		events, rebroadcast, err := s.store.ApplyDelta(from, batchData)
+		events, rebroadcast, err := s.store.ApplyDelta(batchData)
 		if err != nil {
 			s.log.Debugw("apply delta from datagram failed", "peer", from.Short(), "err", err)
 			return
@@ -155,12 +155,6 @@ func (s *Service) handleDatagram(ctx context.Context, from types.PeerKey, data [
 
 	case *meshv1.Envelope_ObservedAddress:
 		s.handleObservedAddress(from, body.ObservedAddress)
-
-	case *meshv1.Envelope_CertRenewalRequest:
-		s.handleCertRenewalRequest(ctx, from, body.CertRenewalRequest)
-
-	case *meshv1.Envelope_CertPushRequest:
-		s.handleCertPushRequest(ctx, from, body.CertPushRequest)
 
 	default:
 		if s.datagramHandler != nil {
@@ -198,7 +192,12 @@ func (s *Service) broadcastEvents(ctx context.Context, events []*statev1.GossipE
 	if len(events) == 0 {
 		return
 	}
-	s.broadcastGossipBatches(ctx, s.mesh.ConnectedPeers(), batchEvents(events, maxDatagramPayload))
+	batches, dropped := batchEvents(events, maxDatagramPayload)
+	if len(dropped) > 0 {
+		s.log.Warnw("skipping oversized gossip events; relying on stream pull to converge",
+			"count", len(dropped), "max_datagram_payload", maxDatagramPayload)
+	}
+	s.broadcastGossipBatches(ctx, s.mesh.ConnectedPeers(), batches)
 }
 
 func (s *Service) broadcastGossipBatches(ctx context.Context, peerIDs []types.PeerKey, batches [][]*statev1.GossipEvent) {
@@ -235,17 +234,32 @@ func (s *Service) broadcastBatchBytes(ctx context.Context, data []byte) {
 	s.broadcastEvents(ctx, batch.GetEvents())
 }
 
-func batchEvents(events []*statev1.GossipEvent, maxSize int) [][]*statev1.GossipEvent {
+// batchEvents groups events into datagram-sized batches. Any event whose
+// solo size exceeds maxSize is returned in dropped: sending it via
+// quic.SendDatagram returns *quic.DatagramTooLargeError and tears the
+// peer session down, and the CRDT entry stays in the log so retries
+// would re-trigger the same disconnect.
+//
+// TODO(saml): drop is a stop-gap; the receiver's stream-based digest
+// pull (s.gossip) converges these within gossipInterval. The proper fix
+// is either a per-event stream push from the sender, or restructuring
+// BlobAvailability into per-blob deltas so it can't outgrow the budget.
+func batchEvents(events []*statev1.GossipEvent, maxSize int) ([][]*statev1.GossipEvent, []*statev1.GossipEvent) {
 	if len(events) == 0 {
-		return nil
+		return nil, nil
 	}
 
 	var batches [][]*statev1.GossipEvent
+	var dropped []*statev1.GossipEvent
 	var current []*statev1.GossipEvent
 	currentSize := envelopeOverhead
 
 	for _, event := range events {
 		eventSize := (&statev1.GossipEventBatch{Events: []*statev1.GossipEvent{event}}).SizeVT()
+		if envelopeOverhead+eventSize > maxSize {
+			dropped = append(dropped, event)
+			continue
+		}
 		if len(current) > 0 && currentSize+eventSize > maxSize {
 			batches = append(batches, current)
 			current = nil
@@ -257,5 +271,5 @@ func batchEvents(events []*statev1.GossipEvent, maxSize int) [][]*statev1.Gossip
 	if len(current) > 0 {
 		batches = append(batches, current)
 	}
-	return batches
+	return batches, dropped
 }

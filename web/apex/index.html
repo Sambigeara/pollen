@@ -302,14 +302,14 @@
 
   <h2>What's in the box</h2>
   <ul class="features">
-    <li><strong>WASM seeds.</strong> Deploy with <code>pln seed</code>; artifacts distribute peer-to-peer by hash. A seed invokes another by host call (<code>pln://seed/&lt;name&gt;/&lt;fn&gt;</code>) or by returning a <code>tail_call</code> marker, so authz, routing, and policy can live inside WASM. Authored in Go, Rust, JS, Python, C#, Zig via <a href="https://extism.org/docs/quickstart/plugin-quickstart">Extism</a>.</li>
+    <li><strong>WASM seeds.</strong> Deploy with <code>pln seed</code>; artefacts distribute peer-to-peer by hash. A seed invokes another by host call (<code>pln://seed/&lt;name&gt;/&lt;fn&gt;</code>) or by returning a <code>tail_call</code> marker, so authz, routing, and policy can live inside WASM. Authored in Go, Rust, JS, Python, C#, Zig via <a href="https://extism.org/docs/quickstart/plugin-quickstart">Extism</a>.</li>
     <li><strong>Mesh services.</strong> <code>pln serve 8080 api</code> here, <code>pln connect api</code> there (or <code>pln://service/&lt;name&gt;</code> from a seed). TCP and UDP, end-to-end mTLS.</li>
     <li><strong>Static sites &amp; blobs.</strong> <code>pln seed ./public</code> publishes a site; <code>pln seed ./file</code> shares a file. Same verb across kinds; autodetected. Content-addressed, gossiped, streamed peer-to-peer over QUIC.</li>
     <li><strong>Self-organising.</strong> No scheduler, no leader, no coordinator. Topology, placement, and routing emerge from local state; calls go to the nearest, least-loaded replica, and replicas migrate toward demand.</li>
     <li><strong>CRDT-native.</strong> A converging document on every node; changes gossip, conflicts resolve.</li>
     <li><strong>Partition-tolerant.</strong> Both sides of a split keep running; state converges on rejoin; survivors rehost workloads from failed nodes.</li>
     <li><strong>QUIC transport.</strong> One multiplexed, encrypted, UDP-based connection per peer carries gossip, services, and seeds. Connections punch direct between peers; otherwise they relay through any cluster node both peers can reach.</li>
-    <li><strong>Cryptographic admission.</strong> No shared secrets, no firewall rules. Every link is mTLS; capabilities ride on signed delegation certs.</li>
+    <li><strong>Cryptographic admission.</strong> No shared secrets, no firewall rules. Every link is mTLS; capabilities ride on signed grants that renew themselves, so the root machine can stay offline.</li>
     <li><strong>Edge-ready.</strong> Pure Go, no CGO. Raspberry Pi to cloud host.</li>
     <li><strong>Ergonomic.</strong> Opinionated defaults, opt-in configuration.</li>
   </ul>
@@ -330,7 +330,7 @@
     </a>
     <a class="card" href="https://docs.pln.sh/concepts.html">
       <span class="card-title">Concepts</span>
-      <span class="card-desc">The model: mesh, gossiped CRDT, placement, storage, capabilities.</span>
+      <span class="card-desc">The model: mesh, converged state, grants, admission, placement.</span>
     </a>
   </div>
 </main>

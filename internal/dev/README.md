@@ -6,7 +6,6 @@ Not part of the user-facing product.
 ```
 internal/dev/
   hetzner/             # 3-node Hetzner cluster used by verify-hetzner.sh
-  bootstrap/           # single-node bootstrap (eu-west-2 AWS)
   vivaldi/             # 28-node mixed (public+private) AWS topology
   vivaldi-public/      # 28-node all-public AWS topology
   demo-cluster/        # 10-node demo AWS topology

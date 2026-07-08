@@ -21,7 +21,7 @@ import (
 )
 
 func serveWithHeaderRead(ctx context.Context, stream io.ReadWriteCloser, peer types.PeerKey, invoker workloadInvoker) {
-	info, chain, hash, function, err := ReadHeader(stream, peer)
+	info, chain, _, _, hash, function, err := ReadHeader(stream, peer)
 	if err != nil {
 		stream.Close()
 		return

@@ -23,7 +23,9 @@ import (
 
 	admissionv1 "github.com/sambigeara/pollen/api/genpb/pollen/admission/v1"
 	controlv1 "github.com/sambigeara/pollen/api/genpb/pollen/control/v1"
+	factv1 "github.com/sambigeara/pollen/api/genpb/pollen/fact/v1"
 	statev1 "github.com/sambigeara/pollen/api/genpb/pollen/state/v1"
+	"github.com/sambigeara/pollen/pkg/fact"
 )
 
 var hashPattern = regexp.MustCompile(`^[a-fA-F0-9]{64}$`)
@@ -51,7 +53,7 @@ func (k seedKind) String() string {
 	case kindBlob:
 		return "blob"
 	default:
-		return "unknown"
+		return unknownValue
 	}
 }
 
@@ -206,38 +208,49 @@ func seedWorkload(cmd *cobra.Command, env *cliEnv, source, name string, policy *
 		spread = 1.0
 	}
 
+	header := &controlv1.SeedWorkloadHeader{
+		Name:        name,
+		MinReplicas: minReplicas,
+		Spread:      spread,
+		MemoryBytes: memoryBytes,
+		TimeoutMs:   uint32(timeout.Milliseconds()),
+		Policy:      policy,
+	}
+
+	if env.transport.IsWire() {
+		hashBytes, err := hashReader(f)
+		if err != nil {
+			return fmt.Errorf("hash %s: %w", source, err)
+		}
+		if _, err := f.Seek(0, io.SeekStart); err != nil {
+			return fmt.Errorf("rewind %s: %w", source, err)
+		}
+		body := &statev1.WorkloadSpecChange{
+			Hash:        hex.EncodeToString(hashBytes),
+			Name:        name,
+			MinReplicas: minReplicas,
+			MemoryBytes: memoryBytes,
+			TimeoutMs:   uint32(timeout.Milliseconds()),
+			Spread:      spread,
+		}
+		presigned, err := signFact(env.dir, func(s *fact.Signer) (*factv1.Fact, error) {
+			return presignedWorkload(s, hashBytes, body, policy, false)
+		})
+		if err != nil {
+			return fmt.Errorf("sign workload spec: %w", err)
+		}
+		header.PreSignedFact = presigned
+	}
+
 	stream := env.client.SeedWorkload(cmd.Context())
 	if err := stream.Send(&controlv1.SeedWorkloadRequest{
-		Payload: &controlv1.SeedWorkloadRequest_Header{
-			Header: &controlv1.SeedWorkloadHeader{
-				Name:        name,
-				MinReplicas: minReplicas,
-				Spread:      spread,
-				MemoryBytes: memoryBytes,
-				TimeoutMs:   uint32(timeout.Milliseconds()),
-				Policy:      policy,
-			},
-		},
+		Payload: &controlv1.SeedWorkloadRequest_Header{Header: header},
 	}); err != nil {
 		return err
 	}
 
-	buf := make([]byte, streamChunkBytes)
-	for {
-		n, readErr := f.Read(buf)
-		if n > 0 {
-			if err := stream.Send(&controlv1.SeedWorkloadRequest{
-				Payload: &controlv1.SeedWorkloadRequest_Chunk{Chunk: buf[:n]},
-			}); err != nil {
-				return err
-			}
-		}
-		if errors.Is(readErr, io.EOF) {
-			break
-		}
-		if readErr != nil {
-			return fmt.Errorf("failed to read %s: %w", source, readErr)
-		}
+	if err := streamWorkloadChunks(stream, f); err != nil {
+		return fmt.Errorf("send %s: %w", source, err)
 	}
 
 	resp, err := stream.CloseAndReceive()
@@ -249,8 +262,63 @@ func seedWorkload(cmd *cobra.Command, env *cliEnv, source, name string, policy *
 	if len(hash) > shortHexLen {
 		hash = hash[:shortHexLen]
 	}
-	fmt.Fprintf(cmd.OutOrStdout(), "seeded %s (%s)\n", resp.Msg.GetName(), hash)
+	fmt.Fprintf(cmd.OutOrStdout(), "seeded %s (%s)", resp.Msg.GetName(), hash)
+	if url := resp.Msg.GetPublicUrl(); url != "" {
+		fmt.Fprintf(cmd.OutOrStdout(), " → %s", url)
+	}
+	fmt.Fprintln(cmd.OutOrStdout())
 	return nil
+}
+
+func streamWorkloadChunks(stream *connect.ClientStreamForClient[controlv1.SeedWorkloadRequest, controlv1.SeedWorkloadResponse], r io.Reader) error {
+	buf := make([]byte, streamChunkBytes)
+	for {
+		n, readErr := r.Read(buf)
+		if n > 0 {
+			if err := stream.Send(&controlv1.SeedWorkloadRequest{
+				Payload: &controlv1.SeedWorkloadRequest_Chunk{Chunk: buf[:n]},
+			}); err != nil {
+				return err
+			}
+		}
+		if errors.Is(readErr, io.EOF) {
+			return nil
+		}
+		if readErr != nil {
+			return readErr
+		}
+	}
+}
+
+func hashReader(r io.Reader) ([]byte, error) {
+	h := sha256.New()
+	if _, err := io.Copy(h, r); err != nil {
+		return nil, err
+	}
+	return h.Sum(nil), nil
+}
+
+// hashBlobSource returns the SHA-256 of the blob source and a reader
+// positioned at the start of the body for upload. When f is non-nil the
+// file is hashed once and rewound to avoid buffering large payloads;
+// stdin sources fall back to buffering since they are not seekable.
+func hashBlobSource(r io.Reader, f *os.File, source string) ([]byte, io.Reader, error) {
+	if f != nil {
+		digest, err := hashReader(f)
+		if err != nil {
+			return nil, nil, fmt.Errorf("hash %s: %w", source, err)
+		}
+		if _, err := f.Seek(0, io.SeekStart); err != nil {
+			return nil, nil, fmt.Errorf("rewind %s: %w", source, err)
+		}
+		return digest, f, nil
+	}
+	buf, err := io.ReadAll(r)
+	if err != nil {
+		return nil, nil, fmt.Errorf("read blob: %w", err)
+	}
+	sum := sha256.Sum256(buf)
+	return sum[:], bytes.NewReader(buf), nil
 }
 
 func seedStatic(cmd *cobra.Command, env *cliEnv, dir, name string, policy *admissionv1.Predicate) error {
@@ -271,11 +339,11 @@ func seedStatic(cmd *cobra.Command, env *cliEnv, dir, name string, policy *admis
 			return openErr
 		}
 		defer f.Close()
-		hash, uploadErr := uploadBlob(cmd, env, &controlv1.UploadBlobHeader{}, f)
+		resp, uploadErr := uploadBlob(cmd, env, &controlv1.UploadBlobHeader{}, f)
 		if uploadErr != nil {
 			return fmt.Errorf("upload %s: %w", path, uploadErr)
 		}
-		digest, _ := hex.DecodeString(hash)
+		digest, _ := hex.DecodeString(resp.GetHash())
 		rel, _ := filepath.Rel(dir, path)
 		rel = "/" + strings.TrimPrefix(filepath.ToSlash(rel), "./")
 		paths = append(paths, &statev1.StaticPath{Path: rel, Digest: digest})
@@ -293,30 +361,48 @@ func seedStatic(cmd *cobra.Command, env *cliEnv, dir, name string, policy *admis
 	if err != nil {
 		return fmt.Errorf("marshal manifest: %w", err)
 	}
-	manifestHash, err := uploadBlob(cmd, env, &controlv1.UploadBlobHeader{}, bytes.NewReader(buf))
+	manifestResp, err := uploadBlob(cmd, env, &controlv1.UploadBlobHeader{}, bytes.NewReader(buf))
 	if err != nil {
 		return fmt.Errorf("upload manifest: %w", err)
 	}
+	manifestHash := manifestResp.GetHash()
 	manifestDigest, _ := hex.DecodeString(manifestHash)
 
-	if _, err := env.client.SeedStatic(cmd.Context(), connect.NewRequest(&controlv1.SeedStaticRequest{
+	req := &controlv1.SeedStaticRequest{
 		Name:           name,
 		ManifestDigest: manifestDigest,
 		Policy:         policy,
-	})); err != nil {
+	}
+	if env.transport.IsWire() {
+		presigned, err := signFact(env.dir, func(s *fact.Signer) (*factv1.Fact, error) {
+			return presignedStatic(s, name, manifestDigest, false)
+		})
+		if err != nil {
+			return fmt.Errorf("sign static spec: %w", err)
+		}
+		req.PreSignedFact = presigned
+	}
+	resp, err := env.client.SeedStatic(cmd.Context(), connect.NewRequest(req))
+	if err != nil {
 		return err
 	}
 
-	fmt.Fprintf(cmd.OutOrStdout(), "seeded %s (%d files, manifest %s)\n", name, len(paths), manifestHash[:shortHexLen])
+	fmt.Fprintf(cmd.OutOrStdout(), "seeded %s (%d files, manifest %s)", name, len(paths), manifestHash[:shortHexLen])
+	if url := resp.Msg.GetPublicUrl(); url != "" {
+		fmt.Fprintf(cmd.OutOrStdout(), " → %s", url)
+	}
+	fmt.Fprintln(cmd.OutOrStdout())
 	return nil
 }
 
 func seedBlob(cmd *cobra.Command, env *cliEnv, source, name string, policy *admissionv1.Predicate) error {
 	var r io.Reader
+	var f *os.File
 	if source == "-" {
 		r = cmd.InOrStdin()
 	} else {
-		f, err := os.Open(source)
+		var err error
+		f, err = os.Open(source)
 		if err != nil {
 			return fmt.Errorf("open %s: %w", source, err)
 		}
@@ -332,24 +418,52 @@ func seedBlob(cmd *cobra.Command, env *cliEnv, source, name string, policy *admi
 		header.Anchor = true
 	}
 
-	hash, err := uploadBlob(cmd, env, header, r)
+	if env.transport.IsWire() {
+		// Anchor blobs (anonymous, hash-only) over the wire would be
+		// publishable but unremoveable: `pln unseed` mints a tombstone
+		// against a named spec, and the anchor has no name. Refuse here
+		// so the operator learns at seed time, not weeks later when they
+		// try to unseed.
+		if name == "" {
+			return errors.New("anchor uploads over the wire are not supported; pass a name")
+		}
+		digest, body, err := hashBlobSource(r, f, source)
+		if err != nil {
+			return err
+		}
+		r = body
+		presigned, err := signFact(env.dir, func(s *fact.Signer) (*factv1.Fact, error) {
+			return presignedBlob(s, name, digest, policy, false)
+		})
+		if err != nil {
+			return fmt.Errorf("sign blob spec: %w", err)
+		}
+		header.PreSignedFact = presigned
+	}
+
+	resp, err := uploadBlob(cmd, env, header, r)
 	if err != nil {
 		return err
 	}
+	hash := resp.GetHash()
 	if name != "" {
-		fmt.Fprintf(cmd.OutOrStdout(), "seeded %s (%s)\n", name, hash[:shortHexLen]) //nolint:gosec
+		fmt.Fprintf(cmd.OutOrStdout(), "seeded %s (%s)", name, hash[:shortHexLen]) //nolint:gosec
+		if url := resp.GetPublicUrl(); url != "" {
+			fmt.Fprintf(cmd.OutOrStdout(), " → %s", url) //nolint:gosec
+		}
+		fmt.Fprintln(cmd.OutOrStdout())
 	} else {
 		fmt.Fprintf(cmd.OutOrStdout(), "%s\n", hash) //nolint:gosec
 	}
 	return nil
 }
 
-func uploadBlob(cmd *cobra.Command, env *cliEnv, header *controlv1.UploadBlobHeader, r io.Reader) (string, error) {
+func uploadBlob(cmd *cobra.Command, env *cliEnv, header *controlv1.UploadBlobHeader, r io.Reader) (*controlv1.UploadBlobResponse, error) {
 	stream := env.client.UploadBlob(cmd.Context())
 	if err := stream.Send(&controlv1.UploadBlobRequest{
 		Payload: &controlv1.UploadBlobRequest_Header{Header: header},
 	}); err != nil {
-		return "", err
+		return nil, err
 	}
 	buf := make([]byte, streamChunkBytes)
 	for {
@@ -358,21 +472,21 @@ func uploadBlob(cmd *cobra.Command, env *cliEnv, header *controlv1.UploadBlobHea
 			if err := stream.Send(&controlv1.UploadBlobRequest{
 				Payload: &controlv1.UploadBlobRequest_Chunk{Chunk: buf[:n]},
 			}); err != nil {
-				return "", err
+				return nil, err
 			}
 		}
 		if errors.Is(readErr, io.EOF) {
 			break
 		}
 		if readErr != nil {
-			return "", fmt.Errorf("read blob: %w", readErr)
+			return nil, fmt.Errorf("read blob: %w", readErr)
 		}
 	}
 	resp, err := stream.CloseAndReceive()
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	return resp.Msg.GetHash(), nil
+	return resp.Msg, nil
 }
 
 func runUnseed(cmd *cobra.Command, args []string, env *cliEnv) error {
@@ -423,21 +537,92 @@ func runUnseed(cmd *cobra.Command, args []string, env *cliEnv) error {
 
 	switch {
 	case wl != nil:
-		if _, err := env.client.UnseedWorkload(cmd.Context(), connect.NewRequest(&controlv1.UnseedWorkloadRequest{Hash: arg})); err != nil {
+		if err := unseedWorkload(cmd, env, wl); err != nil {
 			return err
 		}
 	case site != nil:
-		if _, err := env.client.UnseedStatic(cmd.Context(), connect.NewRequest(&controlv1.UnseedStaticRequest{Name: site.GetName()})); err != nil {
+		if err := unseedStatic(cmd, env, site); err != nil {
 			return err
 		}
 	case hasBlob:
-		if _, err := env.client.RemoveBlob(cmd.Context(), connect.NewRequest(&controlv1.RemoveBlobRequest{Hash: blobHash})); err != nil {
+		if err := removeBlob(cmd, env, blobHash, st.GetBlobs()); err != nil {
 			return err
 		}
 	}
 
 	fmt.Fprintf(cmd.OutOrStdout(), "unseeded %s\n", arg)
 	return nil
+}
+
+func unseedWorkload(cmd *cobra.Command, env *cliEnv, wl *controlv1.WorkloadSummary) error {
+	req := &controlv1.UnseedWorkloadRequest{Hash: wl.GetHash()}
+	if env.transport.IsWire() {
+		hashBytes, err := hex.DecodeString(wl.GetHash())
+		if err != nil {
+			return fmt.Errorf("decode hash: %w", err)
+		}
+		body := &statev1.WorkloadSpecChange{
+			Hash:        wl.GetHash(),
+			Name:        wl.GetName(),
+			MinReplicas: wl.GetMinReplicas(),
+			MemoryBytes: wl.GetMemoryBytes(),
+			TimeoutMs:   wl.GetTimeoutMs(),
+			Spread:      wl.GetSpread(),
+		}
+		presigned, err := signFact(env.dir, func(s *fact.Signer) (*factv1.Fact, error) {
+			return presignedWorkload(s, hashBytes, body, nil, true)
+		})
+		if err != nil {
+			return fmt.Errorf("sign workload tombstone: %w", err)
+		}
+		req.PreSignedFact = presigned
+	}
+	_, err := env.client.UnseedWorkload(cmd.Context(), connect.NewRequest(req))
+	return err
+}
+
+func unseedStatic(cmd *cobra.Command, env *cliEnv, site *controlv1.StaticSummary) error {
+	req := &controlv1.UnseedStaticRequest{Name: site.GetName()}
+	if env.transport.IsWire() {
+		presigned, err := signFact(env.dir, func(s *fact.Signer) (*factv1.Fact, error) {
+			return presignedStatic(s, site.GetName(), site.GetManifestDigest(), true)
+		})
+		if err != nil {
+			return fmt.Errorf("sign static tombstone: %w", err)
+		}
+		req.PreSignedFact = presigned
+	}
+	_, err := env.client.UnseedStatic(cmd.Context(), connect.NewRequest(req))
+	return err
+}
+
+func removeBlob(cmd *cobra.Command, env *cliEnv, hash string, blobs []*controlv1.BlobSummary) error {
+	req := &controlv1.RemoveBlobRequest{Hash: hash}
+	if env.transport.IsWire() {
+		name := ""
+		for _, b := range blobs {
+			if b.GetHash() == hash {
+				name = b.GetName()
+				break
+			}
+		}
+		if name == "" {
+			return fmt.Errorf("blob remove over the wire requires a named blob; %s is anonymous", hash[:shortHexLen])
+		}
+		digestBytes, err := hex.DecodeString(hash)
+		if err != nil {
+			return fmt.Errorf("decode hash: %w", err)
+		}
+		presigned, err := signFact(env.dir, func(s *fact.Signer) (*factv1.Fact, error) {
+			return presignedBlob(s, name, digestBytes, nil, true)
+		})
+		if err != nil {
+			return fmt.Errorf("sign blob tombstone: %w", err)
+		}
+		req.PreSignedFact = presigned
+	}
+	_, err := env.client.RemoveBlob(cmd.Context(), connect.NewRequest(req))
+	return err
 }
 
 func runFetch(cmd *cobra.Command, args []string, env *cliEnv) error {
@@ -654,9 +839,24 @@ func hashPrefixCollisionError(prefix string, hashes []string) error {
 }
 
 func blobCollisionError(name string, matches []*controlv1.BlobSummary) error {
+	// When publishers differ, the name+publisher-prefix uniquely picks
+	// one blob. When the same publisher has multiple blobs sharing a
+	// name (publisher uploaded a "logo" twice with different content),
+	// publisher prefixes collapse: fall back to a hash prefix so the
+	// operator has something unique to type.
+	pubs := make(map[string]struct{}, len(matches))
+	for _, m := range matches {
+		pubs[peerKeyString(m.GetPublisher().GetPeerPub())] = struct{}{}
+	}
+	useHash := len(pubs) == 1
+
 	ids := make([]string, len(matches))
-	for i, b := range matches {
-		ids[i] = peerKeyString(b.GetPublisher().GetPeerPub())
+	for i, m := range matches {
+		if useHash {
+			ids[i] = m.GetHash()
+		} else {
+			ids[i] = peerKeyString(m.GetPublisher().GetPeerPub())
+		}
 	}
 	prefixes := minUniquePrefixes(ids)
 
@@ -667,7 +867,7 @@ func blobCollisionError(name string, matches []*controlv1.BlobSummary) error {
 		if len(hash) > shortHexLen {
 			hash = hash[:shortHexLen]
 		}
-		fmt.Fprintf(&b, "  %s-%s    (%s, published by %s)\n", name, prefixes[i], hash, formatPeerID(blob.GetPublisher().GetPeerPub(), false))
+		fmt.Fprintf(&b, "  %s    (%s, published by %s)\n", prefixes[i], hash, formatPeerID(blob.GetPublisher().GetPeerPub(), false))
 	}
 	return wrapExit(exitAmbiguous, errors.New(strings.TrimSpace(b.String())))
 }
