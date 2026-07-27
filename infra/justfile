@@ -59,9 +59,9 @@ prod-apply:
     rm prod.tfplan
 
 # Destroy prod infrastructure. WARNING: terminates nodes and removes DNS.
-# The zone-singleton ruleset, zone settings, and staging cert pack live
-# in prod state; staging's HTTP routing and HTTPS ride on them, so tear
-# staging down too if you are decommissioning the whole zone.
+# The zone-singleton ruleset and zone settings live in prod state; when
+# staging is up its HTTP routing rides on them, so tear staging down too
+# if you are decommissioning the whole zone.
 #
 # Destroy prod cluster (typed confirmation; no auto-approve).
 prod-down:
@@ -189,8 +189,9 @@ staging-apply:
     rm staging.tfplan
 
 # Destroy staging infrastructure. WARNING: terminates nodes and removes
-# DNS. The zone-singleton ruleset and staging cert pack live in prod
-# state, so they survive staging-down and tenant HTTPS keeps working.
+# DNS. Staging's zone-singletons (origin-port host rules, wildcard cert
+# pack) live in prod state and survive staging-down; drop them from
+# infra/prod and disable ACM to stop billing when staging stays down.
 #
 # Destroy staging cluster (typed confirmation; no auto-approve).
 staging-down:

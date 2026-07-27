@@ -5,7 +5,7 @@ clusters and CI verify tooling live in [`internal/dev/`](../internal/dev/).
 
 ```
 infra/
-  prod/             # pln.sh cluster + zone-singleton CF state (ruleset, settings, cert)
+  prod/             # pln.sh cluster + zone-singleton CF state (ruleset, settings)
   staging/          # staging.pln.sh cluster (substrate iteration surface)
   justfile          # prod + staging lifecycle (plan, apply, down)
 ```
@@ -55,19 +55,16 @@ just prod-down              # typed-confirmation; terraform destroy
 
 `prod-down` requires the operator to type `destroy pln-prod` literally; the
 default answer is "abort". `staging-down` follows the same pattern. The
-zone-singleton ruleset, zone settings, and staging cert pack live in prod
-state, so `prod-down` removes them too; staging's HTTP routing and HTTPS
-depend on them, so decommission staging alongside prod when taking the whole
-zone down.
+zone-singleton ruleset and zone settings live in prod state, so `prod-down`
+removes them too; when staging is up its HTTP routing rides on that ruleset,
+so decommission staging alongside prod when taking the whole zone down.
 
 ## Bring up staging
 
 The staging cluster is the iteration surface for new substrate features (wire
 mode, anonymous gateways, per-publisher static URLs). It mirrors prod's shape
-on `staging.pln.sh` and opens the Pollen Cloud listeners. The zone-singleton
-ruleset and the staging wildcard cert live in prod state (Cloudflare permits
-one ruleset per `http_request_origin` phase per zone). Prod and staging never
-share Hetzner SSH keys, firewalls, or DNS records; a compromised staging
+on `staging.pln.sh` and opens the Pollen Cloud listeners. Prod and staging
+never share Hetzner SSH keys, firewalls, or DNS records; a compromised staging
 credential cannot reach prod.
 
 Pre-flight:
@@ -76,10 +73,14 @@ Pre-flight:
    variable defaults to that name. Override with `-var ssh_key_name=pln-prod`
    on `staging-plan` to share the prod key instead.
 2. Enable Cloudflare Advanced Certificate Manager (ACM) on the `pln.sh`
-   zone via the dashboard. ACM is billable. The
-   `cloudflare_certificate_pack.staging_wildcard` resource fails creation
-   without it, because Universal SSL only covers one level under the apex
-   and the wildcard `*.staging.pln.sh` is two levels deep.
+   zone via the dashboard. ACM is billable; disable it again when staging
+   stays down for a long period.
+3. Restore staging's zone-singleton state in `infra/prod/main.tf` and apply
+   prod: the staging host rules on the `origin_port` ruleset and the
+   `*.staging.pln.sh` cert pack. Cloudflare permits one ruleset per
+   `http_request_origin` phase per zone, and the cert pack needs ACM because
+   Universal SSL only covers one level under the apex. Both are dropped from
+   prod state whenever staging is decommissioned.
 
 ```bash
 cd infra
@@ -112,8 +113,8 @@ pln share photo.png                             # prints https://blob.staging.pl
 ### Tenant HTTPS and ACM
 
 Tenant static-site HTTPS (`<name>-<short-pub>.staging.pln.sh`) needs the
-Advanced Certificate Manager cert pack, which is enabled on the zone. The
-tenant wildcard is proxied by default, so these sites are served over HTTPS
+Advanced Certificate Manager cert pack from the pre-flight. The tenant
+wildcard is proxied by default, so these sites are served over HTTPS
 through Cloudflare:
 
 ```bash

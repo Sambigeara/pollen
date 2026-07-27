@@ -40,17 +40,8 @@ locals {
     split("\n", trimspace(data.http.cf_ipv6.response_body)),
   )
 
-  zone_id      = data.cloudflare_zone.pln.id
-  zone_name    = var.zone_name
-  staging_host = "${var.staging_subdomain}.${var.zone_name}"
-
-  # Hosts the gateway listener (:8088) serves for anonymous share URLs;
-  # named once so the explicit rule and the catch-all exclusion below
-  # cannot drift.
-  staging_gateway_hosts = [
-    "blob.${local.staging_host}",
-    "fn.${local.staging_host}",
-  ]
+  zone_id   = data.cloudflare_zone.pln.id
+  zone_name = var.zone_name
 }
 
 data "hcloud_ssh_key" "pln" {
@@ -176,11 +167,10 @@ resource "cloudflare_dns_record" "node" {
 
 # Zone-singleton Cloudflare state: Cloudflare permits one custom ruleset
 # per `http_request_origin` phase per zone and zone settings are
-# zone-wide, so prod owns them and routes both prod and staging hosts.
-# The staging wildcard cert pack is zone-scoped and lives here too.
+# zone-wide, so prod owns them; a staging bring-up adds its host rules
+# here rather than in its own ruleset.
 
-# Route CF → origin on :8080 for static traffic and :8088 for the
-# anonymous share gateway. The pln daemons run as the unprivileged
+# Route CF → origin on :8080. The pln daemons run as the unprivileged
 # `pln` user without CAP_NET_BIND_SERVICE, so all listeners sit above
 # :1024.
 resource "cloudflare_ruleset" "origin_port" {
@@ -193,39 +183,6 @@ resource "cloudflare_ruleset" "origin_port" {
     {
       description = "Static sites listen on :8080"
       expression  = "(http.host in {\"${var.zone_name}\" \"docs.${var.zone_name}\"})"
-      action      = "route"
-      enabled     = true
-      action_parameters = {
-        origin = {
-          port = 8080
-        }
-      }
-    },
-    {
-      description = "Staging static apex → :8080"
-      expression  = "(http.host eq \"${local.staging_host}\")"
-      action      = "route"
-      enabled     = true
-      action_parameters = {
-        origin = {
-          port = 8080
-        }
-      }
-    },
-    {
-      description = "Staging blob/fn gateway → :8088"
-      expression  = "(http.host in {${join(" ", [for h in local.staging_gateway_hosts : "\"${h}\""])}})"
-      action      = "route"
-      enabled     = true
-      action_parameters = {
-        origin = {
-          port = 8088
-        }
-      }
-    },
-    {
-      description = "Staging tenant sites (catch-all under *.${var.staging_subdomain}, excluding gateway hosts) → :8080"
-      expression  = "(ends_with(http.host, \".${local.staging_host}\") and not (http.host in {${join(" ", [for h in local.staging_gateway_hosts : "\"${h}\""])}}))"
       action      = "route"
       enabled     = true
       action_parameters = {
@@ -259,18 +216,4 @@ resource "cloudflare_zone_setting" "tls_1_3" {
   zone_id    = local.zone_id
   setting_id = "tls_1_3"
   value      = "on"
-}
-
-# Advanced cert pack covering the two-level staging subdomains; Universal
-# SSL only reaches one level under the apex, so blob/fn and the
-# tenant-static wildcard need it. Requires ACM on the zone (billable).
-# Validation TXT records are managed by CF in-zone and do not appear in
-# tf state.
-resource "cloudflare_certificate_pack" "staging_wildcard" {
-  zone_id               = local.zone_id
-  type                  = "advanced"
-  hosts                 = ["*.${local.staging_host}", local.staging_host]
-  validation_method     = "txt"
-  validity_days         = 90
-  certificate_authority = "lets_encrypt"
 }

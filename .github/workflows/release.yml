@@ -5,6 +5,8 @@ on:
       - "v*"
 permissions:
   contents: write
+  id-token: write
+  attestations: write
 jobs:
   goreleaser:
     runs-on: ubuntu-latest
@@ -26,3 +28,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAP_GITHUB_TOKEN: ${{ secrets.TAP_GITHUB_TOKEN }}
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
+        with:
+          subject-checksums: dist/checksums.txt

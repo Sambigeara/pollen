@@ -150,9 +150,9 @@ resource "cloudflare_dns_record" "fn" {
 # *.staging.pln.sh, wildcard for tenant static sites
 # (`<name>-<short-pub>.staging.pln.sh`). CF Universal SSL only covers
 # one level under the apex, so HTTPS for these hosts relies on the
-# advanced cert pack below. Until ACM is enabled on the zone, leave
-# `tenant_wildcard_proxied = false` so the grey-cloud record at least
-# answers the hostname over plain HTTP via the origin :8080.
+# advanced cert pack in `infra/prod/`. Until ACM is enabled on the zone,
+# leave `tenant_wildcard_proxied = false` so the grey-cloud record at
+# least answers the hostname over plain HTTP via the origin :8080.
 resource "cloudflare_dns_record" "tenant_wildcard" {
   for_each = hcloud_server.node
   zone_id  = local.zone_id
@@ -199,7 +199,9 @@ resource "cloudflare_dns_record" "edge" {
 }
 
 # Staging brings up only its nodes and DNS records. The origin-port
-# routing ruleset, zone settings, and the staging wildcard cert pack are
+# routing rules, zone settings, and the staging wildcard cert pack are
 # zone-singletons and live in `infra/prod/`: Cloudflare permits one
 # custom ruleset per `http_request_origin` phase per zone, and the cert
-# pack is zone-scoped.
+# pack is zone-scoped. The staging rules and cert pack are dropped from
+# prod state while staging is down; restore them before bring-up (see
+# the pre-flight steps in ../README.md).

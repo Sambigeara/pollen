@@ -15,9 +15,3 @@ variable "zone_name" {
   type        = string
   default     = "pln.sh"
 }
-
-variable "staging_subdomain" {
-  description = "Subdomain under zone_name fronting the staging cluster. Used in the origin-port ruleset expressions that route staging hosts."
-  type        = string
-  default     = "staging"
-}
